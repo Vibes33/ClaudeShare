@@ -15,7 +15,7 @@ from typing import Any
 
 from ..agent import SessionSupervisor, TurnBusyError
 from ..agent.hooks import AuditRecord
-from ..agent.toolpolicy import TrustLevel
+from ..agent.toolpolicy import READ_ONLY_TOOLS, TrustLevel
 from ..core.broker import InProcessBroadcaster
 from ..core.eventlog import EventLog
 from ..events import Event
@@ -51,6 +51,10 @@ class Room:
         self._present: dict[str, int] = {}
         self._audit: list[AuditRecord] = []
         self._turn: asyncio.Task[Any] | None = None
+        #: Niveau de confiance de l'auteur du tour en cours. Les options du SDK
+        #: étant fixées à l'ouverture de la session, c'est par ce portail que la
+        #: politique par auteur s'applique — via le hook, à chaque appel d'outil.
+        self._turn_trust: TrustLevel = TrustLevel.WRITER
         self.agent = supervisor or SessionSupervisor(
             workspace=workspace,
             sink=self._on_event,
@@ -58,8 +62,15 @@ class Room:
             sandbox=sandbox,
             session_id=session_id,
             audit=self._on_audit,
+            tools_gate=self._tools_gate,
             shared=True,
         )
+
+    def _tools_gate(self) -> frozenset[str] | None:
+        """Outils permis pour le tour en cours, selon son auteur."""
+        if self._turn_trust is TrustLevel.READER:
+            return frozenset(READ_ONLY_TOOLS)
+        return None
 
     # ------------------------------------------------------------ événements
 
@@ -130,7 +141,9 @@ class Room:
             seq=self.log.last_seq,
         )
 
-    async def submit(self, prompt: str, author: str) -> None:
+    async def submit(
+        self, prompt: str, author: str, trust: TrustLevel = TrustLevel.WRITER
+    ) -> None:
         """Lance un tour en tâche de fond.
 
         On ne bloque pas l'appelant : le tour dure des minutes, et sa progression
@@ -140,6 +153,8 @@ class Room:
         """
         if self.agent.busy:
             raise TurnBusyError("un tour est déjà en cours dans ce salon")
+
+        self._turn_trust = trust
 
         async def run() -> None:
             try:

@@ -7,10 +7,10 @@ Claude Code packagé en bibliothèque — piloté avec les identifiants du CLI, 
 sur abonnement plutôt que sur l'API Messages.
 
 > [!WARNING]
-> **Projet en construction.** L'authentification et le cloisonnement des salons
-> sont en place, mais les *droits à l'intérieur* d'un salon ne le sont pas encore
-> (étape 5) : tout membre peut y écrire, donc y faire exécuter du shell. Gardez
-> l'écoute sur `127.0.0.1` et n'invitez que des personnes de confiance.
+> **Projet en construction.** Identité, cloisonnement et droits sont en place ;
+> il manque les invitations (étape 6), le jeton de parole (7) et les interfaces
+> (8). Gardez l'écoute sur `127.0.0.1` : l'ajout d'un membre se fait encore en
+> base, et rien n'a été éprouvé en exposition réelle.
 
 ## Démarrer
 
@@ -160,6 +160,39 @@ donc pas `cat ~/.ssh/id_rsa` — c'est le trou que le hook ferme.
 et n'apparaît pas dans `/api/rooms/{id}/audit`. Le journal d'événements du salon,
 lui, enregistre le résultat d'outil en erreur.
 
+## Droits
+
+Une règle unique, à laquelle rôles préfaits, rôles sur mesure et ajustements
+individuels se ramènent tous :
+
+```
+capacités effectives = (capacités du rôle ∪ grants) − revokes
+```
+
+Quatre rôles sont créés dans chaque salon — propriétaire, modérateur, écrivain,
+lecteur — et ce sont des **lignes en base**, pas une énumération : un salon peut
+définir les siens. Un rôle livré d'origine n'est ni modifiable ni supprimable,
+sinon « lecteur » ne voudrait plus dire la même chose d'un salon à l'autre.
+
+Deux garde-fous : le propriétaire garde toutes ses capacités même sous un
+`revoke`, et un salon conserve toujours au moins un propriétaire.
+
+**Les droits sont relus à chaque intention, jamais mis en cache.** Une
+rétrogradation prend donc effet sans reconnexion, et si la personne qui pilote le
+tour en cours perd le droit de parler, ce tour est interrompu — sans quoi ce ne
+serait pas une révocation.
+
+Les capacités renvoyées aux clients servent à griser des boutons. Le contrôle est
+`room_access()` côté serveur, et `tests/test_authz_coverage.py` échoue si une
+route de salon oublie de déclarer le sien.
+
+### Raccord avec la politique d'outils
+
+Les options du SDK sont fixées à l'ouverture de la session : une politique *par
+auteur* ne peut donc pas passer par elles. Elle passe par le hook `PreToolUse`,
+qui filtre à chaque appel d'outil selon les droits de l'auteur du tour. Un membre
+sans `room.settings` n'obtient jamais l'auto-approbation des éditions.
+
 ## Architecture
 
 ```
@@ -188,6 +221,8 @@ arrivant tardif récupère via l'instantané.
 | `server/auth/` | OAuth, sessions signées, jetons porteurs |
 | `core/workspace.py` | confinement des dossiers de salon |
 | `db/models.py` | personnes, salons, appartenances, rôles |
+| `core/permissions.py` | résolution des droits et barrière `require()` |
+| `server/authz.py` | application sur les routes, déclaration pour la couverture |
 
 ## État
 
@@ -197,16 +232,11 @@ arrivant tardif récupère via l'instantané.
 | 2. Serveur et journal | ✅ |
 | 3. Sécurité de l'exécution | ✅ |
 | 4. Identité OAuth et salons multiples | ✅ |
-| 5. Permissions (rôles, droits à la carte) | ⬜ |
+| 5. Permissions (rôles, droits à la carte) | ✅ |
 | 6. Invitations | ⬜ |
 | 7. Jeton de parole et priorités | ⬜ |
 | 8. Clients web et TUI | ⬜ |
 | 9. Hébergement | ⬜ |
-
-**Droits en attente** : les rôles sont créés dans chaque salon (propriétaire,
-modérateur, écrivain, lecteur) mais ne sont **pas encore appliqués** — l'étape 5
-branche la résolution `(rôle ∪ grants) − revokes` sur chaque handler. Aujourd'hui
-l'appartenance suffit à écrire.
 
 **Limites assumées en v1** : l'hôte est votre machine (les identifiants et les
 fichiers de session y sont) ; les salons sont épinglés à un process, le

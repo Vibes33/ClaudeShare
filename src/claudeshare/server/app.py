@@ -23,6 +23,8 @@ from ..config import AuthMode, Settings, check_auth_mode, describe_auth
 from ..core.workspace import ensure_root
 from ..db.models import Room
 from ..db.session import Database, default_url
+from .api.members import build_members_router
+from .api.roles import build_roles_router
 from .api.rooms import build_rooms_router
 from .auth.identity import SessionSigner
 from .auth.oauth import ProviderConfig, build_oauth
@@ -127,6 +129,8 @@ def create_app(
 
     app.include_router(build_auth_router(ctx))
     app.include_router(build_rooms_router(ctx))
+    app.include_router(build_members_router(ctx))
+    app.include_router(build_roles_router(ctx))
 
     @app.get("/api/health")
     async def health() -> dict[str, Any]:
@@ -155,6 +159,16 @@ def create_app(
                 await websocket.close(code=4404)
                 return
 
+            # Résolu dans la session déjà ouverte : en ouvrir une seconde ici
+            # imbriquerait deux transactions SQLite sur le même moteur.
+            from ..core.permissions import resolve
+            from ..db.models import Role
+
+            membership = membership_of(session, room_id, principal.user_id)
+            if not resolve(session.get(Role, membership.role_id), membership):
+                await websocket.close(code=4403)  # membre sans aucun droit
+                return
+
             record = session.get(Room, room_id)
             if record is None or record.archived:
                 await websocket.close(code=4404)
@@ -163,11 +177,35 @@ def create_app(
 
         live = await _ensure_live(ctx, detached, sandbox)
         try:
-            await serve_socket(websocket, live, principal.label)
+            await serve_socket(
+                websocket,
+                live,
+                principal.label,
+                # Relu à chaque intention : une rétrogradation doit prendre effet
+                # sans reconnexion.
+                capabilities=lambda: _capabilities_of(ctx, room_id, principal.user_id),
+            )
         finally:
             ctx.remember_session(room_id)
 
     return app
+
+
+def _capabilities_of(ctx: ServerContext, room_id: str, user_id: str) -> frozenset[str]:
+    """Droits effectifs, relus en base à chaque appel.
+
+    Aucun cache : c'est ce qui rend la révocation immédiate. Le coût est une
+    requête indexée par intention, négligeable devant un tour de modèle.
+    """
+    from ..core.permissions import resolve
+    from ..db.models import Role
+    from .auth.identity import membership_of
+
+    with ctx.db.session() as session:
+        membership = membership_of(session, room_id, user_id)
+        if membership is None:
+            return frozenset()
+        return resolve(session.get(Role, membership.role_id), membership)
 
 
 async def _ensure_live(ctx: ServerContext, detached: tuple, sandbox: bool):

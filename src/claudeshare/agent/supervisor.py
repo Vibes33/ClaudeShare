@@ -91,6 +91,7 @@ class SessionSupervisor:
         sandbox: bool = True,
         allowed_domains: tuple[str, ...] = (),
         audit: Callable[[AuditRecord], Awaitable[None]] | None = None,
+        tools_gate: Callable[[], frozenset[str] | None] | None = None,
         shared: bool = True,
     ) -> None:
         self._drain_timeout = drain_timeout
@@ -98,6 +99,7 @@ class SessionSupervisor:
         self._sandbox = sandbox
         self._allowed_domains = allowed_domains
         self._audit = audit
+        self._tools_gate = tools_gate
         #: Un salon partagé impose les trois couches de défense. Un salon solo
         #: peut les relâcher, mais jamais implicitement.
         self._shared = shared
@@ -135,6 +137,11 @@ class SessionSupervisor:
     @property
     def current_turn(self) -> str | None:
         return self._current_turn
+
+    @property
+    def current_author(self) -> str | None:
+        """Participant à l'origine du tour en cours, s'il y en a un."""
+        return self._current_author
 
     # ------------------------------------------------------------- cycle de vie
 
@@ -178,6 +185,7 @@ class SessionSupervisor:
             build_guard_hook(
                 context=lambda: (self._current_author, self._current_turn),
                 audit=self._audit,
+                tools_gate=self._tools_gate,
             )
         )
         base.hooks = hooks

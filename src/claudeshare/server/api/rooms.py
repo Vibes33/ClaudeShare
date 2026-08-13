@@ -7,10 +7,12 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from ...core.capabilities import Capability
 from ...core.workspace import WorkspaceError, resolve_workspace
 from ...db.models import Room
 from ..auth.identity import create_room, rooms_for
-from ..deps import require_membership, require_principal
+from ..authz import requires, room_access
+from ..deps import require_principal
 
 
 class RoomCreate(BaseModel):
@@ -70,16 +72,23 @@ def build_rooms_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
             return _room_view(record)
 
     @router.get("/{room_id}")
+    @requires(Capability.READ)
     async def get_room(room_id: str, request: Request) -> dict[str, Any]:
         with ctx.db.session() as session:
             principal = require_principal(ctx.principal(request, session))
-            require_membership(session, principal, room_id)
+            access = room_access(session, principal, room_id, Capability.READ)
             record = session.get(Room, room_id)
-            return _room_view(record, ctx.rooms.get(room_id))
+            view = _room_view(record, ctx.rooms.get(room_id))
+            # Renvoyées pour que l'interface grise ce qui n'est pas permis.
+            # Ce n'est jamais le contrôle : celui-ci est côté serveur.
+            view["capabilities"] = sorted(access.capabilities)
+            return view
 
     @router.get("/{room_id}/audit")
+    @requires(Capability.MEMBERS_MANAGE)
     async def audit(room_id: str, request: Request) -> list[dict[str, Any]]:
-        """Trace des appels d'outils.
+        """Trace des appels d'outils. Réservée à qui administre les membres :
+        elle expose ce que chacun a tenté de faire.
 
         Angle mort assumé : un appel bloqué par une règle de refus n'atteint pas
         le hook et n'apparaît donc pas ici. Le journal d'événements du salon
@@ -87,7 +96,7 @@ def build_rooms_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
         """
         with ctx.db.session() as session:
             principal = require_principal(ctx.principal(request, session))
-            require_membership(session, principal, room_id)
+            room_access(session, principal, room_id, Capability.MEMBERS_MANAGE)
 
         live = ctx.rooms.get(room_id)
         if live is None:

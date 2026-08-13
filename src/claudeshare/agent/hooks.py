@@ -165,6 +165,7 @@ def build_guard_hook(
     *,
     context: Callable[[], tuple[str | None, str | None]],
     audit: Callable[[AuditRecord], Awaitable[None]] | None = None,
+    tools_gate: Callable[[], frozenset[str] | None] | None = None,
 ) -> HookMatcher:
     """Construit le hook de garde.
 
@@ -172,6 +173,11 @@ def build_guard_hook(
     est le seul à le savoir. `audit` reçoit chaque décision, y compris les
     autorisations : une trace qui n'enregistre que les refus ne sert à rien lors
     d'un incident.
+
+    `tools_gate` renvoie les outils permis **pour ce tour-ci**, ou None sans
+    restriction. C'est le seul endroit où une politique par auteur peut
+    s'appliquer : les options du SDK (`tools`, `allowed_tools`) sont fixées à
+    l'ouverture de la session et ne changent pas d'un tour à l'autre.
     """
 
     async def guard(
@@ -200,6 +206,16 @@ def build_guard_hook(
             )
             if audit is not None:
                 await audit(entry)
+
+        if tools_gate is not None:
+            permis = tools_gate()
+            if permis is not None and tool not in permis:
+                reason = (
+                    f"outil {tool} non autorisé pour ce participant "
+                    f"(permis : {', '.join(sorted(permis)) or 'aucun'})"
+                )
+                await record("deny", reason, tool=tool)
+                return _deny(reason)
 
         if hits := sensitive_paths_in_tool_input(tool, tool_input):
             reason = f"accès refusé à un emplacement sensible : {', '.join(hits)}"

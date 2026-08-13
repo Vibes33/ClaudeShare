@@ -19,11 +19,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 
 from ..agent import TurnBusyError
+from ..agent.toolpolicy import TrustLevel
+from ..core.capabilities import Capability
 from ..protocol import (
     ClientMessage,
     ProtocolError,
@@ -39,8 +42,19 @@ logger = logging.getLogger(__name__)
 MAX_PROMPT_CHARS = 32_000
 
 
-async def serve_socket(websocket: WebSocket, room: Room, who: str) -> None:
-    """Sert une connexion jusqu'à sa fermeture."""
+async def serve_socket(
+    websocket: WebSocket,
+    room: Room,
+    who: str,
+    *,
+    capabilities: Callable[[], frozenset[str]],
+) -> None:
+    """Sert une connexion jusqu'à sa fermeture.
+
+    `capabilities` est **relu à chaque intention**, jamais mémorisé : un
+    changement de rôle doit prendre effet sans reconnexion. Le mémoriser à
+    l'ouverture donnerait une révocation qui n'en est pas une.
+    """
     await websocket.accept()
 
     async with room.broker.subscribe(room.id) as subscription:
@@ -53,11 +67,13 @@ async def serve_socket(websocket: WebSocket, room: Room, who: str) -> None:
         # lui-même. La trame `presence` que ça déclenche est mise en file dans
         # l'abonnement et arrivera juste après.
         await room.joined(who)
-        await websocket.send_json(room.snapshot(last_seq))
+        snapshot = room.snapshot(last_seq)
+        snapshot["data"]["capabilities"] = sorted(capabilities())
+        await websocket.send_json(snapshot)
 
         downstream = asyncio.create_task(_pump_down(websocket, subscription))
         try:
-            await _pump_up(websocket, room, who)
+            await _pump_up(websocket, room, who, capabilities)
         except WebSocketDisconnect:
             pass
         finally:
@@ -100,7 +116,12 @@ async def _pump_down(websocket: WebSocket, subscription: Any) -> None:
         pass  # socket fermée pendant l'envoi
 
 
-async def _pump_up(websocket: WebSocket, room: Room, who: str) -> None:
+async def _pump_up(
+    websocket: WebSocket,
+    room: Room,
+    who: str,
+    capabilities: Callable[[], frozenset[str]],
+) -> None:
     """Socket → intentions traitées par le salon."""
     while True:
         raw = await websocket.receive_json()
@@ -115,9 +136,24 @@ async def _pump_up(websocket: WebSocket, room: Room, who: str) -> None:
                 await websocket.send_json(envelope(ServerMessage.PONG, room.id))
 
             case ClientMessage.PROMPT_SEND:
-                await _handle_prompt(websocket, room, who, data)
+                caps = capabilities()
+                if str(Capability.SPEAK) not in caps:
+                    await websocket.send_json(
+                        error(room.id, "forbidden", "vous n'avez pas le droit d'écrire ici")
+                    )
+                    continue
+                await _handle_prompt(websocket, room, who, data, caps)
 
             case ClientMessage.STREAM_STOP:
+                # Interrompre son propre tour est toujours permis ; couper celui
+                # d'un autre demande un droit.
+                if room.agent.current_author not in (who, None) and str(
+                    Capability.STOP
+                ) not in capabilities():
+                    await websocket.send_json(
+                        error(room.id, "forbidden", "vous ne pouvez pas couper ce tour")
+                    )
+                    continue
                 stopped = await room.stop()
                 if not stopped:
                     await websocket.send_json(
@@ -131,7 +167,11 @@ async def _pump_up(websocket: WebSocket, room: Room, who: str) -> None:
 
 
 async def _handle_prompt(
-    websocket: WebSocket, room: Room, who: str, data: dict[str, Any]
+    websocket: WebSocket,
+    room: Room,
+    who: str,
+    data: dict[str, Any],
+    caps: frozenset[str],
 ) -> None:
     prompt = data.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
@@ -144,7 +184,9 @@ async def _handle_prompt(
         return
 
     try:
-        await room.submit(prompt, author=who)
+        from ..core.permissions import trust_level
+
+        await room.submit(prompt, author=who, trust=trust_level(caps))
     except TurnBusyError as exc:
         # L'étape 7 remplacera ce refus par une mise en file priorisée.
         await websocket.send_json(error(room.id, "busy", str(exc)))
