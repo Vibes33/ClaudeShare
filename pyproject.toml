@@ -30,6 +30,7 @@ claudeshare = "claudeshare.__main__:main"
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "pytest-timeout>=2.3",
     "anyio>=4.6",
 ]
 
@@ -43,6 +44,11 @@ packages = ["src/claudeshare"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Un test de socket qui échoue attend une trame qui n'arrivera jamais : sans
+# cette limite il ne rate pas, il **pend**, et c'est toute la suite qui se fige.
+# La valeur est très au-dessus du test le plus lent (~0,1 s) : elle n'attrape
+# que les blocages francs.
+timeout = 30
 
 [tool.ruff]
 line-length = 100

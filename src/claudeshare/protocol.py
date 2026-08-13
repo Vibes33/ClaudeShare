@@ -1,8 +1,9 @@
 """Protocole WebSocket — vocabulaire commun au serveur et aux deux clients.
 
-Source de vérité unique côté Python. `server/static/protocol.js` en est le miroir
-pour le client web, et `tests/test_protocol.py` échoue si les deux divergent :
-c'est le genre de duplication qui se désynchronise en silence sinon.
+Source de vérité unique côté Python. Le client web de l'étape 8 en aura besoin
+sous forme de `protocol.js` ; ce miroir devra venir avec un test qui échoue
+quand les deux divergent, faute de quoi c'est le genre de duplication qui se
+désynchronise en silence.
 
 Une seule enveloppe dans les deux sens :
 
@@ -31,14 +32,29 @@ class ClientMessage(StrEnum):
     PROMPT_SEND = "prompt.send"
     #: Interrompt le tour en cours.
     STREAM_STOP = "stream.stop"
+
+    #: Demande la parole, ou signale qu'on est toujours là en la rédigeant.
+    FLOOR_REQUEST = "floor.request"
+    #: Rend la main.
+    FLOOR_RELEASE = "floor.release"
+    #: Réquisitionne le jeton, y compris en pleine génération (`room.preempt`).
+    FLOOR_PREEMPT = "floor.preempt"
+
+    #: Tranche une demande d'approbation d'outil (`room.tools.approve`).
+    TOOL_APPROVE = "tool.approve"
+
     PING = "ping"
 
 
 class ServerMessage(StrEnum):
     """Trames propres au protocole. Les autres portent un type d'événement métier."""
 
-    #: État complet à la connexion : historique manquant, tours en cours, présence.
+    #: État complet à la connexion : historique manquant, tours en cours,
+    #: présence, état du jeton, approbations en attente.
     SNAPSHOT = "snapshot"
+    #: Le prompt n'est pas parti : quelqu'un d'autre a la parole. Porte la place
+    #: dans la file. Ce n'est pas une erreur — le client garde son brouillon.
+    QUEUED = "queued"
     ERROR = "error"
     PONG = "pong"
 

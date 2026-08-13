@@ -7,9 +7,10 @@ Claude Code packagé en bibliothèque — piloté avec les identifiants du CLI, 
 sur abonnement plutôt que sur l'API Messages.
 
 > [!WARNING]
-> **Projet en construction.** Identité, cloisonnement, droits et invitations sont
-> en place ; il manque le jeton de parole (étape 7) et les interfaces (8). Gardez
-> l'écoute sur `127.0.0.1` : rien n'a été éprouvé en exposition réelle.
+> **Projet en construction.** Le serveur est complet : identité, cloisonnement,
+> droits, invitations, jeton de parole et approbation d'outil. Il manque les
+> interfaces (étape 8) — tout passe pour l'instant par l'API et la WebSocket.
+> Gardez l'écoute sur `127.0.0.1` : rien n'a été éprouvé en exposition réelle.
 
 ## Démarrer
 
@@ -92,7 +93,7 @@ curl -s http://127.0.0.1:8765/api/health
 ```
 
 Le port est lié à `127.0.0.1` dans `docker-compose.yml`. Ne passez à `0.0.0.0`
-qu'une fois l'étape 7 faite, et derrière un terminateur TLS.
+qu'après l'étape 9, et derrière un terminateur TLS.
 
 Les identifiants OAuth et `CLAUDESHARE_SECRET_KEY` se passent par l'environnement
 (voir le service dans `docker-compose.yml`).
@@ -208,6 +209,60 @@ auteur* ne peut donc pas passer par elles. Elle passe par le hook `PreToolUse`,
 qui filtre à chaque appel d'outil selon les droits de l'auteur du tour. Un membre
 sans `room.settings` n'obtient jamais l'auto-approbation des éditions.
 
+## Jeton de parole
+
+Un salon ne laisse parler qu'une personne à la fois. La machine à états vit dans
+`core/floor.py`, **sans I/O ni horloge murale** : elle décide, et le salon
+exécute. Ce partage n'est pas de la décoration — l'enchaînement des cas
+(préemption pendant une génération, expiration pendant l'attente, départ du
+porteur) se teste au millième de seconde tant qu'aucune socket n'est en jeu.
+
+```
+open ──request──► held(qui, échéance) ──envoi──► generating
+ ▲                   │                              │
+ └───────────────────┴──── release / expiration ────┘
+```
+
+**Envoyer un prompt vaut demande de parole** : seul dans un salon, on écrit sans
+rien réclamer. Et **envoyer libère** — le jeton repart à la file une fois le
+tour fini, sinon la personne qui parle le plus garde la main par inertie.
+
+L'ordre d'attente est `(−priorité, date de demande)`. La priorité fait passer
+devant ; à priorité égale c'est le premier arrivé, sans quoi les derniers ne
+passeraient jamais. Redemander ne change pas le rang : insister ne doit ni faire
+remonter la file, ni faire perdre sa place.
+
+`room.preempt` permet de réquisitionner le jeton, y compris en pleine
+génération — c'est le seul cas où le tour est réellement coupé, avec le drainage
+du tampon que `interrupt()` garantit. Trois garde-fous : la personne évincée
+**retourne en file à son rang** plutôt que d'être exclue, un **cooldown** empêche
+de couper la parole en continu, et réquisitionner un jeton libre ne consomme pas
+ce cooldown puisque rien n'a été réquisitionné.
+
+Un porteur inactif rend la main après 90 s ; une génération, elle, n'expire pas
+(elle peut être longue, et le chien de garde du superviseur couvre déjà un CLI
+bloqué). Une déconnexion libère le jeton, mais **n'interrompt pas** un tour déjà
+lancé : d'autres personnes le regardent.
+
+## Approbation d'outil
+
+`can_use_tool` est une coroutine : elle peut donc attendre la décision de
+quelqu'un d'autre. Un appel qui l'atteint est diffusé au salon, et les porteurs
+de `room.tools.approve` voient l'invite.
+
+- **Un délai se résout en refus, jamais l'inverse.** Personne pour répondre ne
+  vaut pas accord tacite.
+- **La première réponse tranche** — attendre un quorum bloquerait sur la
+  première absence.
+- **Un tour ne s'approuve pas lui-même**, sinon l'approbation ne veut rien dire.
+  L'exception vise `room.settings`, qui peut de toute façon élargir la politique
+  d'outils : la lui refuser bloquerait un salon où l'hôte est seul.
+
+Rappel du piège : un outil **auto-approuvé n'atteint jamais `can_use_tool`**.
+C'est la raison d'être du hook `PreToolUse`, qui s'exécute toujours. Les deux
+couches sont complémentaires — celle-ci demande à un humain, l'autre trace et
+interdit sans demander.
+
 ## Inviter
 
 Trois chemins, tous révocables, tous soumis aux règles d'escalade ci-dessus.
@@ -276,6 +331,8 @@ arrivant tardif récupère via l'instantané.
 | `db/models.py` | personnes, salons, appartenances, rôles |
 | `core/permissions.py` | résolution des droits, barrière `require()`, garde-fous d'escalade |
 | `core/invites.py` | cibles nominatives, durées de vie, états |
+| `core/floor.py` | jeton de parole : file priorisée, préemption, expiration |
+| `agent/approval.py` | `can_use_tool` relié à une décision humaine |
 | `server/authz.py` | application sur les routes, déclaration pour la couverture |
 
 ## État
@@ -288,7 +345,7 @@ arrivant tardif récupère via l'instantané.
 | 4. Identité OAuth et salons multiples | ✅ |
 | 5. Permissions (rôles, droits à la carte) | ✅ |
 | 6. Invitations | ✅ |
-| 7. Jeton de parole et priorités | ⬜ |
+| 7. Jeton de parole et priorités | ✅ |
 | 8. Clients web et TUI | ⬜ |
 | 9. Hébergement | ⬜ |
 

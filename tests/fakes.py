@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from typing import Any
 
 from claude_agent_sdk import ResultMessage
@@ -29,6 +30,21 @@ def result(
         session_id=session_id,
         terminal_reason=terminal_reason,
     )
+
+
+@dataclass
+class AskTool:
+    """Marqueur de script : ici, le CLI demanderait la permission d'un outil.
+
+    Rejouer le vrai chemin plutôt que d'appeler le courtier à la main : ça
+    couvre le branchement `ClaudeAgentOptions.can_use_tool` du superviseur, qui
+    est précisément l'endroit où l'oubli passerait inaperçu.
+    """
+
+    name: str = "Bash"
+    input: dict[str, Any] = field(default_factory=lambda: {"command": "ls"})
+    #: Décision obtenue, renseignée pendant la lecture du script.
+    decision: Any = None
 
 
 class FakeClient:
@@ -66,6 +82,11 @@ class FakeClient:
     async def receive_response(self) -> AsyncIterator[Any]:
         script = self.scripts.pop(0) if self.scripts else [result()]
         for message in script[:-1]:
+            if isinstance(message, AskTool):
+                message.decision = await self.options.can_use_tool(
+                    message.name, message.input, None
+                )
+                continue
             yield message
         if self.gate is not None:
             await self.gate.wait()

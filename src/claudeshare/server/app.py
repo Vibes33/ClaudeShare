@@ -184,9 +184,10 @@ def create_app(
                 websocket,
                 live,
                 principal.label,
-                # Relu à chaque intention : une rétrogradation doit prendre effet
-                # sans reconnexion.
+                # Relus à chaque intention : une rétrogradation doit prendre
+                # effet sans reconnexion.
                 capabilities=lambda: _capabilities_of(ctx, room_id, principal.user_id),
+                priority=lambda: _priority_of(ctx, room_id, principal.user_id),
             )
         finally:
             ctx.remember_session(room_id)
@@ -211,6 +212,19 @@ def _capabilities_of(ctx: ServerContext, room_id: str, user_id: str) -> frozense
         return resolve(session.get(Role, membership.role_id), membership)
 
 
+def _priority_of(ctx: ServerContext, room_id: str, user_id: str) -> int:
+    """Priorité dans la file du jeton, relue sans cache comme les capacités.
+
+    Une personne qu'on vient de rendre prioritaire doit passer devant dès sa
+    demande suivante, pas à sa prochaine connexion.
+    """
+    from .auth.identity import membership_of
+
+    with ctx.db.session() as session:
+        membership = membership_of(session, room_id, user_id)
+        return membership.priority if membership else 0
+
+
 async def _ensure_live(ctx: ServerContext, detached: tuple, sandbox: bool):
     """Monte la session du salon à la demande."""
     room_id, title, workspace, session_id = detached
@@ -226,7 +240,7 @@ async def _ensure_live(ctx: ServerContext, detached: tuple, sandbox: bool):
         session_id=session_id,
     )
     try:
-        await live.agent.start()
+        await live.start()
     except (CLINotFoundError, ProcessError) as exc:
         await ctx.rooms.aclose()
         raise RuntimeError(_startup_hint(exc, ctx.settings, sandbox)) from exc

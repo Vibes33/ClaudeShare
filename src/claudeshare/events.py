@@ -34,6 +34,15 @@ class EventType(StrEnum):
     # --- outils ---
     TOOL_USE = "tool.use"
     TOOL_RESULT = "tool.result"
+    #: Un appel d'outil attend une décision humaine.
+    TOOL_APPROVAL_REQUESTED = "tool.approval_requested"
+    TOOL_APPROVAL_RESOLVED = "tool.approval_resolved"
+
+    # --- jeton de parole ---
+    #: État complet du jeton après une transition. Un seul type plutôt qu'un
+    #: par transition : les interfaces affichent un état, pas un historique, et
+    #: une trame perdue ne les laisse pas désynchronisées.
+    FLOOR_CHANGED = "floor.changed"
 
     # --- quotas d'abonnement ---
     RATE_LIMIT = "rate_limit"

@@ -92,8 +92,12 @@ class SessionSupervisor:
         allowed_domains: tuple[str, ...] = (),
         audit: Callable[[AuditRecord], Awaitable[None]] | None = None,
         tools_gate: Callable[[], frozenset[str] | None] | None = None,
+        can_use_tool: Any | None = None,
         shared: bool = True,
     ) -> None:
+        #: Branché sur `ClaudeAgentOptions.can_use_tool`. Rappel du piège : un
+        #: outil auto-approuvé n'arrive jamais jusqu'ici — voir `approval.py`.
+        self._can_use_tool = can_use_tool
         self._drain_timeout = drain_timeout
         self._trust = trust
         self._sandbox = sandbox
@@ -179,6 +183,9 @@ class SessionSupervisor:
             self._workspace, enabled=self._sandbox, allowed_domains=self._allowed_domains
         ):
             base.settings = settings
+
+        if self._can_use_tool is not None:
+            base.can_use_tool = self._can_use_tool
 
         hooks = dict(base.hooks or {})
         hooks.setdefault("PreToolUse", []).append(

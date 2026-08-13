@@ -24,8 +24,8 @@ from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-from ..agent import TurnBusyError
 from ..core.capabilities import Capability
+from ..core.floor import Denial, Outcome
 from ..protocol import (
     ClientMessage,
     ProtocolError,
@@ -47,12 +47,13 @@ async def serve_socket(
     who: str,
     *,
     capabilities: Callable[[], frozenset[str]],
+    priority: Callable[[], int] = lambda: 0,
 ) -> None:
     """Sert une connexion jusqu'à sa fermeture.
 
-    `capabilities` est **relu à chaque intention**, jamais mémorisé : un
-    changement de rôle doit prendre effet sans reconnexion. Le mémoriser à
-    l'ouverture donnerait une révocation qui n'en est pas une.
+    `capabilities` et `priority` sont **relus à chaque intention**, jamais
+    mémorisés : un changement de rôle doit prendre effet sans reconnexion. Les
+    mémoriser à l'ouverture donnerait une révocation qui n'en est pas une.
     """
     await websocket.accept()
 
@@ -72,13 +73,16 @@ async def serve_socket(
 
         downstream = asyncio.create_task(_pump_down(websocket, subscription))
         try:
-            await _pump_up(websocket, room, who, capabilities)
+            await _pump_up(websocket, room, who, capabilities, priority)
         except WebSocketDisconnect:
             pass
         finally:
             downstream.cancel()
-            await asyncio.gather(downstream, return_exceptions=True)
-            await room.left(who)
+            # Confié au salon plutôt qu'attendu ici : une fois la trame de
+            # fermeture reçue, cette tâche peut ne plus jamais être
+            # réordonnancée, et le nettoyage resterait à moitié fait. Voir
+            # `Room.departure`.
+            room.departure(who)
 
 
 async def _read_hello(websocket: WebSocket, room: Room) -> int | None:
@@ -120,6 +124,7 @@ async def _pump_up(
     room: Room,
     who: str,
     capabilities: Callable[[], frozenset[str]],
+    priority: Callable[[], int],
 ) -> None:
     """Socket → intentions traitées par le salon."""
     while True:
@@ -141,7 +146,30 @@ async def _pump_up(
                         error(room.id, "forbidden", "vous n'avez pas le droit d'écrire ici")
                     )
                     continue
-                await _handle_prompt(websocket, room, who, data, caps)
+                await _handle_prompt(websocket, room, who, data, caps, priority())
+
+            case ClientMessage.FLOOR_REQUEST:
+                if str(Capability.SPEAK) not in capabilities():
+                    await websocket.send_json(
+                        error(room.id, "forbidden", "vous n'avez pas le droit d'écrire ici")
+                    )
+                    continue
+                outcome = await room.request_floor(who, priority())
+                await _report(websocket, room, outcome)
+
+            case ClientMessage.FLOOR_RELEASE:
+                await _report(websocket, room, await room.release_floor(who))
+
+            case ClientMessage.FLOOR_PREEMPT:
+                if str(Capability.PREEMPT) not in capabilities():
+                    await websocket.send_json(
+                        error(room.id, "forbidden", "vous ne pouvez pas réquisitionner le jeton")
+                    )
+                    continue
+                await _report(websocket, room, await room.preempt_floor(who, priority()))
+
+            case ClientMessage.TOOL_APPROVE:
+                await _handle_approval(websocket, room, who, data, capabilities())
 
             case ClientMessage.STREAM_STOP:
                 # Interrompre son propre tour est toujours permis ; couper celui
@@ -171,6 +199,7 @@ async def _handle_prompt(
     who: str,
     data: dict[str, Any],
     caps: frozenset[str],
+    priority: int,
 ) -> None:
     prompt = data.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
@@ -182,10 +211,94 @@ async def _handle_prompt(
         )
         return
 
-    try:
-        from ..core.permissions import trust_level
+    from ..core.permissions import trust_level
 
-        await room.submit(prompt, author=who, trust=trust_level(caps))
-    except TurnBusyError as exc:
-        # L'étape 7 remplacera ce refus par une mise en file priorisée.
-        await websocket.send_json(error(room.id, "busy", str(exc)))
+    issue = await room.submit(
+        prompt, author=who, trust=trust_level(caps), priority=priority
+    )
+    if not issue.started:
+        # Le brouillon reste côté client : il le renverra en obtenant la
+        # parole. Le garder ici voudrait dire décider à sa place que ce qu'il a
+        # écrit il y a dix minutes est toujours ce qu'il veut envoyer.
+        await websocket.send_json(
+            envelope(
+                ServerMessage.QUEUED,
+                room.id,
+                {"position": issue.position, **room.floor.view()},
+            )
+        )
+
+
+async def _handle_approval(
+    websocket: WebSocket,
+    room: Room,
+    who: str,
+    data: dict[str, Any],
+    caps: frozenset[str],
+) -> None:
+    """Tranche une demande d'approbation d'outil."""
+    if str(Capability.TOOLS_APPROVE) not in caps:
+        await websocket.send_json(
+            error(room.id, "forbidden", "vous ne pouvez pas approuver un appel d'outil")
+        )
+        return
+
+    approval_id = data.get("approval_id")
+    if not isinstance(approval_id, str):
+        await websocket.send_json(error(room.id, "bad_message", "`approval_id` manquant"))
+        return
+
+    demande = room.approvals.get(approval_id)
+    if demande is None:
+        # Cas ordinaire : deux personnes ont cliqué, la seconde arrive après.
+        await websocket.send_json(
+            error(room.id, "already_resolved", "cette demande est déjà tranchée")
+        )
+        return
+
+    # Approuver ses propres appels viderait l'approbation de son sens : un
+    # écrivain obtiendrait la panoplie complète sans que personne ne regarde.
+    # L'exception vise qui peut de toute façon élargir la politique d'outils.
+    if demande.author == who and str(Capability.SETTINGS) not in caps:
+        await websocket.send_json(
+            error(room.id, "forbidden", "un tour ne s'approuve pas lui-même")
+        )
+        return
+
+    await room.approvals.decide(
+        approval_id,
+        allow=bool(data.get("allow")),
+        by=who,
+        reason=str(data.get("reason", ""))[:500],
+    )
+
+
+async def _report(websocket: WebSocket, room: Room, outcome: Outcome) -> None:
+    """Répond à qui a émis l'intention.
+
+    Le changement d'état, lui, part à tout le salon depuis `Room._apply` : ici
+    on ne renvoie que ce qui ne concerne que l'appelant — son refus, ou sa place
+    dans la file.
+    """
+    if not outcome.accepted:
+        refus = error(room.id, str(outcome.reason), _EXPLICATIONS.get(outcome.reason, ""))
+        if outcome.retry_in is not None:
+            refus["data"]["retry_in"] = outcome.retry_in
+        await websocket.send_json(refus)
+        return
+    if outcome.position is not None:
+        await websocket.send_json(
+            envelope(
+                ServerMessage.QUEUED,
+                room.id,
+                {"position": outcome.position, **room.floor.view()},
+            )
+        )
+
+
+_EXPLICATIONS = {
+    Denial.NOT_HOLDER: "vous n'avez pas la parole",
+    Denial.NOTHING_TO_TAKE: "il n'y a rien à reprendre",
+    Denial.OWN_FLOOR: "vous avez déjà la parole",
+    Denial.COOLDOWN: "réquisition trop rapprochée de la précédente",
+}
