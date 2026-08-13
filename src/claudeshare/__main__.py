@@ -97,8 +97,13 @@ def main(argv: list[str] | None = None) -> int:
         help="dossier de travail de la session (défaut : dossier courant)",
     )
 
-    serve = sub.add_parser("serve", help="exposer un salon partagé")
-    serve.add_argument("--workspace", type=Path, default=Path.cwd())
+    serve = sub.add_parser("serve", help="exposer des salons partagés")
+    serve.add_argument(
+        "--workspace-root",
+        type=Path,
+        default=Path.cwd() / "workspaces",
+        help="racine sous laquelle tous les dossiers de salon sont confinés",
+    )
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument(
@@ -123,9 +128,15 @@ def _serve(args) -> int:
 
     from .server import create_app
 
-    workspace = args.workspace.resolve()
+    settings = Settings()
     try:
-        app = create_app(workspace=workspace, sandbox=not args.no_sandbox)
+        app = create_app(
+            workspace_root=args.workspace_root.resolve(),
+            settings=settings,
+            sandbox=not args.no_sandbox,
+            database_url=settings.database_url or None,
+            secret_key=settings.secret_key or None,
+        )
     except AuthModeError as exc:
         print(f"\x1b[31m{exc}\x1b[0m", file=sys.stderr)
         return 2

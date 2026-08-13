@@ -11,10 +11,11 @@ services:
       - "127.0.0.1:${CLAUDESHARE_PORT:-8765}:8765"
 
     volumes:
-      # Le dossier sur lequel l'agent travaille. C'est la seule partie de votre
-      # machine que le conteneur voit — le reste n'existe pas pour lui, et c'est
-      # la principale raison de le conteneuriser.
-      - "${CLAUDESHARE_WORKSPACE:-./workspace}:/workspace"
+      # Racine sous laquelle tous les dossiers de salon sont confinés. C'est la
+      # seule partie de votre machine que le conteneur voit — le reste n'existe
+      # pas pour lui, et c'est la principale raison de le conteneuriser.
+      # La base (identités, salons, appartenances) vit dans `.claudeshare/`.
+      - "${CLAUDESHARE_WORKSPACES:-./workspaces}:/workspaces"
 
       # Session d'abonnement du conteneur. On monte le home *entier* et non le
       # seul `~/.claude` : le CLI répartit son état entre `~/.claude/` et le
@@ -26,6 +27,15 @@ services:
 
     environment:
       CLAUDESHARE_AUTH_MODE: "${CLAUDESHARE_AUTH_MODE:-pilot}"
+      # Sans clé stable, les sessions navigateur sont perdues à chaque
+      # redémarrage (une clé éphémère est générée et un avertissement émis).
+      CLAUDESHARE_SECRET_KEY: "${CLAUDESHARE_SECRET_KEY:-}"
+      # Applications OAuth. Sans elles, personne ne peut se connecter : il n'y a
+      # volontairement aucun mode de contournement.
+      CLAUDESHARE_GITHUB_CLIENT_ID: "${CLAUDESHARE_GITHUB_CLIENT_ID:-}"
+      CLAUDESHARE_GITHUB_CLIENT_SECRET: "${CLAUDESHARE_GITHUB_CLIENT_SECRET:-}"
+      CLAUDESHARE_GOOGLE_CLIENT_ID: "${CLAUDESHARE_GOOGLE_CLIENT_ID:-}"
+      CLAUDESHARE_GOOGLE_CLIENT_SECRET: "${CLAUDESHARE_GOOGLE_CLIENT_SECRET:-}"
 
     security_opt:
       - no-new-privileges:true

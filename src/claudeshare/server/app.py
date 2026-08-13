@@ -2,31 +2,36 @@
 
 Pourquoi ASGI et pas WSGI : ClaudeShare n'est presque que des connexions
 longues, et WSGI n'a aucune notion de connexion bidirectionnelle persistante.
-Surtout, le superviseur de l'étape 1 est déjà de l'asyncio — sous ASGI il tourne
-dans *la même boucle* que les WebSockets, et pousser un delta vers les abonnés
-est un simple `await`, sans pont entre threads.
-
-En v1 il n'y a ni comptes ni permissions : le pseudo est déclaratif. L'étape 4
-remplace `?who=` par une véritable identité OAuth.
+Surtout, le superviseur est déjà de l'asyncio — sous ASGI il tourne dans *la
+même boucle* que les WebSockets, et pousser un delta vers les abonnés est un
+simple `await`, sans pont entre threads.
 """
 
 from __future__ import annotations
 
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 from claude_agent_sdk import CLINotFoundError, ProcessError
-from fastapi import FastAPI, HTTPException, Query, WebSocket
+from fastapi import FastAPI, WebSocket
+from starlette.middleware.sessions import SessionMiddleware
 
 from ..config import AuthMode, Settings, check_auth_mode, describe_auth
+from ..core.workspace import ensure_root
+from ..db.models import Room
+from ..db.session import Database, default_url
+from .api.rooms import build_rooms_router
+from .auth.identity import SessionSigner
+from .auth.oauth import ProviderConfig, build_oauth
+from .auth.routes import build_auth_router
+from .context import ServerContext
 from .room import RoomManager
 from .ws import serve_socket
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_ROOM = "principal"
 
 
 def _startup_hint(exc: Exception, settings: Settings, sandbox: bool) -> str:
@@ -40,7 +45,7 @@ def _startup_hint(exc: Exception, settings: Settings, sandbox: bool) -> str:
     if settings.auth_mode is AuthMode.PILOT:
         causes.append(
             "Cause la plus probable : aucune session d'abonnement ouverte.\n"
-            "  En local   : claude auth login\n"
+            "  En local     : claude auth login\n"
             "  En conteneur : docker compose run --rm claudeshare-login"
         )
     else:
@@ -60,35 +65,68 @@ def _startup_hint(exc: Exception, settings: Settings, sandbox: bool) -> str:
 
 def create_app(
     *,
-    workspace: Path,
+    workspace_root: Path,
     settings: Settings | None = None,
     sandbox: bool = True,
+    database_url: str | None = None,
+    secret_key: str | None = None,
+    public_https: bool = False,
 ) -> FastAPI:
-    settings = settings or Settings(workspace=workspace, sandbox=sandbox)
+    settings = settings or Settings(workspace=workspace_root, sandbox=sandbox)
     # Le mode d'authentification est vérifié au démarrage, jamais deviné en
     # cours de route : une clé API oubliée dans l'environnement basculerait la
     # facturation à l'usage sans le dire.
     check_auth_mode(settings)
 
-    manager = RoomManager()
+    root = ensure_root(workspace_root)
+    # Une clé éphémère invalide les sessions à chaque redémarrage. Acceptable en
+    # local, pas en déploiement : d'où l'avertissement.
+    if not secret_key:
+        secret_key = secrets.token_urlsafe(32)
+        logger.warning(
+            "CLAUDESHARE_SECRET_KEY absente — clé éphémère générée, les sessions "
+            "seront perdues au redémarrage."
+        )
+
+    db = Database(database_url or default_url(root / ".claudeshare"))
+    oauth, providers = build_oauth(
+        github=ProviderConfig(settings.github_client_id, settings.github_client_secret),
+        google=ProviderConfig(settings.google_client_id, settings.google_client_secret),
+    )
+
+    ctx = ServerContext(
+        settings=settings,
+        db=db,
+        signer=SessionSigner(secret_key),
+        oauth=oauth,
+        oauth_providers=providers,
+        rooms=RoomManager(),
+        workspace_root=root,
+        public_https=public_https,
+        sandbox=sandbox,
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        manager.create(DEFAULT_ROOM, workspace=workspace, title=workspace.name, sandbox=sandbox)
-        try:
-            await manager.start_all()
-        except (CLINotFoundError, ProcessError) as exc:
-            # Sans ça, un simple « pas connecté » ressort en trace de pile et
-            # coûte une heure à qui déploie.
-            raise RuntimeError(_startup_hint(exc, settings, sandbox)) from exc
-        logger.info("salon %s prêt sur %s — %s", DEFAULT_ROOM, workspace, describe_auth(settings))
+        logger.info(
+            "racine des workspaces : %s — %s — fournisseurs : %s",
+            root,
+            describe_auth(settings),
+            ", ".join(sorted(str(p) for p in providers)) or "aucun",
+        )
         try:
             yield
         finally:
-            await manager.aclose()
+            await ctx.aclose()
 
     app = FastAPI(title="ClaudeShare", lifespan=lifespan)
-    app.state.rooms = manager
+    app.state.ctx = ctx
+    # Authlib range l'état OAuth (`state`, `nonce`) dans la session Starlette :
+    # sans ce middleware, le rappel échoue à la vérification anti-CSRF.
+    app.add_middleware(SessionMiddleware, secret_key=secret_key, same_site="lax")
+
+    app.include_router(build_auth_router(ctx))
+    app.include_router(build_rooms_router(ctx))
 
     @app.get("/api/health")
     async def health() -> dict[str, Any]:
@@ -96,53 +134,60 @@ def create_app(
             "status": "ok",
             "auth_mode": str(settings.auth_mode),
             "sandbox": sandbox,
-            "rooms": [r.id for r in manager.list()],
+            "providers": sorted(str(p) for p in providers),
+            "live_rooms": [r.id for r in ctx.rooms.list()],
         }
 
-    @app.get("/api/rooms")
-    async def list_rooms() -> list[dict[str, Any]]:
-        return [
-            {
-                "id": room.id,
-                "title": room.title,
-                "present": room.present,
-                "busy": room.agent.busy,
-                "last_seq": room.log.last_seq,
-            }
-            for room in manager.list()
-        ]
-
-    @app.get("/api/rooms/{room_id}/audit")
-    async def audit(room_id: str) -> list[dict[str, Any]]:
-        """Trace des appels d'outils.
-
-        Angle mort assumé : un appel bloqué par une règle de refus n'atteint pas
-        le hook et n'apparaît donc pas ici. Le journal d'événements du salon, lui,
-        enregistre le résultat d'outil en erreur.
-        """
-        room = manager.get(room_id)
-        if room is None:
-            raise HTTPException(404, "salon inconnu")
-        return [
-            {
-                "at": r.at.isoformat(),
-                "author": r.author,
-                "turn_id": r.turn_id,
-                "tool": r.tool,
-                "decision": r.decision,
-                "reason": r.reason,
-            }
-            for r in room.audit
-        ]
-
     @app.websocket("/ws/rooms/{room_id}")
-    async def room_socket(
-        websocket: WebSocket, room_id: str, who: str = Query(default="anonyme")
-    ) -> None:
-        room = manager.get(room_id)
-        if room is None:
-            await websocket.close(code=4404)
-            return
-        await serve_socket(websocket, room, who[:64])
+    async def room_socket(websocket: WebSocket, room_id: str) -> None:
+        """Point d'entrée temps réel. Toujours authentifié, toujours membre."""
+        with ctx.db.session() as session:
+            principal = ctx.principal_ws(websocket, session)
+            if principal is None:
+                await websocket.close(code=4401)  # non authentifié
+                return
+
+            from .auth.identity import membership_of
+
+            if membership_of(session, room_id, principal.user_id) is None:
+                # Même code qu'un salon inexistant : distinguer les deux
+                # confirmerait l'existence du salon à un non-membre.
+                await websocket.close(code=4404)
+                return
+
+            record = session.get(Room, room_id)
+            if record is None or record.archived:
+                await websocket.close(code=4404)
+                return
+            detached = (record.id, record.title, record.workspace, record.session_id)
+
+        live = await _ensure_live(ctx, detached, sandbox)
+        try:
+            await serve_socket(websocket, live, principal.label)
+        finally:
+            ctx.remember_session(room_id)
 
     return app
+
+
+async def _ensure_live(ctx: ServerContext, detached: tuple, sandbox: bool):
+    """Monte la session du salon à la demande."""
+    room_id, title, workspace, session_id = detached
+    existing = ctx.rooms.get(room_id)
+    if existing is not None:
+        return existing
+
+    live = ctx.rooms.create(
+        room_id,
+        workspace=Path(workspace),
+        title=title,
+        sandbox=sandbox,
+        session_id=session_id,
+    )
+    try:
+        await live.agent.start()
+    except (CLINotFoundError, ProcessError) as exc:
+        await ctx.rooms.aclose()
+        raise RuntimeError(_startup_hint(exc, ctx.settings, sandbox)) from exc
+    ctx._started.add(room_id)
+    return live

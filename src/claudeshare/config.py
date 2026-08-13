@@ -47,6 +47,17 @@ class Settings(BaseSettings):
 
     auth_mode: AuthMode = AuthMode.PILOT
     workspace: Path = Field(default_factory=Path.cwd)
+    #: Clé de signature des cookies de session. Absente, une clé éphémère est
+    #: générée : les sessions ne survivent alors pas à un redémarrage.
+    secret_key: str = ""
+    #: Applications OAuth. Le serveur ClaudeShare est le seul client enregistré ;
+    #: un fournisseur non configuré n'est simplement pas proposé.
+    github_client_id: str = ""
+    github_client_secret: str = ""
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    database_url: str = ""
+
     #: Chemin explicite vers le CLI Claude Code. Laisser vide utilise celui
     #: embarqué dans le SDK, puis celui du PATH.
     cli_path: Path | None = None

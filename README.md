@@ -7,10 +7,10 @@ Claude Code packagé en bibliothèque — piloté avec les identifiants du CLI, 
 sur abonnement plutôt que sur l'API Messages.
 
 > [!WARNING]
-> **Projet en construction.** Le serveur n'a encore ni comptes ni permissions : le
-> pseudo est déclaratif et toute personne atteignant le port peut piloter un agent
-> qui a un shell sur la machine hôte. Il écoute sur `127.0.0.1` uniquement, et ça
-> doit le rester jusqu'aux étapes 4 à 6.
+> **Projet en construction.** L'authentification et le cloisonnement des salons
+> sont en place, mais les *droits à l'intérieur* d'un salon ne le sont pas encore
+> (étape 5) : tout membre peut y écrire, donc y faire exécuter du shell. Gardez
+> l'écoute sur `127.0.0.1` et n'invitez que des personnes de confiance.
 
 ## Démarrer
 
@@ -26,15 +26,45 @@ uv run claudeshare debug --workspace /chemin/vers/projet
 
 `Ctrl-C` interrompt le tour en cours, `Ctrl-D` quitte.
 
-**Salon partagé** :
+**Salons partagés** :
 
 ```bash
-uv run claudeshare serve --workspace /chemin/vers/projet --port 8765
+uv run claudeshare serve --workspace-root ./workspaces --port 8765
 curl -s http://127.0.0.1:8765/api/health
 ```
 
-Le serveur expose le WebSocket, mais l'interface web et le client terminal
-n'existent pas encore (étape 8).
+Tous les dossiers de salon sont confinés sous `--workspace-root`. Créer un salon
+revient à choisir ce que l'agent peut lire et écrire : sans ce confinement, ce
+serait n'importe quel dossier de la machine.
+
+Le serveur expose le WebSocket et l'API, mais l'interface web et le client
+terminal n'existent pas encore (étape 8).
+
+### Se connecter
+
+Il faut une application OAuth — **il n'y a volontairement aucun mode de
+contournement**, même pour le développement local. Ce serveur donne accès à un
+agent qui a un shell ; une porte « juste pour tester » est exactement le genre de
+chose qui survit jusqu'en production.
+
+Sur [github.com/settings/developers](https://github.com/settings/developers) →
+*New OAuth App*, avec pour URL de rappel :
+
+```
+http://127.0.0.1:8765/auth/github/callback
+```
+
+Puis dans un `.env` :
+
+```bash
+CLAUDESHARE_GITHUB_CLIENT_ID=...
+CLAUDESHARE_GITHUB_CLIENT_SECRET=...
+CLAUDESHARE_SECRET_KEY=$(openssl rand -base64 32)   # sinon les sessions sautent au redémarrage
+```
+
+Le serveur ClaudeShare est le **seul client OAuth enregistré** : un client
+terminal ne parle jamais à GitHub, il s'authentifie contre le serveur et repart
+avec un jeton porteur (`POST /auth/tokens`).
 
 ```bash
 uv run pytest -q
@@ -58,12 +88,15 @@ Elle est conservée dans un volume nommé, jamais dans l'image.
 **Lancer** :
 
 ```bash
-CLAUDESHARE_WORKSPACE=/chemin/vers/projet docker compose up --build
+CLAUDESHARE_WORKSPACES=/chemin/vers/racine docker compose up --build
 curl -s http://127.0.0.1:8765/api/health
 ```
 
 Le port est lié à `127.0.0.1` dans `docker-compose.yml`. Ne passez à `0.0.0.0`
-qu'une fois les étapes 4 à 6 faites.
+qu'une fois les étapes 5 et 6 faites, et derrière un terminateur TLS.
+
+Les identifiants OAuth et `CLAUDESHARE_SECRET_KEY` se passent par l'environnement
+(voir le service dans `docker-compose.yml`).
 
 ### Deux points à connaître
 
@@ -152,6 +185,9 @@ arrivant tardif récupère via l'instantané.
 | `core/broker.py` | diffusion cloisonnée par salon |
 | `protocol.py` | enveloppe WebSocket, source de vérité unique |
 | `server/room.py` · `ws.py` · `app.py` | salon, socket, application |
+| `server/auth/` | OAuth, sessions signées, jetons porteurs |
+| `core/workspace.py` | confinement des dossiers de salon |
+| `db/models.py` | personnes, salons, appartenances, rôles |
 
 ## État
 
@@ -160,12 +196,17 @@ arrivant tardif récupère via l'instantané.
 | 1. Pont SDK | ✅ |
 | 2. Serveur et journal | ✅ |
 | 3. Sécurité de l'exécution | ✅ |
-| 4. Identité OAuth et salons multiples | ⬜ |
+| 4. Identité OAuth et salons multiples | ✅ |
 | 5. Permissions (rôles, droits à la carte) | ⬜ |
 | 6. Invitations | ⬜ |
 | 7. Jeton de parole et priorités | ⬜ |
 | 8. Clients web et TUI | ⬜ |
 | 9. Hébergement | ⬜ |
+
+**Droits en attente** : les rôles sont créés dans chaque salon (propriétaire,
+modérateur, écrivain, lecteur) mais ne sont **pas encore appliqués** — l'étape 5
+branche la résolution `(rôle ∪ grants) − revokes` sur chaque handler. Aujourd'hui
+l'appartenance suffit à écrire.
 
 **Limites assumées en v1** : l'hôte est votre machine (les identifiants et les
 fichiers de session y sont) ; les salons sont épinglés à un process, le

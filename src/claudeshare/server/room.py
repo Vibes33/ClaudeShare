@@ -38,6 +38,7 @@ class Room:
         title: str = "",
         trust: TrustLevel = TrustLevel.PILOT,
         sandbox: bool = True,
+        session_id: str | None = None,
         supervisor: SessionSupervisor | None = None,
     ) -> None:
         self.id = room_id
@@ -55,6 +56,7 @@ class Room:
             sink=self._on_event,
             trust=trust,
             sandbox=sandbox,
+            session_id=session_id,
             audit=self._on_audit,
             shared=True,
         )

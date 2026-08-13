@@ -59,8 +59,8 @@ RUN ln -s /app/.venv/lib/python3.12/site-packages/claude_agent_sdk/_bundled/clau
 # Utilisateur non privilégié : l'agent exécute du shell, il n'a rien à faire en
 # root. `~/.claude` et le dossier de travail lui appartiennent.
 RUN useradd --create-home --uid 10001 claudeshare \
-    && mkdir -p /home/claudeshare/.claude /workspace \
-    && chown -R claudeshare:claudeshare /home/claudeshare /workspace /app
+    && mkdir -p /home/claudeshare/.claude /workspaces \
+    && chown -R claudeshare:claudeshare /home/claudeshare /workspaces /app
 
 USER claudeshare
 ENV HOME=/home/claudeshare
@@ -72,4 +72,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/api/health', timeout=3).status == 200 else 1)"
 
 ENTRYPOINT ["claudeshare"]
-CMD ["serve", "--workspace", "/workspace", "--host", "0.0.0.0", "--port", "8765"]
+CMD ["serve", "--workspace-root", "/workspaces", "--host", "0.0.0.0", "--port", "8765"]
