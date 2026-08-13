@@ -17,15 +17,45 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+from claude_agent_sdk import CLINotFoundError, ProcessError
 from fastapi import FastAPI, HTTPException, Query, WebSocket
 
-from ..config import Settings, check_auth_mode, describe_auth
+from ..config import AuthMode, Settings, check_auth_mode, describe_auth
 from .room import RoomManager
 from .ws import serve_socket
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_ROOM = "principal"
+
+
+def _startup_hint(exc: Exception, settings: Settings, sandbox: bool) -> str:
+    """Traduit un échec de démarrage du CLI en quelque chose d'actionnable."""
+    causes = ["Le CLI Claude Code n'a pas démarré."]
+
+    if isinstance(exc, CLINotFoundError):
+        causes.append("Binaire introuvable — vérifiez l'installation du SDK.")
+        return "\n".join(causes)
+
+    if settings.auth_mode is AuthMode.PILOT:
+        causes.append(
+            "Cause la plus probable : aucune session d'abonnement ouverte.\n"
+            "  En local   : claude auth login\n"
+            "  En conteneur : docker compose run --rm claudeshare-login"
+        )
+    else:
+        causes.append("Mode libre : vérifiez que ANTHROPIC_API_KEY est valide.")
+
+    if sandbox:
+        causes.append(
+            "Autre cause possible : le bac à sable n'a pas pu démarrer. Sous Docker,\n"
+            "  bubblewrap a besoin de `security_opt: seccomp:unconfined`, faute de quoi\n"
+            "  le serveur refuse de démarrer plutôt que d'exécuter du shell sans\n"
+            "  confinement. Sinon, lancez avec --no-sandbox."
+        )
+
+    causes.append(f"Erreur d'origine : {exc}")
+    return "\n".join(causes)
 
 
 def create_app(
@@ -45,7 +75,12 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         manager.create(DEFAULT_ROOM, workspace=workspace, title=workspace.name, sandbox=sandbox)
-        await manager.start_all()
+        try:
+            await manager.start_all()
+        except (CLINotFoundError, ProcessError) as exc:
+            # Sans ça, un simple « pas connecté » ressort en trace de pile et
+            # coûte une heure à qui déploie.
+            raise RuntimeError(_startup_hint(exc, settings, sandbox)) from exc
         logger.info("salon %s prêt sur %s — %s", DEFAULT_ROOM, workspace, describe_auth(settings))
         try:
             yield

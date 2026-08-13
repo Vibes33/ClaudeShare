@@ -1,0 +1,64 @@
+services:
+  claudeshare:
+    build: .
+    image: claudeshare:latest
+
+    ports:
+      # Volontairement lié à la boucle locale. Le serveur n'a encore ni comptes
+      # ni permissions : quiconque atteint ce port pilote un agent disposant
+      # d'un shell. Ne passez à `0.0.0.0` qu'une fois les étapes 4 à 6 faites,
+      # et derrière un terminateur TLS.
+      - "127.0.0.1:${CLAUDESHARE_PORT:-8765}:8765"
+
+    volumes:
+      # Le dossier sur lequel l'agent travaille. C'est la seule partie de votre
+      # machine que le conteneur voit — le reste n'existe pas pour lui, et c'est
+      # la principale raison de le conteneuriser.
+      - "${CLAUDESHARE_WORKSPACE:-./workspace}:/workspace"
+
+      # Session d'abonnement du conteneur. On monte le home *entier* et non le
+      # seul `~/.claude` : le CLI répartit son état entre `~/.claude/` et le
+      # fichier frère `~/.claude.json`, et n'en persister qu'une moitié le fait
+      # échouer au démarrage sur un état incohérent.
+      # Volume nommé, jamais dans l'image : à ouvrir une fois avec
+      # `docker compose run --rm claudeshare-login`.
+      - claude-home:/home/claudeshare
+
+    environment:
+      CLAUDESHARE_AUTH_MODE: "${CLAUDESHARE_AUTH_MODE:-pilot}"
+
+    security_opt:
+      - no-new-privileges:true
+      # Le bac à sable de Claude Code s'appuie sur bubblewrap, qui doit créer un
+      # espace de noms utilisateur. Le profil seccomp par défaut de Docker le
+      # refuse (le noyau, lui, l'autorise : c'est bien seccomp qui bloque), et
+      # le serveur échoue alors au démarrage à cause de `failIfUnavailable`.
+      #
+      # L'arbitrage, explicitement : on relâche le filtrage d'appels système
+      # *dans* le conteneur pour gagner le bac à sable, c'est-à-dire le
+      # **contrôle des sorties réseau** — la principale protection contre
+      # l'exfiltration. L'isolation du système de fichiers, elle, reste assurée
+      # par le conteneur, qui ne monte que le workspace, et le processus tourne
+      # en utilisateur non privilégié avec no-new-privileges.
+      #
+      # Si vous préférez conserver seccomp, retirez cette ligne et lancez le
+      # serveur avec `--no-sandbox` : le conteneur reste la frontière pour les
+      # fichiers, mais vous perdez le contrôle réseau.
+      - seccomp:unconfined
+
+    restart: unless-stopped
+
+  # Ouverture de session, une fois : `docker compose run --rm claudeshare-login`
+  claudeshare-login:
+    build: .
+    image: claudeshare:latest
+    profiles: ["setup"]
+    entrypoint: ["claude"]
+    command: ["setup-token"]
+    stdin_open: true
+    tty: true
+    volumes:
+      - claude-home:/home/claudeshare
+
+volumes:
+  claude-home:

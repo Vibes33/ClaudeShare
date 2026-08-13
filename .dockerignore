@@ -1,0 +1,25 @@
+# L'environnement virtuel de l'hôte contient un CLI compilé pour l'hôte
+# (Mach-O sur macOS). Le conteneur doit résoudre sa propre roue Linux.
+.venv/
+
+.git/
+.github/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+.env
+.env.*
+!.env.example
+
+.DS_Store
+.idea/
+.vscode/
+
+Dockerfile
+docker-compose.yml
+.dockerignore

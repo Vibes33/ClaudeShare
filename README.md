@@ -40,6 +40,49 @@ n'existent pas encore (étape 8).
 uv run pytest -q
 ```
 
+## Docker
+
+Le conteneur ne voit que le dossier de travail que vous montez : le reste de
+votre machine n'existe pas pour lui. C'est la principale raison de l'utiliser.
+
+**Ouvrir la session, une fois.** Le conteneur a sa propre session d'abonnement —
+sur macOS les identifiants de l'hôte sont dans le trousseau, qu'un conteneur
+Linux ne peut pas lire :
+
+```bash
+docker compose run --rm claudeshare-login
+```
+
+Elle est conservée dans un volume nommé, jamais dans l'image.
+
+**Lancer** :
+
+```bash
+CLAUDESHARE_WORKSPACE=/chemin/vers/projet docker compose up --build
+curl -s http://127.0.0.1:8765/api/health
+```
+
+Le port est lié à `127.0.0.1` dans `docker-compose.yml`. Ne passez à `0.0.0.0`
+qu'une fois les étapes 4 à 6 faites.
+
+### Deux points à connaître
+
+**`seccomp:unconfined` est activé par défaut.** Le bac à sable de Claude Code
+s'appuie sur bubblewrap, qui doit créer un espace de noms utilisateur ; le profil
+seccomp par défaut de Docker le refuse, et le serveur échoue alors au démarrage
+plutôt que d'exécuter du shell sans confinement. L'arbitrage est explicite : on
+relâche le filtrage d'appels système *dans* le conteneur pour gagner le
+**contrôle des sorties réseau**, principale protection contre l'exfiltration.
+L'isolation des fichiers reste assurée par le conteneur, et le processus tourne
+en utilisateur non privilégié.
+
+Pour conserver seccomp : retirez la ligne et lancez avec `--no-sandbox`. Le
+conteneur reste la frontière pour les fichiers, mais vous perdez le réseau.
+
+**L'image fait environ 1,5 Go**, dont ~290 Mo de CLI Claude Code embarqué dans la
+roue du SDK. La roue est spécifique à la plateforme, d'où le `.venv` exclu du
+contexte de build : le conteneur résout sa propre roue `manylinux`.
+
 ## Conditions d'utilisation
 
 La documentation du Agent SDK précise qu'Anthropic *n'autorise pas les
