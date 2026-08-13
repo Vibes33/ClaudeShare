@@ -22,6 +22,11 @@ tui = [
     "textual>=0.85",
     "websockets>=13",
 ]
+# Séparés de `server` : une installation locale sur SQLite n'a aucune raison de
+# tirer le pilote Postgres (une roue de plusieurs dizaines de Mo) ni un client
+# Redis dont elle ne se servira pas.
+postgres = ["psycopg[binary]>=3.2"]
+redis = ["redis>=5.0"]
 
 [project.scripts]
 claudeshare = "claudeshare.__main__:main"

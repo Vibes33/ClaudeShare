@@ -121,6 +121,40 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="désactiver le bac à sable (déconseillé : la session a un shell)",
     )
+    serve.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="refusé au-delà de 1 : un salon est une session épinglée à un process",
+    )
+    serve.add_argument(
+        "--behind-proxy",
+        action="store_true",
+        help="lire X-Forwarded-* (à n'activer que derrière un proxy de confiance)",
+    )
+    serve.add_argument(
+        "--public-https",
+        action="store_true",
+        help="le service est joignable en HTTPS : cookies Secure et HSTS",
+    )
+
+    migrate = sub.add_parser("migrate", help="appliquer les migrations de schéma")
+    migrate.add_argument(
+        "--database-url",
+        default="",
+        help="défaut : CLAUDESHARE_DATABASE_URL, sinon la base locale du workspace",
+    )
+    migrate.add_argument(
+        "--workspace-root",
+        type=Path,
+        default=Path.cwd() / "workspaces",
+        help="sert à retrouver la base locale quand aucune URL n'est donnée",
+    )
+    migrate.add_argument(
+        "--check",
+        action="store_true",
+        help="ne rien appliquer ; code de sortie 1 si la base est en retard",
+    )
 
     login = sub.add_parser("login", help="appairer ce terminal auprès d'un serveur")
     login.add_argument("--server", default=DEFAULT_SERVER, help=f"défaut : {DEFAULT_SERVER}")
@@ -142,6 +176,8 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(_debug(args.workspace.resolve()))
         if args.command == "serve":
             return _serve(args)
+        if args.command == "migrate":
+            return _migrate(args)
         if args.command == "login":
             return _login(args)
         if args.command == "join":
@@ -224,12 +260,60 @@ def _choisir_salon(credential) -> str | None:
     return None
 
 
+def _database_url(settings, workspace_root: Path, explicite: str = "") -> str:
+    from .db.session import default_url
+
+    from .core.workspace import ensure_root
+
+    if explicite:
+        return explicite
+    if settings.database_url:
+        return settings.database_url
+    return default_url(ensure_root(workspace_root.resolve()) / ".claudeshare")
+
+
+def _migrate(args) -> int:
+    from .db.migrate import current, head, pending, upgrade
+
+    settings = Settings()
+    url = _database_url(settings, args.workspace_root, args.database_url)
+
+    if args.check:
+        if pending(url):
+            print(
+                f"\x1b[33mbase en retard : {current(url) or 'aucune révision'} "
+                f"→ {head()}\x1b[0m",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"à jour ({head()})")
+        return 0
+
+    upgrade(url)
+    print(f"schéma à jour ({head()})")
+    return 0
+
+
 def _serve(args) -> int:
     import uvicorn
 
     from .server import create_app
 
     settings = Settings()
+    if args.workers > 1:
+        # Un salon *est* une session Claude Code, c'est-à-dire un processus CLI
+        # vivant dans un worker précis. Avec plusieurs workers, une connexion
+        # peut atterrir là où le salon n'existe pas : elle verrait les
+        # événements — Redis les distribue — mais ne pourrait rien soumettre.
+        # Refuser vaut mieux que laisser découvrir la moitié manquante en
+        # production. Voir l'en-tête de `core/broker.py`.
+        print(
+            "\x1b[31m--workers > 1 n'est pas supporté : les salons sont épinglés à un\n"
+            "process. Il manque un routage par salon devant les workers.\x1b[0m",
+            file=sys.stderr,
+        )
+        return 2
+
     try:
         app = create_app(
             workspace_root=args.workspace_root.resolve(),
@@ -237,6 +321,7 @@ def _serve(args) -> int:
             sandbox=not args.no_sandbox,
             database_url=settings.database_url or None,
             secret_key=settings.secret_key or None,
+            public_https=args.public_https,
         )
     except AuthModeError as exc:
         print(f"\x1b[31m{exc}\x1b[0m", file=sys.stderr)
@@ -248,7 +333,25 @@ def _serve(args) -> int:
             "sans confinement. N'invitez personne.\x1b[0m",
             file=sys.stderr,
         )
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    if args.host != "127.0.0.1" and not (args.public_https or args.behind_proxy):
+        print(
+            "\x1b[33m⚠ écoute hors de la boucle locale sans TLS annoncé. Les cookies\n"
+            "  de session voyageront en clair. Placez un terminateur TLS devant et\n"
+            "  relancez avec --behind-proxy --public-https.\x1b[0m",
+            file=sys.stderr,
+        )
+
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level="info",
+        # Sans ces deux options, le serveur voit l'adresse du proxy pour tout le
+        # monde : la limitation de débit devient un seau unique et partagé, et
+        # les journaux ne disent plus d'où viennent les requêtes.
+        proxy_headers=args.behind_proxy,
+        forwarded_allow_ips=settings.trusted_proxies or ("*" if args.behind_proxy else None),
+    )
     return 0
 
 

@@ -18,8 +18,10 @@
   img-src 'self' data:;
   connect-src 'self' ws: wss:;
   form-action 'self';
-  base-uri 'none';
-  frame-ancestors 'none'">
+  base-uri 'none'">
+<!-- `frame-ancestors` n'est pas ici : le navigateur l'ignore quand elle vient
+     d'un `<meta>`, et laisser une directive morte apprend à ignorer la console.
+     Elle est posée en en-tête par `server/middleware.py`, avec les autres. -->
 <link rel="stylesheet" href="/static/style.css">
 <script type="module" src="/static/app.js"></script>
 </head>

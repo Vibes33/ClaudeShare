@@ -1,0 +1,30 @@
+# Terminaison TLS devant ClaudeShare.
+#
+# Caddy plutôt qu'un nginx à configurer : il obtient et renouvelle le certificat
+# tout seul, et sa configuration par défaut pour un reverse proxy est déjà la
+# bonne — y compris la bascule WebSocket, qui n'a pas besoin d'être déclarée.
+#
+# `CLAUDESHARE_DOMAIN` doit pointer sur cette machine **avant** le premier
+# démarrage : l'obtention du certificat passe par une requête d'ACME sur le
+# port 80, et échoue si le nom ne résout pas encore.
+
+{$CLAUDESHARE_DOMAIN} {
+	encode zstd gzip
+
+	reverse_proxy claudeshare:8765 {
+		# Sans ces en-têtes, l'application voit l'adresse de Caddy pour tout le
+		# monde : la limitation de débit devient un seau unique et partagé, et
+		# les journaux ne disent plus d'où viennent les requêtes.
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Host {host}
+
+		# Un tour dure des minutes et le flux descend en continu : les délais
+		# par défaut couperaient une génération longue au milieu.
+		flush_interval -1
+		transport http {
+			read_timeout 0
+			write_timeout 0
+		}
+	}
+}

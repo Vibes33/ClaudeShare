@@ -9,6 +9,8 @@ simple `await`, sans pont entre threads.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import secrets
 from contextlib import asynccontextmanager
@@ -22,9 +24,11 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from ..config import AuthMode, Settings, check_auth_mode, describe_auth
+from ..core.broker import build_broadcaster
 from ..core.workspace import ensure_root
+from ..db.eventstore import DatabaseLogStore
 from ..db.models import Room
-from ..db.session import Database, default_url
+from ..db.session import Database, Schema, default_url
 from .api.invites import build_invites_router, build_redeem_router
 from .api.members import build_members_router
 from .api.roles import build_roles_router
@@ -34,6 +38,8 @@ from .auth.identity import SessionSigner
 from .auth.oauth import ProviderConfig, build_oauth
 from .auth.routes import build_auth_router
 from .context import ServerContext
+from .middleware import RateLimitMiddleware, SecurityHeadersMiddleware
+from .ratelimit import Rule
 from .room import RoomManager
 from .ws import serve_socket
 
@@ -41,6 +47,36 @@ logger = logging.getLogger(__name__)
 
 #: Client web servi tel quel — pas de build, pas d'étape de compilation.
 STATIC_DIR = Path(__file__).parent / "static"
+
+#: Limites de débit, du plus serré au plus large. L'ordre compte : le premier
+#: préfixe qui correspond gagne.
+#:
+#: Les deux premières lignes protègent des **secrets devinables** — un code
+#: d'appairage de huit caractères, un lien d'invitation. Ce ne sont pas des
+#: limites de confort : la vraie borne reste l'entropie du secret, mais sans
+#: elles une attaque par force brute est gratuite et silencieuse.
+#:
+#: Les valeurs sont très au-dessus d'un usage humain : un bureau derrière une
+#: même sortie NAT partage un seau, et la limite doit gêner le martèlement, pas
+#: l'affluence.
+RATE_RULES: tuple[tuple[str, Rule], ...] = (
+    ("/auth/cli/approve", Rule(limit=10, per_s=60)),
+    ("/api/invites/", Rule(limit=20, per_s=60)),
+    # Le sondage d'appairage est légitimement répétitif — toutes les deux
+    # secondes pendant dix minutes — d'où une limite bien plus haute.
+    ("/auth/cli/poll", Rule(limit=60, per_s=60)),
+    ("/auth/cli/start", Rule(limit=10, per_s=60)),
+    ("/auth/tokens", Rule(limit=10, per_s=60)),
+    ("/auth/", Rule(limit=30, per_s=60)),
+    # Les fichiers statiques sont nombreux au chargement d'une page, et ne
+    # coûtent rien : les compter avec les appels d'API ferait clignoter le
+    # client web au premier rafraîchissement.
+    ("/static/", Rule(limit=300, per_s=60)),
+)
+
+#: Filet général. Généreux : le WebSocket porte l'essentiel du trafic et a sa
+#: propre limite, par connexion.
+RATE_DEFAULT = Rule(limit=240, per_s=60)
 
 
 def _startup_hint(exc: Exception, settings: Settings, sandbox: bool) -> str:
@@ -97,21 +133,29 @@ def create_app(
             "seront perdues au redémarrage."
         )
 
-    db = Database(database_url or default_url(root / ".claudeshare"))
+    db = Database(
+        database_url or settings.database_url or default_url(root / ".claudeshare"),
+        schema=Schema(settings.db_schema),
+    )
     oauth, providers = build_oauth(
         github=ProviderConfig(settings.github_client_id, settings.github_client_secret),
         google=ProviderConfig(settings.google_client_id, settings.google_client_secret),
     )
 
+    # Le journal de collaboration passe par la base : un serveur qui redémarre
+    # retrouve la conversation, là où le contexte de Claude revient déjà par
+    # `resume`. Se souvenir d'un côté et pas de l'autre serait le pire des deux.
     ctx = ServerContext(
         settings=settings,
         db=db,
         signer=SessionSigner(secret_key),
         oauth=oauth,
         oauth_providers=providers,
-        rooms=RoomManager(),
+        rooms=RoomManager(
+            build_broadcaster(settings.redis_url), store=DatabaseLogStore(db)
+        ),
         workspace_root=root,
-        public_https=public_https,
+        public_https=public_https or settings.public_https,
         sandbox=sandbox,
     )
 
@@ -123,9 +167,13 @@ def create_app(
             describe_auth(settings),
             ", ".join(sorted(str(p) for p in providers)) or "aucun",
         )
+        entretien = asyncio.create_task(_entretenir(ctx))
         try:
             yield
         finally:
+            entretien.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await entretien
             await ctx.aclose()
 
     app = FastAPI(title="ClaudeShare", lifespan=lifespan)
@@ -133,6 +181,11 @@ def create_app(
     # Authlib range l'état OAuth (`state`, `nonce`) dans la session Starlette :
     # sans ce middleware, le rappel échoue à la vérification anti-CSRF.
     app.add_middleware(SessionMiddleware, secret_key=secret_key, same_site="lax")
+    app.add_middleware(SecurityHeadersMiddleware, https=ctx.public_https)
+    # Ajouté en dernier, donc exécuté en premier : une requête au-delà du débit
+    # doit être refusée avant qu'on ouvre une session de base pour l'identifier.
+    if settings.rate_limit:
+        app.add_middleware(RateLimitMiddleware, rules=RATE_RULES, default=RATE_DEFAULT)
 
     # Avant le routeur d'authentification : celui-ci se termine par un
     # `/auth/{name}` attrape-tout qui capterait `/auth/cli`. FastAPI apparie
@@ -211,6 +264,36 @@ def create_app(
         return FileResponse(STATIC_DIR / "index.html")
 
     return app
+
+
+#: Périodicité de l'élagage du journal. Rien d'urgent : c'est de la rétention,
+#: pas de la correction.
+MAINTENANCE_INTERVAL_S = 3600.0
+
+
+async def _entretenir(ctx: ServerContext) -> None:
+    """Élague le journal des salons connus, périodiquement.
+
+    Hors du chemin d'écriture, et c'est le point : compter les lignes à chaque
+    événement ferait payer la rétention à chaque jeton produit par le modèle.
+    """
+    retention = ctx.settings.event_retention
+    store = ctx.rooms.store
+    if not retention or store is None or not hasattr(store, "purge"):
+        return
+
+    while True:
+        await asyncio.sleep(MAINTENANCE_INTERVAL_S)
+        try:
+            with ctx.db.session() as session:
+                salons = [r.id for r in session.query(Room.id).all()]
+            for room_id in salons:
+                if efface := store.purge(room_id, retention):
+                    logger.info("journal de %s élagué : %d événements", room_id, efface)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("échec de l'entretien du journal")
 
 
 def _capabilities_of(ctx: ServerContext, room_id: str, user_id: str) -> frozenset[str]:

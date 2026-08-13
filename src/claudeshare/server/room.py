@@ -19,8 +19,8 @@ from ..agent import SessionSupervisor
 from ..agent.approval import ApprovalBroker
 from ..agent.hooks import AuditRecord
 from ..agent.toolpolicy import READ_ONLY_TOOLS, TrustLevel
-from ..core.broker import InProcessBroadcaster
-from ..core.eventlog import EventLog
+from ..core.broker import Broadcaster, InProcessBroadcaster
+from ..core.eventlog import EventLog, LogStore
 from ..core.floor import Floor, Outcome
 from ..events import Event, EventType
 from ..protocol import ServerMessage, envelope
@@ -50,7 +50,7 @@ class Room:
         room_id: str,
         *,
         workspace: Path,
-        broker: InProcessBroadcaster,
+        broker: Broadcaster,
         title: str = "",
         trust: TrustLevel = TrustLevel.PILOT,
         sandbox: bool = True,
@@ -58,11 +58,14 @@ class Room:
         supervisor: SessionSupervisor | None = None,
         floor: Floor | None = None,
         approval_timeout: float | None = None,
+        store: LogStore | None = None,
     ) -> None:
         self.id = room_id
         self.title = title or room_id
         self.workspace = workspace
-        self.log = EventLog()
+        # Sans magasin, le journal vit en mémoire et meurt avec le processus.
+        # C'est ce qu'on veut pour les tests et une session locale jetable.
+        self.log = EventLog(room_id=room_id, store=store)
         self.broker = broker
         self.floor = floor or Floor()
         #: Dernier état du jeton annoncé au salon. Sert à ne diffuser que les
@@ -176,13 +179,19 @@ class Room:
         Les `partials` sont à **remplacer** côté client, pas à concaténer : sans
         ça, se reconnecter en plein tour duplique le texte déjà reçu.
         """
+        rejeu = self.log.since(last_seq)
         return envelope(
             ServerMessage.SNAPSHOT,
             self.id,
             {
                 "title": self.title,
                 "last_seq": self.log.last_seq,
-                "events": [e.to_dict() for e in self.log.since(last_seq)],
+                "events": rejeu.events,
+                # Le début de l'historique manque. Dit explicitement, parce
+                # qu'une conversation qui commence au milieu sans le signaler est
+                # exactement le trou silencieux qu'on passe le reste du protocole
+                # à éviter.
+                "truncated": rejeu.truncated,
                 "partials": self.log.partials(),
                 "present": self.present,
                 "busy": self.agent.busy,
@@ -316,13 +325,18 @@ class RoomManager:
     permettra de lever.
     """
 
-    def __init__(self, broker: InProcessBroadcaster | None = None) -> None:
+    def __init__(
+        self, broker: Broadcaster | None = None, *, store: LogStore | None = None
+    ) -> None:
         self.broker = broker or InProcessBroadcaster()
+        #: Persistance du journal, partagée par tous les salons du process.
+        self.store = store
         self._rooms: dict[str, Room] = {}
 
     def create(self, room_id: str, *, workspace: Path, **kwargs: Any) -> Room:
         if room_id in self._rooms:
             raise ValueError(f"le salon {room_id} existe déjà")
+        kwargs.setdefault("store", self.store)
         room = Room(room_id, workspace=workspace, broker=self.broker, **kwargs)
         self._rooms[room_id] = room
         return room

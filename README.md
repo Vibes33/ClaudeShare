@@ -7,10 +7,11 @@ Claude Code packagé en bibliothèque — piloté avec les identifiants du CLI, 
 sur abonnement plutôt que sur l'API Messages.
 
 > [!WARNING]
-> **Projet en construction.** Tout est là — serveur, droits, invitations, jeton
-> de parole, client web et client terminal. Il manque l'hébergement (étape 9) :
-> ni TLS, ni limitation de débit, ni persistance du journal. Gardez l'écoute sur
-> `127.0.0.1`, rien n'a été éprouvé en exposition réelle.
+> **Lisez la section « Conditions d'utilisation » avant d'ouvrir ce service à
+> d'autres personnes.** Faire consommer votre abonnement Claude par des tiers
+> est le motif encadré par Anthropic ; le mode pilote par défaut existe pour ça.
+> Et rappelez-vous ce que vous partagez : un agent qui a `Bash`, `Read` et
+> `Write` sur la machine hôte.
 
 ## Démarrer
 
@@ -18,9 +19,10 @@ sur abonnement plutôt que sur l'API Messages.
 uv sync --extra server --extra tui
 ```
 
-L'extra `server` porte l'hôte, `tui` le client terminal. Ils sont séparés pour
-qu'on puisse installer le client sans traîner FastAPI et SQLAlchemy — la suite
-de tests, elle, a besoin des deux.
+L'extra `server` porte l'hôte, `tui` le client terminal, `postgres` et `redis`
+le déploiement. Ils sont séparés pour qu'on puisse installer le client sans
+traîner FastAPI, ni l'hôte local sans tirer un pilote Postgres — la suite de
+tests, elle, a besoin de `server` et `tui`.
 
 **Session locale, seul** — le chemin utilisable aujourd'hui :
 
@@ -118,11 +120,10 @@ CLAUDESHARE_WORKSPACES=/chemin/vers/racine docker compose up --build
 curl -s http://127.0.0.1:8765/api/health
 ```
 
-Le port est lié à `127.0.0.1` dans `docker-compose.yml`. Ne passez à `0.0.0.0`
-qu'après l'étape 9, et derrière un terminateur TLS.
+Le port est lié à `127.0.0.1` : `docker-compose.yml` seul est le mode « essayer
+chez soi ». Pour exposer, voir la section suivante.
 
-Les identifiants OAuth et `CLAUDESHARE_SECRET_KEY` se passent par l'environnement
-(voir le service dans `docker-compose.yml`).
+La configuration passe par l'environnement — copiez `.env.example` en `.env`.
 
 ### Deux points à connaître
 
@@ -141,6 +142,89 @@ conteneur reste la frontière pour les fichiers, mais vous perdez le réseau.
 **L'image fait environ 1,5 Go**, dont ~290 Mo de CLI Claude Code embarqué dans la
 roue du SDK. La roue est spécifique à la plateforme, d'où le `.venv` exclu du
 contexte de build : le conteneur résout sa propre roue `manylinux`.
+
+## Exposer le service
+
+```bash
+cp .env.example .env    # domaine, mot de passe Postgres, OAuth, clé de session
+docker compose -f docker-compose.yml -f docker-compose.deploy.yml up -d --build
+```
+
+La surcouche ajoute Postgres, Redis et Caddy, retire la publication directe du
+port, et bascule le serveur en migrations + cookies `Secure` + HSTS. Deux
+fichiers plutôt qu'un profil : l'essai local et le déploiement ne diffèrent pas
+seulement par les services présents, mais par la configuration du serveur
+lui-même — et un profil ne peut pas changer l'environnement d'un service.
+
+Le nom de domaine doit résoudre **avant** le premier démarrage : Caddy obtient
+son certificat par une requête ACME sur le port 80, qui échoue sinon.
+
+### Ce que l'exposition change
+
+| | Local | Exposé |
+|---|---|---|
+| Base | SQLite dans le workspace | Postgres |
+| Schéma | `create_all` | `alembic upgrade head` |
+| Diffusion | mémoire | Redis |
+| Cookies | ordinaires | `Secure`, plus HSTS |
+| Adresse du client | directe | `X-Forwarded-For`, via Caddy |
+
+**`X-Forwarded-For` n'est cru que derrière `--behind-proxy`.** Sans cette
+option, le serveur voit l'adresse de Caddy pour tout le monde : la limitation de
+débit devient un seau unique et partagé, et un seul client abusif prive alors
+tous les autres. Avec, mais sans que Caddy soit réellement le seul à pouvoir
+joindre le port, n'importe qui peut se déclarer l'adresse qu'il veut. Les deux
+erreurs sont symétriques, d'où l'avertissement au démarrage quand on écoute hors
+de la boucle locale sans annoncer de TLS.
+
+### Migrations
+
+Le schéma s'obtient de deux façons : `create_all` en local et dans les tests —
+exécuter la chaîne de migrations à chaque base éphémère coûterait plus que toute
+la suite — et Alembic en déploiement, seul endroit où une migration ratée coûte
+quelque chose.
+
+Deux chemins vers le même schéma divergent à la première colonne ajoutée sans
+révision. `tests/test_migrations.py` construit les deux et les compare ; c'est ce
+qui rend l'arbitrage tenable.
+
+```bash
+uv run claudeshare migrate --check    # code 1 si la base est en retard
+uv run claudeshare migrate
+```
+
+Le déploiement applique les migrations au démarrage
+(`CLAUDESHARE_DB_SCHEMA=migrate`). Après un changement de modèle :
+
+```bash
+uv run python -c "from alembic import command; from claudeshare.db.migrate import alembic_config; \
+  command.revision(alembic_config('sqlite:///tmp.db'), message='...', autogenerate=True)"
+```
+
+### Toute la suite tourne aussi sur Postgres
+
+Le schéma n'utilise aucun type propre à un dialecte, mais l'affirmer ne suffit
+pas :
+
+```bash
+docker run -d --name pg -e POSTGRES_PASSWORD=test -e POSTGRES_USER=cs \
+    -e POSTGRES_DB=cs -p 55432:5432 postgres:17-alpine
+CLAUDESHARE_TEST_DATABASE_URL=postgresql+psycopg://cs:test@127.0.0.1:55432/cs \
+    uv run pytest -q
+```
+
+Ce n'est pas le mode par défaut : SQLite tient toute la suite en huit secondes,
+et attendre une base réseau à chaque test découragerait de la lancer.
+
+### Un seul worker, et c'est explicite
+
+`serve --workers 2` est **refusé**. Un salon *est* une session Claude Code,
+c'est-à-dire un processus CLI vivant dans un worker précis : une connexion qui
+atterrit ailleurs verrait passer les événements — Redis les distribue — mais ne
+pourrait rien soumettre. Redis règle la diffusion, pas l'affinité.
+
+Ce qui manque pour de vrai est un routage par salon devant les workers. Refuser
+vaut mieux que laisser découvrir la moitié manquante en production.
 
 ## Conditions d'utilisation
 
@@ -181,6 +265,27 @@ seule :
 Le bac à sable **n'isole que les sous-processus Bash** : `Read`/`Edit`/`Write`
 passent par le système de permissions. Une règle `Read(//**/.ssh/**)` n'empêche
 donc pas `cat ~/.ssh/id_rsa` — c'est le trou que le hook ferme.
+
+### Débit et en-têtes
+
+Deux menaces, deux réglages. **Deviner un secret** — un code d'appairage fait
+huit caractères, un lien d'invitation reste un secret porteur : ces routes sont
+les plus serrées du fichier. La vraie borne y demeure l'entropie du secret, mais
+sans limite l'attaque est gratuite et silencieuse. **Épuiser l'hôte** — un client
+en boucle n'ouvre rien, mais occupe la boucle et le pool pour tout le monde ; le
+WebSocket a sa propre limite, par connexion.
+
+Un seau à jetons plutôt qu'un compteur par fenêtre : un compteur autorise deux
+fois la limite à cheval sur une frontière, et remet tous les clients à zéro au
+même instant — ce qui les synchronise au lieu de les étaler.
+
+La limitation est **en mémoire, donc par processus**, et la table des seaux est
+bornée : sans borne, varier son adresse ferait grossir la table indéfiniment, et
+la limitation deviendrait elle-même le moyen d'épuiser l'hôte.
+
+Les en-têtes de sécurité sont posés sur **toutes** les réponses, API comprise :
+la balise `<meta>` des pages statiques ne protège que les pages qui la portent,
+et `frame-ancestors` y est de toute façon ignoré par le navigateur.
 
 *Angle mort connu :* un appel bloqué par une règle de refus n'atteint pas le hook
 et n'apparaît pas dans `/api/rooms/{id}/audit`. Le journal d'événements du salon,
@@ -385,26 +490,40 @@ seule raison pour laquelle ce fichier a le droit d'exister.
 ## Architecture
 
 ```
-navigateur ─┐
-            ├─ serveur ASGI ─┬─ RoomManager ── ClaudeSDKClient ──► abonnement
-   TUI ─────┘   (WebSocket)  ├─ EventLog (seq)
-                             └─ Broadcaster
+navigateur ─┐   ┌────────── Caddy (TLS) ──────────┐
+            ├───┤  serveur ASGI                    │
+   TUI ─────┘   │   ├─ RoomManager ── ClaudeSDKClient ──► abonnement
+                │   ├─ EventLog (seq) ──► SQLite | Postgres
+                │   └─ Broadcaster ─────► mémoire | Redis
+                └──────────────────────────────────┘
 ```
 
 **Un salon = une session Claude Code** avec son dossier de travail.
 
-Deux journaux, à ne pas confondre : la **session SDK** possède le contexte du
-modèle (reprise par `resume`) ; le **journal d'événements** enregistre la
+Deux journaux, à ne pas confondre — et les deux survivent maintenant à un
+redémarrage, ce qui n'était pas un détail : la **session SDK** possède le
+contexte du modèle (reprise par `resume`) ; le **journal d'événements** enregistre la
 collaboration et sert au rejeu à la reconnexion. Les deltas de streaming ne sont
 jamais persistés — diffusés en direct, accumulés dans un tampon volatile qu'un
-arrivant tardif récupère via l'instantané.
+arrivant tardif récupère via l'instantané. Les écrire ferait des milliers de
+lignes par tour pour un texte que le message final contient déjà en entier.
+
+Un serveur qui redémarrait perdait toute la conversation partagée alors que le
+contexte de Claude, lui, revenait : un modèle qui se souvient face à une
+interface amnésique est la pire des deux moitiés. Le rejeu est borné, et une
+troncature est **annoncée** dans l'instantané — un trou tu serait exactement ce
+que le dédoublonnage sur `seq` sert à éviter partout ailleurs. Un entretien
+horaire élague au-delà de la rétention configurée, hors du chemin d'écriture.
 
 | Module | Rôle |
 |---|---|
 | `agent/supervisor.py` | pilote une session : streaming, `resume`, interruption |
 | `agent/toolpolicy.py` · `sandbox.py` · `hooks.py` | les trois couches de défense |
-| `core/eventlog.py` | journal avec `seq` monotone |
-| `core/broker.py` | diffusion cloisonnée par salon |
+| `core/eventlog.py` | journal avec `seq` monotone, magasin optionnel |
+| `db/eventstore.py` | persistance du journal, rejeu borné, rétention |
+| `db/migrate.py` · `db/migrations/` | migrations Alembic, pilotées depuis le code |
+| `core/broker.py` | diffusion cloisonnée par salon — mémoire ou Redis |
+| `server/ratelimit.py` · `middleware.py` | seau à jetons, en-têtes de sécurité |
 | `protocol.py` | enveloppe WebSocket, source de vérité unique |
 | `server/room.py` · `ws.py` · `app.py` | salon, socket, application |
 | `server/auth/` | OAuth, sessions signées, jetons porteurs |
@@ -432,10 +551,26 @@ arrivant tardif récupère via l'instantané.
 | 6. Invitations | ✅ |
 | 7. Jeton de parole et priorités | ✅ |
 | 8. Clients web et TUI | ✅ |
-| 9. Hébergement | ⬜ |
+| 9. Hébergement | ✅ |
 
-**Limites assumées en v1** : l'hôte est votre machine (les identifiants et les
-fichiers de session y sont) ; les salons sont épinglés à un process, le
-multi-worker demandera un pub/sub Redis derrière l'interface `Broadcaster` ; le
-journal de collaboration est en mémoire et ne survit pas à un redémarrage — le
-contexte de Claude, lui, est retrouvé par `resume`.
+### Limites assumées
+
+**L'hôte est une machine sur laquelle vous avez fait `claude login`.** Les
+identifiants d'abonnement et les fichiers de session y vivent. « Déployer »
+signifie donc exposer cette machine-là — ce que fait la surcouche `deploy` — et
+non lancer le service sur une plateforme sans état. Pour un hébergement
+distant, il faut une machine dédiée sur laquelle vous ouvrez la session.
+
+**Un seul worker.** Les salons sont épinglés à un process parce qu'un salon est
+une session Claude Code. Redis partage la diffusion mais pas l'affinité ;
+`serve` refuse `--workers > 1` plutôt que de laisser découvrir la moitié
+manquante en production. Ce qui manque est un routage par salon devant les
+workers.
+
+**Une identité par fournisseur.** Un compte GitHub et un compte Google de la
+même personne restent deux identités ; la fusion demanderait une notion de
+compte séparée de l'identité.
+
+**La limitation de débit est par processus.** Suffisant contre l'épuisement,
+approximatif contre le devinage de secret — où la vraie borne reste l'entropie
+du secret. Une limite partagée demanderait Redis, comme la diffusion.

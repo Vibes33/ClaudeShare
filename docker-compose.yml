@@ -4,10 +4,10 @@ services:
     image: claudeshare:latest
 
     ports:
-      # Volontairement lié à la boucle locale. Le serveur n'a encore ni comptes
-      # ni permissions : quiconque atteint ce port pilote un agent disposant
-      # d'un shell. Ne passez à `0.0.0.0` qu'une fois les étapes 4 à 6 faites,
-      # et derrière un terminateur TLS.
+      # Boucle locale : ce fichier seul est le mode « essayer chez soi ».
+      # Quiconque atteint ce port pilote un agent qui a un shell — l'exposer
+      # demande une terminaison TLS et une identité, c'est-à-dire la surcouche
+      # `docker-compose.deploy.yml`, qui retire cette publication.
       - "127.0.0.1:${CLAUDESHARE_PORT:-8765}:8765"
 
     volumes:
@@ -36,6 +36,11 @@ services:
       CLAUDESHARE_GITHUB_CLIENT_SECRET: "${CLAUDESHARE_GITHUB_CLIENT_SECRET:-}"
       CLAUDESHARE_GOOGLE_CLIENT_ID: "${CLAUDESHARE_GOOGLE_CLIENT_ID:-}"
       CLAUDESHARE_GOOGLE_CLIENT_SECRET: "${CLAUDESHARE_GOOGLE_CLIENT_SECRET:-}"
+      # Base et diffusion : par défaut SQLite dans le workspace monté, et
+      # diffusion en mémoire. `docker-compose.deploy.yml` remplace les deux.
+      CLAUDESHARE_DATABASE_URL: "${CLAUDESHARE_DATABASE_URL:-}"
+      CLAUDESHARE_REDIS_URL: "${CLAUDESHARE_REDIS_URL:-}"
+      CLAUDESHARE_DB_SCHEMA: "${CLAUDESHARE_DB_SCHEMA:-create}"
 
     security_opt:
       - no-new-privileges:true

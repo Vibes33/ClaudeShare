@@ -92,6 +92,8 @@ class ClaudeShareTUI(App):
         if type_ == ServerMessage.SNAPSHOT:
             self.sub_title = self.view.title
             self._dirty |= set(self.view.order)
+            if self.view.truncated:
+                self._message = "⚠ début de l'historique tronqué par le serveur"
         elif type_ == ServerMessage.ERROR:
             d = frame.get("data") or {}
             retard = f" (réessayez dans {d['retry_in']} s)" if d.get("retry_in") else ""
@@ -99,8 +101,10 @@ class ClaudeShareTUI(App):
         elif type_ == ServerMessage.QUEUED:
             # Le serveur ne garde pas un prompt refusé — il refuse de décider à
             # la place de quelqu'un que ce qu'il a écrit il y a dix minutes est
-            # toujours ce qu'il veut envoyer. On le lui rend donc dans le champ.
-            self.query_one("#prompt", Input).value = self._brouillon
+            # toujours ce qu'il veut envoyer. On le lui rend donc dans le champ,
+            # s'il est encore monté : une trame peut arriver pendant l'arrêt.
+            if champs := self.query("#prompt"):
+                champs.first(Input).value = self._brouillon
             self._message = f"En file — position {self.view.queued}. Message rendu."
         if turn_id:
             self._dirty.add(turn_id)
@@ -111,11 +115,25 @@ class ClaudeShareTUI(App):
     # -------------------------------------------------------------- rendu
 
     def _peindre(self) -> None:
-        self._peindre_cote()
+        """Repeint ce qui a changé. Silencieux si l'écran n'est pas là.
+
+        Le rafraîchissement périodique démarre avec l'application et survit à
+        son démontage : des tics tombent donc de part et d'autre de la fenêtre
+        où les widgets existent. Aller les chercher par `query_one` y lève
+        `NoMatches`, qui remonte depuis le minuteur et tue l'application — au
+        démarrage, c'est-à-dire au pire moment. Un tic sans écran n'a rien à
+        peindre, ce n'est pas une erreur.
+        """
+        cotes = self.query("#cote_contenu")
+        transcripts = self.query("#transcript")
+        if not cotes or not transcripts:
+            return
+
+        cotes.first(Static).update(_rendre_cote(self.view, self._statut, self._message))
         if not self._dirty:
             return
 
-        transcript = self.query_one("#transcript", VerticalScroll)
+        transcript = transcripts.first(VerticalScroll)
         # Ne suivre le flux que si on y était déjà : arracher quelqu'un à sa
         # lecture de l'historique parce qu'un jeton vient d'arriver est le
         # défaut classique des clients de discussion.
@@ -136,9 +154,6 @@ class ClaudeShareTUI(App):
 
         if au_bas:
             transcript.scroll_end(animate=False)
-
-    def _peindre_cote(self) -> None:
-        self.query_one("#cote_contenu", Static).update(_rendre_cote(self.view, self._statut, self._message))
 
     # --------------------------------------------------------- intentions
 

@@ -34,11 +34,18 @@ from ..protocol import (
     error,
     parse_client_message,
 )
+from .ratelimit import RateLimiter, Rule
 from .room import Room
 
 logger = logging.getLogger(__name__)
 
 MAX_PROMPT_CHARS = 32_000
+
+#: Intentions acceptées par connexion. Un participant en envoie quelques-unes
+#: par minute ; cette limite ne gêne que le client en boucle, qui occuperait
+#: sinon la boucle du salon pour tout le monde. Par connexion et non par
+#: personne : ouvrir plusieurs onglets est légitime.
+WS_RATE = Rule(limit=120, per_s=60)
 
 
 async def serve_socket(
@@ -127,8 +134,18 @@ async def _pump_up(
     priority: Callable[[], int],
 ) -> None:
     """Socket → intentions traitées par le salon."""
+    debit = RateLimiter(WS_RATE)
+
     while True:
         raw = await websocket.receive_json()
+
+        verdict = debit.check(who)
+        if not verdict.allowed:
+            refus = error(room.id, "rate_limited", "trop d'intentions, ralentissez")
+            refus["data"]["retry_after"] = verdict.retry_after
+            await websocket.send_json(refus)
+            continue
+
         try:
             kind, data = parse_client_message(raw)
         except ProtocolError as exc:

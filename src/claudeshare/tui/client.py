@@ -78,6 +78,10 @@ class RoomView:
     order: list[str] = field(default_factory=list)
     #: Place dans la file quand un prompt n'est pas parti. None sinon.
     queued: int | None = None
+    #: Le serveur a coupé le début de l'historique. Affiché, jamais tu : une
+    #: conversation qui commence au milieu sans le dire est exactement le trou
+    #: silencieux que le reste du protocole s'emploie à éviter.
+    truncated: bool = False
 
     # ------------------------------------------------------------- lecture
 
@@ -154,6 +158,7 @@ class RoomView:
         self.present = list(data.get("present") or [])
         self.floor = data.get("floor") or self.floor
         self.approvals = {d["approval_id"]: d for d in data.get("approvals") or []}
+        self.truncated = bool(data.get("truncated"))
 
         if not reprise:
             self.turns = {}

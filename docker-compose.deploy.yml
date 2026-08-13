@@ -1,0 +1,103 @@
+# Surcouche de déploiement : Postgres, Redis, TLS.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.deploy.yml up -d
+#
+# Deux fichiers plutôt que des profils : l'essai local et le déploiement ne
+# diffèrent pas seulement par les services présents, mais par la configuration
+# du serveur lui-même — base, diffusion, TLS, écoute. Un profil ne peut pas
+# changer l'environnement d'un service, et le faire à coups de variables
+# conditionnelles donnerait un fichier que personne ne relit.
+#
+# ⚠ **Ce fichier expose le service sur Internet.** Relisez d'abord la section
+# « Conditions d'utilisation » du README : faire consommer votre abonnement par
+# d'autres personnes est le motif encadré par Anthropic. Un déploiement ouvert
+# se fait en mode libre (`CLAUDESHARE_AUTH_MODE=free`, clé API) ou entre gens
+# dont vous répondez.
+
+services:
+  claudeshare:
+    ports: !override []   # plus rien en direct : tout passe par Caddy
+
+    environment:
+      CLAUDESHARE_DATABASE_URL: "postgresql+psycopg://claudeshare:${POSTGRES_PASSWORD:?mot de passe Postgres requis}@postgres:5432/claudeshare"
+      # Le schéma vient des migrations, pas de `create_all` : c'est le seul
+      # endroit où une migration ratée coûte quelque chose, donc le seul où on
+      # veut un historique et un `downgrade`.
+      CLAUDESHARE_DB_SCHEMA: "migrate"
+      CLAUDESHARE_REDIS_URL: "redis://redis:6379/0"
+      # Conditionne le `Secure` des cookies et l'en-tête HSTS. Vrai parce que
+      # Caddy termine réellement le TLS devant.
+      CLAUDESHARE_PUBLIC_HTTPS: "true"
+      # Seul Caddy peut joindre le port du serveur sur ce réseau : lui faire
+      # confiance pour `X-Forwarded-For` est exact ici, et faux dès qu'on
+      # republie le port en direct.
+      CLAUDESHARE_TRUSTED_PROXIES: "*"
+
+    command:
+      - "serve"
+      - "--workspace-root"
+      - "/workspaces"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8765"
+      - "--behind-proxy"
+      - "--public-https"
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: claudeshare
+      POSTGRES_USER: claudeshare
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?mot de passe Postgres requis}"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    # Jamais publié : la base n'a aucune raison d'être joignable de l'extérieur.
+    expose:
+      - "5432"
+    healthcheck:
+      # `depends_on` sans ça démarre le serveur avant que Postgres accepte les
+      # connexions, et les migrations échouent au premier lancement.
+      test: ["CMD-SHELL", "pg_isready -U claudeshare -d claudeshare"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:8-alpine
+    # Diffusion uniquement : aucun état à préserver, donc pas de persistance et
+    # une éviction franche si la mémoire venait à manquer.
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory-policy", "noeviction"]
+    expose:
+      - "6379"
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3
+    environment:
+      CLAUDESHARE_DOMAIN: "${CLAUDESHARE_DOMAIN:?nom de domaine requis pour le certificat}"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Les certificats obtenus. Sans ce volume, chaque redémarrage en
+      # redemande — et Let's Encrypt limite le nombre de demandes par semaine.
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - claudeshare
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  caddy-data:
+  caddy-config:

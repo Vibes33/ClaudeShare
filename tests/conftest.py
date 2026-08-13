@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -103,6 +104,36 @@ class Harness:
         return {"Authorization": f"Bearer {secret}"}
 
 
+def database_url(tmp_path: Path) -> str:
+    """Base de la suite : SQLite éphémère, ou celle qu'on lui impose.
+
+    `CLAUDESHARE_TEST_DATABASE_URL` fait tourner les mêmes tests sur Postgres.
+    Le schéma est remis à neuf entre chaque test — c'est ce que donne
+    gratuitement un fichier SQLite jetable, et ce qu'il faut demander
+    explicitement ailleurs :
+
+        docker run -d --name pg -e POSTGRES_PASSWORD=test -e POSTGRES_USER=cs \\
+            -e POSTGRES_DB=cs -p 55432:5432 postgres:17-alpine
+        CLAUDESHARE_TEST_DATABASE_URL=postgresql+psycopg://cs:test@127.0.0.1:55432/cs \\
+            uv run pytest
+
+    Hors CI, ce n'est pas le mode par défaut : SQLite tient toute la suite en
+    huit secondes, et attendre une base réseau à chaque test découragerait de la
+    lancer.
+    """
+    if impose := os.environ.get("CLAUDESHARE_TEST_DATABASE_URL"):
+        from sqlalchemy import create_engine
+
+        from claudeshare.db.models import Base
+        from claudeshare.db.session import normalize_url
+
+        moteur = create_engine(normalize_url(impose))
+        Base.metadata.drop_all(moteur)
+        moteur.dispose()
+        return impose
+    return f"sqlite:///{tmp_path / 'test.db'}"
+
+
 @pytest.fixture
 def harness(tmp_path: Path, monkeypatch) -> Harness:
     """Application réelle sur base éphémère, session Claude factice."""
@@ -121,7 +152,7 @@ def harness(tmp_path: Path, monkeypatch) -> Harness:
 
     app = create_app(
         workspace_root=tmp_path / "workspaces",
-        database_url=f"sqlite:///{tmp_path / 'test.db'}",
+        database_url=database_url(tmp_path),
         secret_key=SECRET,
     )
     return Harness(app, app.state.ctx, fake)

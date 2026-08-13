@@ -26,7 +26,7 @@ def test_les_deltas_ne_sont_jamais_journalises():
     log = EventLog()
     assert log.append(delta("t1", "bon")) is None
     assert log.last_seq == 0
-    assert log.since(0) == []
+    assert log.since(0).events == []
 
 
 def test_les_deltas_alimentent_le_tampon_du_tour():
@@ -55,9 +55,18 @@ def test_since_ne_renvoie_que_le_manquant():
     log = EventLog()
     for i in range(5):
         log.append(message("t1", str(i)))
-    assert [e.seq for e in log.since(3)] == [4, 5]
-    assert [e.seq for e in log.since(0)] == [1, 2, 3, 4, 5]
-    assert log.since(99) == []
+    assert [e["seq"] for e in log.since(3).events] == [4, 5]
+    assert [e["seq"] for e in log.since(0).events] == [1, 2, 3, 4, 5]
+    assert log.since(99).events == []
+
+
+def test_un_journal_en_memoire_ne_tronque_jamais():
+    """La troncature est une conséquence de la persistance : en mémoire, tout
+    ce qu'on a tient déjà en mémoire."""
+    log = EventLog()
+    for i in range(50):
+        log.append(message("t1", str(i)))
+    assert log.since(0).truncated is False
 
 
 def test_le_tampon_rendu_est_une_copie():

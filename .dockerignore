@@ -22,4 +22,9 @@ build/
 
 Dockerfile
 docker-compose.yml
+docker-compose.deploy.yml
 .dockerignore
+
+# Monté en volume par la surcouche de déploiement, jamais copié dans l'image :
+# changer la configuration du proxy ne doit pas demander de reconstruire.
+deploy/

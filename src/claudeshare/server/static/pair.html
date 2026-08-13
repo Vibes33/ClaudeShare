@@ -10,8 +10,8 @@
   style-src 'self';
   connect-src 'self';
   form-action 'self';
-  base-uri 'none';
-  frame-ancestors 'none'">
+  base-uri 'none'">
+<!-- `frame-ancestors` est posée en en-tête, pas ici : un `<meta>` l'ignore. -->
 <link rel="stylesheet" href="/static/style.css">
 <script type="module" src="/static/pair.js"></script>
 </head>

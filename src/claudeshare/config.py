@@ -57,6 +57,28 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     google_client_secret: str = ""
     database_url: str = ""
+    #: Comment obtenir le schéma au démarrage : `create` (create_all, local et
+    #: tests), `migrate` (Alembic, déploiement), `none` (déjà fait ailleurs).
+    db_schema: str = "create"
+    #: Pub/sub partagé. Vide = diffusion en mémoire. Ne suffit pas à faire du
+    #: multi-worker : voir l'en-tête de `core/broker.py`.
+    redis_url: str = ""
+
+    #: Événements conservés par salon. Au-delà, l'entretien périodique élague.
+    #: Zéro désactive l'élagage — à réserver aux salons qu'on archive à la main.
+    event_retention: int = 5000
+
+    #: Le service est joignable en HTTPS. Conditionne le `Secure` des cookies et
+    #: l'en-tête HSTS. À ne pas activer sans terminaison TLS réelle : un cookie
+    #: `Secure` sur une origine en clair n'est jamais renvoyé, et HSTS épinglerait
+    #: les navigateurs sur une origine qu'on ne sait pas servir.
+    public_https: bool = False
+    #: Adresses des proxys de confiance, au format attendu par uvicorn
+    #: (`*` pour tous, ce qui n'est correct que si rien d'autre ne peut joindre
+    #: le port). Sans ça, le serveur voit l'adresse du proxy pour tout le monde,
+    #: et la limitation de débit devient un seau unique et partagé.
+    trusted_proxies: str = ""
+    rate_limit: bool = True
 
     #: Chemin explicite vers le CLI Claude Code. Laisser vide utilise celui
     #: embarqué dans le SDK, puis celui du PATH.

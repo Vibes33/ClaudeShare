@@ -295,6 +295,9 @@ function instantane(d) {
   }
 
   statut("connecté");
+  // Un trou annoncé vaut infiniment mieux qu'un trou silencieux : sans ça, la
+  // conversation commencerait au milieu sans que personne ne le sache.
+  if (d.truncated) toast("Le début de l'historique a été tronqué par le serveur.");
   peindre(true);
 }
 

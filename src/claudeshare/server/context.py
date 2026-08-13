@@ -77,4 +77,9 @@ class ServerContext:
         for room_id in list(self._started):
             self.remember_session(room_id)
         await self.rooms.aclose()
+        # Le diffuseur Redis tient des tâches de pompe ; celui en mémoire n'a
+        # rien à fermer, d'où le test d'attribut plutôt qu'une méthode imposée
+        # au protocole pour un seul de ses deux membres.
+        if fermer := getattr(self.rooms.broker, "aclose", None):
+            await fermer()
         self.db.dispose()

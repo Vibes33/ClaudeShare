@@ -251,6 +251,39 @@ class ApiToken(Base):
         return self.revoked_at is None
 
 
+class Event(Base):
+    """Un fait de collaboration, conservé pour être rejoué.
+
+    À ne pas confondre avec la session SDK, qui possède le **contexte du
+    modèle** et que le SDK persiste de son côté. Cette table-ci enregistre la
+    collaboration — qui a proposé quoi, qui tenait le jeton, qui a approuvé quel
+    appel d'outil. C'est ce qu'on relit à la reconnexion et après un
+    redémarrage.
+
+    Les deltas de streaming n'y entrent jamais : ils sont diffusés en direct et
+    accumulés dans un tampon volatile. Les écrire ferait des milliers de lignes
+    par tour pour un texte que le message final contient déjà en entier.
+    """
+
+    __tablename__ = "events"
+    __table_args__ = (UniqueConstraint("room_id", "seq", name="uq_event_room_seq"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    room_id: Mapped[str] = mapped_column(
+        ForeignKey("rooms.id", ondelete="CASCADE"), index=True
+    )
+    #: Numéro monotone **par salon**, alloué en mémoire par `core/eventlog.py`.
+    #: La contrainte d'unicité est là pour que deux processus qui serviraient le
+    #: même salon se heurtent bruyamment au lieu de mélanger deux historiques —
+    #: voir la note d'affinité dans `core/broker.py`.
+    seq: Mapped[int] = mapped_column(Integer)
+    type: Mapped[str] = mapped_column(String(64))
+    turn_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    author: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 def new_token_secret() -> str:
     """Secret porteur. 32 octets d'entropie, lisible dans un en-tête."""
     return f"cs_{secrets.token_urlsafe(32)}"

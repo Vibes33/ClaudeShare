@@ -135,6 +135,18 @@ def test_une_reprise_sans_nouvel_evenement_est_quand_meme_appliquee():
     assert view.present == ["alice"]
 
 
+def test_un_historique_tronque_est_signale():
+    """Le serveur borne le rejeu. Recevoir la fin d'une conversation sans savoir
+    qu'il en manque le début est précisément le trou silencieux que le
+    dédoublonnage sur `seq` sert à éviter partout ailleurs."""
+    view = RoomView()
+    view.apply(instantane(0, truncated=True))
+    assert view.truncated is True
+
+    view.apply(instantane(1))
+    assert view.truncated is False
+
+
 def test_l_instantane_fait_autorite_sur_les_etats():
     """Droits, présence, jeton, approbations : des états, pas un historique.
     Les garder d'une connexion à l'autre laisserait afficher un droit révoqué
