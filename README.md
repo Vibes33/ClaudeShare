@@ -7,10 +7,9 @@ Claude Code packagé en bibliothèque — piloté avec les identifiants du CLI, 
 sur abonnement plutôt que sur l'API Messages.
 
 > [!WARNING]
-> **Projet en construction.** Identité, cloisonnement et droits sont en place ;
-> il manque les invitations (étape 6), le jeton de parole (7) et les interfaces
-> (8). Gardez l'écoute sur `127.0.0.1` : l'ajout d'un membre se fait encore en
-> base, et rien n'a été éprouvé en exposition réelle.
+> **Projet en construction.** Identité, cloisonnement, droits et invitations sont
+> en place ; il manque le jeton de parole (étape 7) et les interfaces (8). Gardez
+> l'écoute sur `127.0.0.1` : rien n'a été éprouvé en exposition réelle.
 
 ## Démarrer
 
@@ -93,7 +92,7 @@ curl -s http://127.0.0.1:8765/api/health
 ```
 
 Le port est lié à `127.0.0.1` dans `docker-compose.yml`. Ne passez à `0.0.0.0`
-qu'une fois les étapes 5 et 6 faites, et derrière un terminateur TLS.
+qu'une fois l'étape 7 faite, et derrière un terminateur TLS.
 
 Les identifiants OAuth et `CLAUDESHARE_SECRET_KEY` se passent par l'environnement
 (voir le service dans `docker-compose.yml`).
@@ -186,12 +185,66 @@ Les capacités renvoyées aux clients servent à griser des boutons. Le contrôl
 `room_access()` côté serveur, et `tests/test_authz_coverage.py` échoue si une
 route de salon oublie de déclarer le sien.
 
+### Interdiction d'escalade
+
+`room.invite` et `room.members.manage` distribuent des droits. Deux règles les
+empêchent d'être des capacités d'**escalade** :
+
+- **on ne confère jamais un droit qu'on n'a pas soi-même** — sinon un modérateur
+  inviterait une identité complice au rôle propriétaire, s'y connecterait, et
+  repartirait avec ce que son propre rôle lui refuse ;
+- **on ne touche pas à quelqu'un mieux doté que soi** — le garde-fou du dernier
+  propriétaire ne protège que le dernier, pas l'avant-dernier.
+
+Elles s'appliquent aux quatre chemins qui distribuent un rôle : invitation
+nominative, lien, approbation d'une demande d'accès, et promotion ordinaire. La
+première porte sur le **résultat** et pas sur le rôle demandé, sinon le détour
+par un `grant` suffirait à la contourner.
+
 ### Raccord avec la politique d'outils
 
 Les options du SDK sont fixées à l'ouverture de la session : une politique *par
 auteur* ne peut donc pas passer par elles. Elle passe par le hook `PreToolUse`,
 qui filtre à chaque appel d'outil selon les droits de l'auteur du tour. Un membre
 sans `room.settings` n'obtient jamais l'auto-approbation des éditions.
+
+## Inviter
+
+Trois chemins, tous révocables, tous soumis aux règles d'escalade ci-dessus.
+
+| Chemin | Pour qui | Route |
+|---|---|---|
+| **Nominatif** | quelqu'un de précis, même sans compte ici | `POST /api/rooms/{id}/invites` |
+| **Lien** | à faire circuler, quota et durée bornés | `POST /api/rooms/{id}/invite-links` |
+| **Demande d'accès** | qui connaît l'identifiant du salon | `POST /api/join-requests` |
+
+Une invitation nominative vise une **cible** — `github:@alice`,
+`google:alice@exemple.fr` — et non un compte : au moment d'inviter, la personne
+n'en a le plus souvent pas encore. Si le compte existe déjà, le rattachement est
+immédiat ; sinon l'invitation attend, et se convertit à la connexion suivante.
+Ce rattachement est déclenché depuis `upsert_user()`, l'entonnoir par lequel
+passe toute connexion, pour qu'aucun chemin d'authentification ne l'oublie.
+
+**Toute invitation expire**, entre une heure et quatre-vingt-dix jours. Il n'y a
+pas d'option « sans expiration » : une cible est un pseudo ou une adresse, pas un
+identifiant stable, et un pseudo GitHub libéré puis repris ferait entrer le
+repreneur. Une invitation qui traîne est donc un risque, pas une commodité.
+
+Les liens sont des secrets porteurs : comme les jetons d'API, seule leur
+empreinte est conservée, et le secret n'est montré qu'une fois, à la création.
+Il voyage dans le corps de la requête, jamais en query string — une URL se
+retrouve dans les journaux d'accès, l'historique et le `Referer`. Tous les refus
+d'un lien renvoient le même message, pour ne pas confirmer qu'un secret essayé
+avait la bonne forme.
+
+Ni un lien ni une invitation ne changent le rôle de quelqu'un qui est **déjà
+membre** : l'opération réussit sans rien faire, et sans consommer de quota. Une
+promotion — comme une rétrogradation — doit rester un geste explicite.
+
+Les routes qu'emprunte une personne pas encore membre (`/api/invites/*`,
+`POST /api/join-requests`) sont hors du préfixe `/api/rooms/{id}` : `room_access()`
+y répondrait 404, puisque c'est justement ce qu'on vient corriger. Les mélanger
+obligerait à percer un trou dans la barrière de salon.
 
 ## Architecture
 
@@ -221,7 +274,8 @@ arrivant tardif récupère via l'instantané.
 | `server/auth/` | OAuth, sessions signées, jetons porteurs |
 | `core/workspace.py` | confinement des dossiers de salon |
 | `db/models.py` | personnes, salons, appartenances, rôles |
-| `core/permissions.py` | résolution des droits et barrière `require()` |
+| `core/permissions.py` | résolution des droits, barrière `require()`, garde-fous d'escalade |
+| `core/invites.py` | cibles nominatives, durées de vie, états |
 | `server/authz.py` | application sur les routes, déclaration pour la couverture |
 
 ## État
@@ -233,7 +287,7 @@ arrivant tardif récupère via l'instantané.
 | 3. Sécurité de l'exécution | ✅ |
 | 4. Identité OAuth et salons multiples | ✅ |
 | 5. Permissions (rôles, droits à la carte) | ✅ |
-| 6. Invitations | ⬜ |
+| 6. Invitations | ✅ |
 | 7. Jeton de parole et priorités | ⬜ |
 | 8. Clients web et TUI | ⬜ |
 | 9. Hébergement | ⬜ |

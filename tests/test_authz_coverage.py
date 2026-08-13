@@ -27,6 +27,13 @@ PUBLIQUES = {
     "/auth/tokens/{token_id}": "jetons personnels",
     "/auth/{name}": "démarrage de la connexion OAuth",
     "/auth/{name}/callback": "retour du fournisseur",
+    # Empruntées par quelqu'un qui n'est pas encore membre : exiger une
+    # capacité de salon y serait contradictoire, `room_access()` répondant 404
+    # à un non-membre. Leur barrière est le secret du lien, ou le fait que la
+    # demande d'accès doive être approuvée pour donner quoi que ce soit.
+    "/api/invites/preview": "présenter un lien avant de s'en servir",
+    "/api/invites/redeem": "entrer dans un salon par un lien",
+    "/api/join-requests": "demander l'accès à un salon dont on n'est pas membre",
 }
 # `/docs`, `/openapi.json` et `/redoc` sont des `Route` et non des `APIRoute` :
 # le parcours ne les collecte pas, elles n'ont donc pas à figurer ici.

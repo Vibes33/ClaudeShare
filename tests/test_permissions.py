@@ -5,7 +5,10 @@ from __future__ import annotations
 from claudeshare.agent.toolpolicy import TrustLevel
 from claudeshare.core.capabilities import Capability, template_capabilities
 from claudeshare.core.permissions import (
+    Escalation,
     PermissionDenied,
+    guard_authority,
+    guard_delegation,
     has,
     require,
     resolve,
@@ -102,6 +105,38 @@ def test_has_est_coherent_avec_require():
     caps = {str(Capability.READ)}
     assert has(Capability.READ, caps)
     assert not has(Capability.SPEAK, caps)
+
+
+# ------------------------------------------------- garde-fous d'escalade
+
+
+def test_on_peut_conferer_ce_qu_on_a():
+    guard_delegation({str(Capability.READ), str(Capability.SPEAK)}, [str(Capability.READ)])
+
+
+def test_on_ne_peut_pas_conferer_ce_qu_on_n_a_pas():
+    """Sans cette règle, `room.invite` et `room.members.manage` seraient des
+    capacités d'escalade."""
+    with pytest.raises(Escalation) as exc:
+        guard_delegation({str(Capability.INVITE)}, [str(Capability.SETTINGS)])
+    assert exc.value.surplus == [str(Capability.SETTINGS)]
+
+
+def test_le_proprietaire_n_est_pas_un_cas_particulier():
+    """Il a tout, donc la différence est vide — aucune exception à écrire."""
+    tout = {str(c) for c in Capability}
+    guard_delegation(tout, sorted(tout))
+    guard_authority(tout, sorted(tout))
+
+
+def test_on_ne_touche_pas_a_quelqu_un_mieux_dote():
+    """Le garde-fou du « dernier propriétaire » ne protège que le dernier ;
+    celui-ci protège aussi l'avant-dernier."""
+    moderateur = set(template_capabilities("moderateur"))
+    proprietaire = set(template_capabilities("proprietaire"))
+    with pytest.raises(Escalation):
+        guard_authority(moderateur, proprietaire)
+    guard_authority(proprietaire, moderateur)
 
 
 # ------------------------------- raccord avec la politique d'outils (étape 3)

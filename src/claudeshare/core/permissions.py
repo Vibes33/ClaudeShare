@@ -37,6 +37,14 @@ class LastOwnerError(ValueError):
     """Retirer ce droit laisserait le salon sans propriétaire."""
 
 
+class Escalation(PermissionError):
+    """L'action donnerait — ou toucherait à — des droits que l'appelant n'a pas."""
+
+    def __init__(self, message: str, surplus: list[str]) -> None:
+        self.surplus = surplus
+        super().__init__(f"{message} : {', '.join(surplus)}")
+
+
 def resolve(role: Role, membership: Membership) -> frozenset[str]:
     """Capacités effectives d'un membre.
 
@@ -73,6 +81,39 @@ def trust_level(capabilities: Iterable[str]) -> TrustLevel:
     if str(Capability.SPEAK) in caps:
         return TrustLevel.WRITER
     return TrustLevel.READER
+
+
+# ------------------------------------------------- garde-fous d'escalade
+#
+# `room.invite` et `room.members.manage` distribuent des droits. Sans les deux
+# règles ci-dessous, ce sont des capacités d'**escalade** : un modérateur crée
+# une identité complice au rôle propriétaire, s'y connecte, et repart avec des
+# droits que son propre rôle lui refuse. Le détour par une invitation ou par
+# une simple promotion revient au même — d'où deux garde-fous appliqués aux
+# deux chemins.
+
+
+def guard_delegation(mine: Iterable[str], conferred: Iterable[str]) -> None:
+    """On ne confère jamais un droit qu'on n'a pas soi-même.
+
+    S'applique au résultat visé, pas seulement au rôle demandé : ce qui compte
+    est l'état dans lequel on laisse la personne, `grants` compris.
+    """
+    if surplus := sorted(set(conferred) - set(mine)):
+        raise Escalation("vous ne pouvez pas conférer des droits que vous n'avez pas", surplus)
+
+
+def guard_authority(mine: Iterable[str], target: Iterable[str]) -> None:
+    """On ne touche pas à quelqu'un mieux doté que soi.
+
+    Sans cette règle, un modérateur pourrait rétrograder ou exclure un
+    propriétaire. Le garde-fou du « dernier propriétaire » ne suffit pas : il ne
+    protège que le dernier, pas l'avant-dernier.
+    """
+    if surplus := sorted(set(target) - set(mine)):
+        raise Escalation(
+            "cette personne a des droits que vous n'avez pas vous-même", surplus
+        )
 
 
 def would_orphan_room(

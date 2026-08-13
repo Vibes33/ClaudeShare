@@ -9,7 +9,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from ...core.capabilities import Capability
-from ...db.models import Membership, Role
+from ...core.invites import State, invitation_state, link_state
+from ...db.models import Invitation, InviteLink, Membership, Role
 from ..authz import requires, room_access
 from ..deps import require_principal
 
@@ -122,6 +123,23 @@ def build_roles_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
                 raise HTTPException(
                     409, "ce rôle est encore attribué : réaffectez ses membres d'abord"
                 )
+
+            # Une invitation ou un lien encore vivant pointe aussi vers le rôle.
+            # Le supprimer laisserait une référence morte qui casserait
+            # l'entrée dans le salon au moment le moins pratique.
+            for modele, quoi in ((Invitation, "invitation"), (InviteLink, "lien")):
+                en_cours = session.scalars(
+                    select(modele).where(
+                        modele.role_id == role_id, modele.revoked_at.is_(None)
+                    )
+                )
+                etat = invitation_state if modele is Invitation else link_state
+                if any(etat(row) is State.USABLE for row in en_cours):
+                    raise HTTPException(
+                        409,
+                        f"ce rôle est visé par une {quoi} en cours : révoquez-la d'abord",
+                    )
+
             session.delete(role)
 
     return router

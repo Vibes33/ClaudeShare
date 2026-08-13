@@ -26,6 +26,22 @@ def until(ws, type_: str, limit: int = 40) -> dict:
     raise AssertionError(f"{type_} jamais reçu")
 
 
+def _membres(client, harness: Harness, room: str, who: str) -> list[dict]:
+    return client.get(
+        f"/api/rooms/{room}/members", headers=harness.auth(harness.token(who))
+    ).json()
+
+
+def role_de(client, harness: Harness, room: str, who: str, handle: str) -> str:
+    rows = _membres(client, harness, room, who)
+    return next(m["role"] for m in rows if m["handle"] == handle)
+
+
+def role_caps(client, harness: Harness, room: str, who: str, handle: str) -> list[str]:
+    rows = _membres(client, harness, room, who)
+    return next(m["capabilities"] for m in rows if m["handle"] == handle)
+
+
 def greet(ws) -> dict:
     """Poignée de main, puis instantané.
 
@@ -126,6 +142,96 @@ def test_une_capacite_inventee_est_refusee(harness: Harness, client):
     )
     assert response.status_code == 400
     assert "room.speek" in response.json()["detail"]
+
+
+# ------------------------------------------------------- escalade de droits
+#
+# `room.members.manage` distribue des droits : sans garde-fou c'est une
+# capacité d'escalade, et le détour par une invitation ne serait alors qu'un
+# chemin parmi d'autres pour arriver au même endroit.
+
+
+def test_un_moderateur_ne_peut_pas_se_promouvoir(harness: Harness, client):
+    alice, bob = harness.user("alice"), harness.user("bob")
+    room = harness.room(alice, workspace="a")
+    harness.join(room, bob, role="moderateur")
+
+    refuse = client.patch(
+        f"/api/rooms/{room}/members/{bob}",
+        json={"role": "proprietaire"},
+        headers=harness.auth(harness.token(bob)),
+    )
+    assert refuse.status_code == 403
+    assert role_de(client, harness, room, alice, "bob") == "moderateur"
+
+
+def test_un_moderateur_ne_peut_pas_s_accorder_une_capacite_manquante(
+    harness: Harness, client
+):
+    """Le garde-fou porte sur le **résultat**, pas sur le rôle demandé :
+    passer par `grants` doit buter sur la même règle."""
+    alice, bob = harness.user("alice"), harness.user("bob")
+    room = harness.room(alice, workspace="a")
+    harness.join(room, bob, role="moderateur")
+
+    refuse = client.patch(
+        f"/api/rooms/{room}/members/{bob}",
+        json={"grants": [str(Capability.SETTINGS)]},
+        headers=harness.auth(harness.token(bob)),
+    )
+    assert refuse.status_code == 403
+    assert str(Capability.SETTINGS) not in role_caps(client, harness, room, alice, "bob")
+
+
+def test_un_moderateur_ne_peut_pas_promouvoir_un_complice(harness: Harness, client):
+    """L'escalade par personne interposée mène au même résultat."""
+    alice, bob, carol = harness.user("alice"), harness.user("bob"), harness.user("carol")
+    room = harness.room(alice, workspace="a")
+    harness.join(room, bob, role="moderateur")
+    harness.join(room, carol, role="lecteur")
+
+    refuse = client.patch(
+        f"/api/rooms/{room}/members/{carol}",
+        json={"role": "proprietaire"},
+        headers=harness.auth(harness.token(bob)),
+    )
+    assert refuse.status_code == 403
+
+
+def test_un_moderateur_ne_peut_ni_retrograder_ni_exclure_un_proprietaire(
+    harness: Harness, client
+):
+    """Le garde-fou du « dernier propriétaire » ne protège que le dernier."""
+    alice, bob, carol = harness.user("alice"), harness.user("bob"), harness.user("carol")
+    room = harness.room(alice, workspace="a")
+    harness.join(room, bob, role="moderateur")
+    harness.join(room, carol, role="proprietaire")
+    entete = harness.auth(harness.token(bob))
+
+    assert (
+        client.patch(
+            f"/api/rooms/{room}/members/{carol}", json={"role": "lecteur"}, headers=entete
+        ).status_code
+        == 403
+    )
+    assert client.delete(f"/api/rooms/{room}/members/{carol}", headers=entete).status_code == 403
+
+
+def test_un_moderateur_administre_bien_ceux_qu_il_couvre(harness: Harness, client):
+    """Le garde-fou ne doit pas vider `room.members.manage` de son sens."""
+    alice, bob, carol = harness.user("alice"), harness.user("bob"), harness.user("carol")
+    room = harness.room(alice, workspace="a")
+    harness.join(room, bob, role="moderateur")
+    harness.join(room, carol, role="lecteur")
+    entete = harness.auth(harness.token(bob))
+
+    assert (
+        client.patch(
+            f"/api/rooms/{room}/members/{carol}", json={"role": "ecrivain"}, headers=entete
+        ).status_code
+        == 200
+    )
+    assert client.delete(f"/api/rooms/{room}/members/{carol}", headers=entete).status_code == 204
 
 
 # ------------------------------------------------------------------ rôles

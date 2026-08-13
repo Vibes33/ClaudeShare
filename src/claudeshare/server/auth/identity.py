@@ -93,7 +93,61 @@ def upsert_user(
     user.email = email or user.email
     user.avatar_url = avatar_url or user.avatar_url
     session.flush()
+
+    # Le rattachement des invitations en attente se fait ici et pas dans la
+    # route de rappel OAuth : `upsert_user` est l'entonnoir par lequel passe
+    # toute connexion, donc aucun chemin d'authentification futur ne peut
+    # oublier de le faire.
+    claim_invitations(session, user)
     return user
+
+
+def claim_invitations(session: Session, user: User) -> list[Membership]:
+    """Convertit en appartenances les invitations nominatives qui visent
+    cette personne.
+
+    Appelée à chaque connexion, pas seulement à la première : une invitation
+    peut arriver après la création du compte, et la personne n'a alors qu'à se
+    reconnecter.
+    """
+    from ...core.invites import Target, matches
+    from ...db.models import Invitation
+
+    provider = Provider(user.provider)
+    # Requête large sur `(provider, non consommée)`, puis filtrage précis par
+    # `matches()` : la règle de correspondance vit à un seul endroit.
+    candidates = session.scalars(
+        select(Invitation).where(
+            Invitation.provider == str(provider),
+            Invitation.accepted_at.is_(None),
+            Invitation.revoked_at.is_(None),
+            Invitation.expires_at > datetime.now(UTC),
+        )
+    )
+
+    acquises: list[Membership] = []
+    for invitation in candidates:
+        if not matches(Target(provider, invitation.identifier), user):
+            continue
+
+        invitation.accepted_at = datetime.now(UTC)
+        invitation.accepted_user_id = user.id
+
+        existante = membership_of(session, invitation.room_id, user.id)
+        if existante is not None:
+            # Déjà membre : l'invitation est consommée mais ne change pas le
+            # rôle. Une invitation ne doit pas pouvoir rétrograder quelqu'un,
+            # ni le promouvoir dans son dos.
+            continue
+
+        membership = Membership(
+            room_id=invitation.room_id, user_id=user.id, role_id=invitation.role_id
+        )
+        session.add(membership)
+        acquises.append(membership)
+
+    session.flush()
+    return acquises
 
 
 # -------------------------------------------------------------------- jetons

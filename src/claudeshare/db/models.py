@@ -141,6 +141,90 @@ class Membership(Base):
     role: Mapped[Role] = relationship()
 
 
+class Invitation(Base):
+    """Invitation nominative, éventuellement en attente d'une première connexion.
+
+    On invite une **cible** (`github:alice`, `google:a@b.fr`) et non un `user_id` :
+    au moment d'inviter, la personne n'a le plus souvent pas encore de compte
+    ici. Le rattachement se fait à sa connexion suivante.
+
+    Limite assumée, et c'est la raison de l'expiration obligatoire : la cible est
+    un pseudo ou une adresse, pas un identifiant stable. Un pseudo GitHub libéré
+    puis repris par quelqu'un d'autre ferait entrer le repreneur. Une invitation
+    qui traîne est donc un risque, d'où une durée de vie bornée.
+    """
+
+    __tablename__ = "invitations"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: _uid("inv"))
+    room_id: Mapped[str] = mapped_column(ForeignKey("rooms.id", ondelete="CASCADE"))
+    provider: Mapped[str] = mapped_column(String(16))
+    #: Cible normalisée : pseudo en minuscules pour GitHub, adresse pour Google.
+    identifier: Mapped[str] = mapped_column(String(256), index=True)
+    #: `CASCADE` : une invitation vers un rôle disparu n'a plus de sens. Une
+    #: invitation *encore vivante* empêche déjà la suppression du rôle
+    #: (`api/roles.py`), donc la cascade n'emporte que de l'historique consommé.
+    role_id: Mapped[str] = mapped_column(ForeignKey("roles.id", ondelete="CASCADE"))
+    invited_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    accepted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    accepted_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id"), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    role: Mapped[Role] = relationship()
+
+
+class InviteLink(Base):
+    """Lien d'invitation : porteur, révocable, à durée et quota bornés.
+
+    Comme pour `ApiToken`, seule l'empreinte est conservée. Un lien est un secret
+    porteur — quiconque l'a devient membre au rôle indiqué — donc une base volée
+    ne doit pas livrer des entrées utilisables.
+    """
+
+    __tablename__ = "invite_links"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: _uid("ilk"))
+    room_id: Mapped[str] = mapped_column(ForeignKey("rooms.id", ondelete="CASCADE"))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    #: `CASCADE` pour la même raison que `Invitation.role_id`.
+    role_id: Mapped[str] = mapped_column(ForeignKey("roles.id", ondelete="CASCADE"))
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    #: Nombre d'entrées autorisées. Toujours fini : un lien sans quota ni
+    #: expiration serait une porte dérobée permanente.
+    max_uses: Mapped[int] = mapped_column(Integer, default=1)
+    uses: Mapped[int] = mapped_column(Integer, default=0)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    role: Mapped[Role] = relationship()
+
+
+class JoinRequest(Base):
+    """Demande d'accès émise par quelqu'un qui connaît l'identifiant du salon."""
+
+    __tablename__ = "join_requests"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: _uid("jrq"))
+    room_id: Mapped[str] = mapped_column(ForeignKey("rooms.id", ondelete="CASCADE"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    message: Mapped[str] = mapped_column(String(500), default="")
+    state: Mapped[str] = mapped_column(String(16), default="pending")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    decided_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+    user: Mapped[User] = relationship(foreign_keys=[user_id])
+
+
 class ApiToken(Base):
     """Jeton porteur, pour les clients qui ne sont pas un navigateur.
 
@@ -170,3 +254,9 @@ class ApiToken(Base):
 def new_token_secret() -> str:
     """Secret porteur. 32 octets d'entropie, lisible dans un en-tête."""
     return f"cs_{secrets.token_urlsafe(32)}"
+
+
+def new_invite_secret() -> str:
+    """Secret d'un lien d'invitation. Préfixe distinct des jetons d'API pour
+    qu'un secret collé au mauvais endroit se voie tout de suite."""
+    return f"csi_{secrets.token_urlsafe(32)}"

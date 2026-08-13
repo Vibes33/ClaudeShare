@@ -44,12 +44,31 @@ class Harness:
         self.ctx = ctx
         self.fake = fake
 
-    def user(self, handle: str, provider: Provider = Provider.GITHUB) -> str:
+    def user(
+        self,
+        handle: str,
+        provider: Provider = Provider.GITHUB,
+        email: str | None = None,
+    ) -> str:
+        """Crée l'identité, ou la retrouve — c'est-à-dire : la connecte.
+
+        `upsert_user` est l'entonnoir de toute connexion, y compris pour le
+        rattachement des invitations en attente. Rappeler `user()` sur un pseudo
+        déjà connu simule donc une reconnexion, ce dont se servent les tests
+        d'invitation.
+        """
         with self.ctx.db.session() as session:
             user = upsert_user(
-                session, provider=provider, subject=f"sub-{handle}", handle=handle
+                session,
+                provider=provider,
+                subject=f"sub-{handle}",
+                handle=handle,
+                email=email,
             )
             return user.id
+
+    #: Même chose, nommée pour ce qu'on veut dire à l'endroit de l'appel.
+    login = user
 
     def token(self, user_id: str) -> str:
         with self.ctx.db.session() as session:

@@ -23,6 +23,7 @@ from ..config import AuthMode, Settings, check_auth_mode, describe_auth
 from ..core.workspace import ensure_root
 from ..db.models import Room
 from ..db.session import Database, default_url
+from .api.invites import build_invites_router, build_redeem_router
 from .api.members import build_members_router
 from .api.roles import build_roles_router
 from .api.rooms import build_rooms_router
@@ -131,6 +132,8 @@ def create_app(
     app.include_router(build_rooms_router(ctx))
     app.include_router(build_members_router(ctx))
     app.include_router(build_roles_router(ctx))
+    app.include_router(build_invites_router(ctx))
+    app.include_router(build_redeem_router(ctx))
 
     @app.get("/api/health")
     async def health() -> dict[str, Any]:

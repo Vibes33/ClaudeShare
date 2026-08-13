@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from ...core.capabilities import OWNER_ROLE, Capability
-from ...core.permissions import resolve
+from ...core.permissions import Escalation, guard_authority, guard_delegation, resolve
 from ...db.models import Membership, Role, User
 from ..authz import owner_count, requires, room_access
 from ..deps import require_principal
@@ -24,7 +24,7 @@ class MemberUpdate(BaseModel):
     priority: int | None = Field(default=None, ge=-100, le=100)
 
 
-def _member_view(membership: Membership, role: Role, user: User) -> dict[str, Any]:
+def member_view(membership: Membership, role: Role, user: User) -> dict[str, Any]:
     return {
         "user_id": user.id,
         "handle": user.handle,
@@ -35,6 +35,18 @@ def _member_view(membership: Membership, role: Role, user: User) -> dict[str, An
         "priority": membership.priority,
         "capabilities": sorted(resolve(role, membership)),
     }
+
+
+def _guard(regle, mine, autres) -> None:
+    """Applique un garde-fou d'escalade et le traduit en 403.
+
+    403 et non 400 : la demande est comprise, c'est l'appelant qui n'a pas le
+    rang pour la formuler.
+    """
+    try:
+        regle(mine, autres)
+    except Escalation as exc:
+        raise HTTPException(403, str(exc)) from None
 
 
 def _validate_capabilities(values: list[str] | None) -> list[str]:
@@ -68,7 +80,7 @@ def build_members_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
                 .where(Membership.room_id == room_id)
                 .order_by(User.handle)
             ).all()
-            return [_member_view(m, r, u) for m, r, u in rows]
+            return [member_view(m, r, u) for m, r, u in rows]
 
     @router.patch("/{user_id}")
     @requires(Capability.MEMBERS_MANAGE)
@@ -77,7 +89,7 @@ def build_members_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
     ) -> dict[str, Any]:
         with ctx.db.session() as session:
             principal = require_principal(ctx.principal(request, session))
-            room_access(session, principal, room_id, Capability.MEMBERS_MANAGE)
+            access = room_access(session, principal, room_id, Capability.MEMBERS_MANAGE)
 
             membership = session.scalar(
                 select(Membership).where(
@@ -89,6 +101,7 @@ def build_members_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
 
             current_role = session.get(Role, membership.role_id)
             avant = resolve(current_role, membership)
+            _guard(guard_authority, access.capabilities, avant)
 
             if payload.role is not None:
                 nouveau = session.scalar(
@@ -116,14 +129,18 @@ def build_members_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
 
             session.flush()
             apres = resolve(current_role, membership)
+            # Sur le **résultat**, pas sur le rôle demandé : ce qui compte est
+            # l'état dans lequel on laisse la personne, `grants` compris.
+            _guard(guard_delegation, access.capabilities, apres)
+
             user = session.get(User, user_id)
-            view = _member_view(membership, current_role, user)
+            view = member_view(membership, current_role, user)
             perdues = avant - apres
             handle = user.handle
 
         # Le changement s'applique sans reconnexion : on prévient le salon, et
         # on coupe le tour en cours si son auteur vient de perdre la parole.
-        await _apply_live(ctx, room_id, handle, perdues, view)
+        await apply_live(ctx, room_id, handle, perdues, view)
         return view
 
     @router.delete("/{user_id}", status_code=204)
@@ -131,7 +148,7 @@ def build_members_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
     async def remove_member(room_id: str, user_id: str, request: Request) -> None:
         with ctx.db.session() as session:
             principal = require_principal(ctx.principal(request, session))
-            room_access(session, principal, room_id, Capability.MEMBERS_MANAGE)
+            access = room_access(session, principal, room_id, Capability.MEMBERS_MANAGE)
 
             membership = session.scalar(
                 select(Membership).where(
@@ -142,6 +159,8 @@ def build_members_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
                 raise HTTPException(404, "membre inconnu")
 
             role = session.get(Role, membership.role_id)
+            _guard(guard_authority, access.capabilities, resolve(role, membership))
+
             if role.name == OWNER_ROLE and owner_count(session, room_id) <= 1:
                 raise HTTPException(
                     409, "impossible de retirer le dernier propriétaire du salon"
@@ -150,13 +169,17 @@ def build_members_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
             handle = session.get(User, user_id).handle
             session.delete(membership)
 
-        await _apply_live(ctx, room_id, handle, {str(Capability.SPEAK)}, None)
+        await apply_live(ctx, room_id, handle, {str(Capability.SPEAK)}, None)
 
     return router
 
 
-async def _apply_live(
-    ctx, room_id: str, handle: str, perdues: set[str], view: dict[str, Any] | None
+async def apply_live(
+    ctx,
+    room_id: str,
+    handle: str,
+    perdues: set[str] | None = None,
+    view: dict[str, Any] | None = None,
 ) -> None:
     """Répercute un changement de droits sur le salon en cours.
 
@@ -176,5 +199,5 @@ async def _apply_live(
         envelope("member.updated", room_id, {"handle": handle, "member": view}),
     )
 
-    if str(Capability.SPEAK) in perdues and live.agent.current_author == handle:
+    if str(Capability.SPEAK) in (perdues or ()) and live.agent.current_author == handle:
         await live.agent.interrupt()

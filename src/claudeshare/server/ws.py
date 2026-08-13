@@ -25,7 +25,6 @@ from typing import Any
 from fastapi import WebSocket, WebSocketDisconnect
 
 from ..agent import TurnBusyError
-from ..agent.toolpolicy import TrustLevel
 from ..core.capabilities import Capability
 from ..protocol import (
     ClientMessage,
