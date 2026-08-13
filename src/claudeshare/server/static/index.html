@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClaudeShare</title>
+<!--
+  Deuxième verrou, après le « jamais d'innerHTML » de render.js. Celui-ci ne
+  dépend pas de la discipline du code : même si une injection passait, il n'y a
+  pas de script en ligne autorisé, pas d'origine externe joignable, et donc rien
+  à exfiltrer vers ailleurs. `script-src 'self'` sans 'unsafe-inline' est ce qui
+  fait tout le travail ; le reste ferme les portes de côté.
+-->
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'none';
+  script-src 'self';
+  style-src 'self';
+  img-src 'self' data:;
+  connect-src 'self' ws: wss:;
+  form-action 'self';
+  base-uri 'none';
+  frame-ancestors 'none'">
+<link rel="stylesheet" href="/static/style.css">
+<script type="module" src="/static/app.js"></script>
+</head>
+<body>
+
+<section id="login" hidden>
+  <h1>ClaudeShare</h1>
+  <p>Une session Claude Code partagée. Connectez-vous pour rejoindre vos salons.</p>
+  <div id="providers"></div>
+</section>
+
+<div id="app">
+  <header id="barre">
+    <a href="#/" id="marque">ClaudeShare</a>
+    <span id="title"></span>
+    <span id="status">hors ligne</span>
+    <span id="who"></span>
+  </header>
+
+  <main id="rooms" hidden></main>
+
+  <main id="room" hidden>
+    <section id="transcript" aria-live="polite"></section>
+
+    <aside id="cote">
+      <h2>Jeton de parole</h2>
+      <p id="floor"></p>
+      <ol id="queue"></ol>
+      <div id="actions"></div>
+
+      <h2>Approbations</h2>
+      <div id="approvals"></div>
+
+      <h2>Présents</h2>
+      <p id="presence"></p>
+    </aside>
+
+    <!-- Une `div` et non un `form` : la CSP interdit les gestionnaires en
+         ligne, donc pas de `onsubmit="return false"`, et un vrai formulaire
+         rechargerait la page sur Entrée. Tout passe par app.js. -->
+    <div id="composer">
+      <textarea id="prompt" rows="3" placeholder="Écrire à Claude…"></textarea>
+      <button id="send" type="button" class="bouton">Envoyer</button>
+    </div>
+  </main>
+</div>
+
+<div id="toasts" aria-live="assertive"></div>
+
+</body>
+</html>

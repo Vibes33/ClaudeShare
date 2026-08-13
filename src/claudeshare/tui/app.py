@@ -1,0 +1,267 @@
+"""Interface terminal, sur le même protocole que le client web.
+
+Elle n'est qu'une **vue de `RoomView`** : tout ce qui décide vit dans
+`client.py`, testé sans terminal. Ici on ne fait que peindre et transmettre des
+frappes.
+
+Une règle de sûreté propre à Rich, jumelle du « jamais d'`innerHTML` » côté
+web : **tout ce qui vient du réseau est affiché en `rich.text.Text`, jamais en
+chaîne**. Une chaîne passée à un widget Textual est interprétée comme du balisage
+console, et une sortie d'outil contenant `[bold red]` — ou pire, un lien — se
+mettrait à peindre l'écran de quelqu'un d'autre. `Text` affiche les caractères
+tels quels.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from rich.text import Text
+from textual.app import App, ComposeResult
+from textual.containers import Horizontal, VerticalScroll
+from textual.widgets import Footer, Header, Input, Static
+
+from ..core.capabilities import Capability
+from ..protocol import ClientMessage, ServerMessage
+from .client import RoomClient, RoomView, Turn
+
+#: Cadence de repeinture. Un delta par jeton produirait des dizaines de rendus
+#: par seconde pour un résultat que l'œil ne distingue pas.
+REFRESH_S = 0.1
+
+#: Au-delà, une sortie d'outil est tronquée à l'affichage. Le journal complet
+#: reste côté serveur ; noyer le terminal sous 40 000 lignes n'aide personne.
+MAX_TOOL_CHARS = 2000
+
+
+class ClaudeShareTUI(App):
+    """Client terminal d'un salon."""
+
+    CSS = """
+    #corps { height: 1fr; }
+    #transcript { width: 3fr; padding: 0 1; }
+    #cote { width: 34; border-left: solid $panel; padding: 0 1; }
+    #prompt { dock: bottom; }
+    .tour { margin-bottom: 1; }
+    """
+
+    BINDINGS = [
+        # Touches de fonction plutôt que Ctrl : Textual réserve déjà plusieurs
+        # combinaisons Ctrl (palette de commandes, quitter), et les lui reprendre
+        # casserait des réflexes qui viennent d'ailleurs.
+        ("f2", "floor_request", "Demander"),
+        ("f3", "floor_release", "Rendre"),
+        ("f4", "floor_preempt", "Réquisitionner"),
+        ("f5", "stop", "Interrompre"),
+        ("f8", "approve", "Approuver"),
+        ("f9", "deny", "Refuser"),
+    ]
+
+    def __init__(self, client: RoomClient) -> None:
+        super().__init__()
+        self.client = client
+        self.view: RoomView = client.view
+        self._dirty: set[str] = set()
+        self._statut = "hors ligne"
+        self._message = ""
+        #: Dernier prompt envoyé, rendu à son auteur s'il part en file.
+        self._brouillon = ""
+
+    # ------------------------------------------------------------- montage
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Horizontal(id="corps"):
+            yield VerticalScroll(id="transcript")
+            # `markup=False` en plus du `Text` : ceinture et bretelles. Si un
+            # refactor passait un jour une chaîne à ce widget, elle resterait du
+            # texte au lieu de devenir du balisage console.
+            yield VerticalScroll(Static(id="cote_contenu", markup=False), id="cote")
+        yield Input(placeholder="Écrire à Claude…", id="prompt")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self.title = "ClaudeShare"
+        self.sub_title = self.client.room_id
+        self.set_interval(REFRESH_S, self._peindre)
+        self.run_worker(self.client.run(self._on_frame, self._on_status), exclusive=True)
+
+    # ----------------------------------------------------------- réception
+
+    async def _on_frame(self, frame: dict[str, Any], type_: str, turn_id: str | None) -> None:
+        if type_ == ServerMessage.SNAPSHOT:
+            self.sub_title = self.view.title
+            self._dirty |= set(self.view.order)
+        elif type_ == ServerMessage.ERROR:
+            d = frame.get("data") or {}
+            retard = f" (réessayez dans {d['retry_in']} s)" if d.get("retry_in") else ""
+            self._message = f"⚠ {d.get('message') or d.get('code')}{retard}"
+        elif type_ == ServerMessage.QUEUED:
+            # Le serveur ne garde pas un prompt refusé — il refuse de décider à
+            # la place de quelqu'un que ce qu'il a écrit il y a dix minutes est
+            # toujours ce qu'il veut envoyer. On le lui rend donc dans le champ.
+            self.query_one("#prompt", Input).value = self._brouillon
+            self._message = f"En file — position {self.view.queued}. Message rendu."
+        if turn_id:
+            self._dirty.add(turn_id)
+
+    async def _on_status(self, texte: str) -> None:
+        self._statut = texte
+
+    # -------------------------------------------------------------- rendu
+
+    def _peindre(self) -> None:
+        self._peindre_cote()
+        if not self._dirty:
+            return
+
+        transcript = self.query_one("#transcript", VerticalScroll)
+        # Ne suivre le flux que si on y était déjà : arracher quelqu'un à sa
+        # lecture de l'historique parce qu'un jeton vient d'arriver est le
+        # défaut classique des clients de discussion.
+        au_bas = transcript.scroll_offset.y >= transcript.max_scroll_y - 2
+
+        for turn_id in list(self._dirty):
+            tour = self.view.turns.get(turn_id)
+            if tour is None:
+                continue
+            widget_id = f"t-{turn_id}"
+            rendu = _rendre_tour(tour)
+            existants = transcript.query(f"#{widget_id}")
+            if existants:
+                existants.first(Static).update(rendu)
+            else:
+                transcript.mount(Static(rendu, id=widget_id, classes="tour", markup=False))
+        self._dirty.clear()
+
+        if au_bas:
+            transcript.scroll_end(animate=False)
+
+    def _peindre_cote(self) -> None:
+        self.query_one("#cote_contenu", Static).update(_rendre_cote(self.view, self._statut, self._message))
+
+    # --------------------------------------------------------- intentions
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        texte = event.value.strip()
+        if not texte:
+            return
+        if not await self.client.send(ClientMessage.PROMPT_SEND, prompt=texte):
+            self._message = "⚠ hors ligne — message non envoyé"
+            return
+        self._brouillon = texte
+        event.input.value = ""
+
+    async def action_floor_request(self) -> None:
+        await self.client.send(ClientMessage.FLOOR_REQUEST)
+
+    async def action_floor_release(self) -> None:
+        await self.client.send(ClientMessage.FLOOR_RELEASE)
+
+    async def action_floor_preempt(self) -> None:
+        await self.client.send(ClientMessage.FLOOR_PREEMPT)
+
+    async def action_stop(self) -> None:
+        await self.client.send(ClientMessage.STREAM_STOP)
+
+    async def action_approve(self) -> None:
+        await self._trancher(True)
+
+    async def action_deny(self) -> None:
+        await self._trancher(False)
+
+    async def _trancher(self, allow: bool) -> None:
+        """Tranche la plus ancienne demande en attente."""
+        if not self.view.approvals:
+            self._message = "aucune demande d'approbation"
+            return
+        if not self.view.can(Capability.TOOLS_APPROVE):
+            self._message = "⚠ vous ne pouvez pas approuver un appel d'outil"
+            return
+        approval_id = next(iter(self.view.approvals))
+        await self.client.send(ClientMessage.TOOL_APPROVE, approval_id=approval_id, allow=allow)
+
+
+# ------------------------------------------------------------------ rendu pur
+
+
+def _rendre_tour(tour: Turn) -> Text:
+    """Un tour en `Text`. Pur : testable sans application."""
+    out = Text()
+    out.append(f"{tour.author or '?'}\n", style="bold cyan")
+
+    if tour.prompt:
+        out.append(tour.prompt.strip() + "\n\n", style="italic")
+
+    for outil in tour.tools.values():
+        marque = "✗" if outil["is_error"] else ("…" if outil["result"] is None else "✓")
+        out.append(f"  {marque} {outil['name']}\n", style="red" if outil["is_error"] else "dim")
+        if outil["result"] is not None:
+            out.append(_extrait(outil["result"]), style="dim")
+
+    if tour.body:
+        out.append(tour.body)
+        if not tour.body.endswith("\n"):
+            out.append("\n")
+    elif tour.thinking:
+        out.append("réflexion…\n", style="dim italic")
+
+    if tour.ended:
+        bits = []
+        if tour.ended.get("interrupted"):
+            bits.append(f"interrompu ({tour.ended.get('terminal_reason') or '?'})")
+        if tour.ended.get("cost_usd") is not None:
+            bits.append(f"${float(tour.ended['cost_usd']):.4f}")
+        if bits:
+            out.append(" · ".join(bits) + "\n", style="dim")
+    return out
+
+
+def _extrait(contenu: Any) -> str:
+    if isinstance(contenu, list):
+        texte = "\n".join(
+            b if isinstance(b, str) else str(b.get("text", b)) for b in contenu
+        )
+    else:
+        texte = contenu if isinstance(contenu, str) else str(contenu)
+    lignes = texte.strip().splitlines()[:6]
+    extrait = "\n".join(f"      {ligne}" for ligne in lignes)
+    return (extrait[:MAX_TOOL_CHARS] + "…\n") if len(extrait) > MAX_TOOL_CHARS else extrait + "\n"
+
+
+def _rendre_cote(view: RoomView, statut: str, message: str) -> Text:
+    out = Text()
+    out.append(f"{statut}\n\n", style="dim")
+
+    f = view.floor
+    out.append("Jeton\n", style="bold")
+    out.append(f"  {f.get('state', '?')}", style="yellow")
+    if f.get("holder"):
+        out.append(f" · {f['holder']}")
+    if f.get("expires_in") is not None and f.get("state") == "held":
+        out.append(f" ({round(f['expires_in'])} s)", style="dim")
+    out.append("\n")
+    for i, attente in enumerate(f.get("queue") or [], start=1):
+        priorite = f" (p{attente['priority']})" if attente.get("priority") else ""
+        out.append(f"  {i}. {attente['who']}{priorite}\n", style="dim")
+
+    if view.approvals:
+        out.append("\nApprobations\n", style="bold")
+        for demande in view.approvals.values():
+            out.append(f"  {demande['tool']}", style="yellow")
+            out.append(f" · {demande.get('author') or '?'}\n", style="dim")
+        out.append("  F8 approuver · F9 refuser\n", style="dim")
+
+    out.append("\nPrésents\n", style="bold")
+    out.append(f"  {' · '.join(view.present) or 'personne'}\n", style="dim")
+
+    if not view.can(Capability.SPEAK):
+        out.append("\nLecture seule\n", style="dim italic")
+    if message:
+        out.append(f"\n{message}\n", style="bold red")
+    return out
+
+
+def run(base_url: str, token: str, room_id: str) -> None:
+    """Point d'entrée de `claudeshare join`."""
+    ClaudeShareTUI(RoomClient(base_url, token, room_id)).run()

@@ -257,9 +257,13 @@ def test_une_generation_n_expire_pas():
 
 def test_le_jeton_libre_ne_declenche_rien():
     jeton, horloge = floor()
+    avant = jeton.signature
     horloge.avance(10_000)
+
     resultat = jeton.tick()
-    assert not resultat.changed
+
+    assert (resultat.granted, resultat.revoked) == (None, None)
+    assert jeton.signature == avant
 
 
 # ------------------------------------------------------------------- tours

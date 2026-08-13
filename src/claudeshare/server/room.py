@@ -65,6 +65,9 @@ class Room:
         self.log = EventLog()
         self.broker = broker
         self.floor = floor or Floor()
+        #: Dernier état du jeton annoncé au salon. Sert à ne diffuser que les
+        #: vrais changements — voir `_apply`.
+        self._floor_signature = self.floor.signature
         self._ticker: asyncio.Task[Any] | None = None
         #: Nettoyages en cours. Référencés pour qu'ils ne soient pas ramassés
         #: avant la fin — `create_task` ne garde qu'une référence faible.
@@ -251,7 +254,12 @@ class Room:
             # Le drainage du tampon est assuré par `interrupt()` : sans lui, les
             # messages du tour coupé se mélangeraient au tour suivant.
             await self.agent.interrupt()
-        if outcome.changed:
+
+        # On diffuse sur **ce qui a changé de visible**, pas sur ce que la
+        # transition prétend avoir fait. Voir `Floor.signature` : c'est la seule
+        # formulation qu'on ne peut pas oublier d'appliquer en ajoutant un cas.
+        if (signature := self.floor.signature) != self._floor_signature:
+            self._floor_signature = signature
             await self._on_event(
                 Event(
                     type=EventType.FLOOR_CHANGED,

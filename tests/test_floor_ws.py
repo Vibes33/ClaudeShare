@@ -93,6 +93,35 @@ def test_rendre_la_main_sert_le_suivant(harness: Harness, client):
         assert floor_until(b, "bob")["data"]["queue"] == []
 
 
+def test_le_salon_apprend_chaque_etat_du_jeton(harness: Harness, client):
+    """Le cycle complet d'un envoi doit être annoncé, pas seulement ses bords.
+
+    Deux transitions passaient sous silence : le passage en génération, et la
+    libération d'un tour que personne n'attendait. Elles ne s'annonçaient pas
+    parce qu'elles ne donnent ni ne retirent le jeton à personne — mais elles
+    changent bien l'état affiché. Une interface restait donc bloquée sur « en
+    cours », et le bouton « interrompre », conditionné à l'état `generating`,
+    ne s'activait jamais.
+    """
+    alice = harness.user("alice")
+    room = harness.room(alice, workspace="a")
+
+    with connect(client, harness, room, alice) as a:
+        greet(a)
+        a.send_json(send("bonjour"))
+
+        etats = []
+        for _ in range(40):
+            frame = a.receive_json()
+            if frame["type"] != "floor.changed":
+                continue
+            etats.append(frame["data"]["state"])
+            if frame["data"]["state"] == "open":
+                break
+
+    assert etats == ["held", "generating", "open"]
+
+
 def test_un_lecteur_ne_peut_pas_demander_la_parole(harness: Harness, client):
     alice, bob = harness.user("alice"), harness.user("bob")
     room = harness.room(alice, workspace="a")

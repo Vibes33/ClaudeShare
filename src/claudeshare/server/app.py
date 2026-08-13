@@ -17,6 +17,8 @@ from typing import Any
 
 from claude_agent_sdk import CLINotFoundError, ProcessError
 from fastapi import FastAPI, WebSocket
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from ..config import AuthMode, Settings, check_auth_mode, describe_auth
@@ -27,6 +29,7 @@ from .api.invites import build_invites_router, build_redeem_router
 from .api.members import build_members_router
 from .api.roles import build_roles_router
 from .api.rooms import build_rooms_router
+from .auth.cli import build_cli_router
 from .auth.identity import SessionSigner
 from .auth.oauth import ProviderConfig, build_oauth
 from .auth.routes import build_auth_router
@@ -35,6 +38,9 @@ from .room import RoomManager
 from .ws import serve_socket
 
 logger = logging.getLogger(__name__)
+
+#: Client web servi tel quel — pas de build, pas d'étape de compilation.
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 def _startup_hint(exc: Exception, settings: Settings, sandbox: bool) -> str:
@@ -128,6 +134,10 @@ def create_app(
     # sans ce middleware, le rappel échoue à la vérification anti-CSRF.
     app.add_middleware(SessionMiddleware, secret_key=secret_key, same_site="lax")
 
+    # Avant le routeur d'authentification : celui-ci se termine par un
+    # `/auth/{name}` attrape-tout qui capterait `/auth/cli`. FastAPI apparie
+    # dans l'ordre de déclaration, routeurs compris.
+    app.include_router(build_cli_router(ctx, STATIC_DIR))
     app.include_router(build_auth_router(ctx))
     app.include_router(build_rooms_router(ctx))
     app.include_router(build_members_router(ctx))
@@ -191,6 +201,14 @@ def create_app(
             )
         finally:
             ctx.remember_session(room_id)
+
+    # Montés en dernier : `/static` ne doit pas pouvoir masquer une route d'API,
+    # et `/` est la page qui sert de porte d'entrée à tout le reste.
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+    @app.get("/", include_in_schema=False)
+    async def index() -> FileResponse:
+        return FileResponse(STATIC_DIR / "index.html")
 
     return app
 

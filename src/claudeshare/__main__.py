@@ -1,8 +1,14 @@
 """Point d'entrée en ligne de commande.
 
-Pour l'instant seule la sous-commande `debug` existe : elle pilote une session
-Claude Code en local, sans serveur ni permissions, pour valider le pont SDK.
-Les sous-commandes `serve`, `login` et `join` viendront aux étapes suivantes.
+Quatre sous-commandes, deux côtés :
+
+- côté hôte — `serve` expose des salons, `debug` pilote une session en local
+  sans serveur ni permissions (c'est le banc d'essai du pont SDK) ;
+- côté participant — `login` appaire ce terminal auprès d'un serveur, `join`
+  ouvre l'interface d'un salon.
+
+`login` et `join` ne demandent que l'extra `tui` : on peut installer le client
+sans traîner FastAPI, SQLAlchemy et le reste du serveur.
 """
 
 from __future__ import annotations
@@ -16,6 +22,10 @@ from pathlib import Path
 from .agent import SessionSupervisor
 from .config import AuthModeError, Settings, check_auth_mode, describe_auth
 from .events import Event, EventType
+
+#: Hôte par défaut du client terminal. Le même que celui de `serve`, pour que le
+#: cas courant — un serveur local — ne demande aucune option.
+DEFAULT_SERVER = "http://127.0.0.1:8765"
 
 
 def _render(event: Event) -> None:
@@ -112,15 +122,106 @@ def main(argv: list[str] | None = None) -> int:
         help="désactiver le bac à sable (déconseillé : la session a un shell)",
     )
 
+    login = sub.add_parser("login", help="appairer ce terminal auprès d'un serveur")
+    login.add_argument("--server", default=DEFAULT_SERVER, help=f"défaut : {DEFAULT_SERVER}")
+    login.add_argument("--label", default="terminal", help="étiquette du jeton, pour le révoquer")
+    login.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="ne pas tenter d'ouvrir le navigateur (SSH, machine sans affichage)",
+    )
+    login.add_argument("--forget", action="store_true", help="oublier le jeton local de ce serveur")
+
+    join = sub.add_parser("join", help="ouvrir un salon dans le terminal")
+    join.add_argument("room", nargs="?", help="identifiant du salon ; omis, la liste s'affiche")
+    join.add_argument("--server", default=DEFAULT_SERVER, help=f"défaut : {DEFAULT_SERVER}")
+
     args = parser.parse_args(argv)
     try:
         if args.command == "debug":
             return asyncio.run(_debug(args.workspace.resolve()))
         if args.command == "serve":
             return _serve(args)
+        if args.command == "login":
+            return _login(args)
+        if args.command == "join":
+            return _join(args)
     except KeyboardInterrupt:
         return 130
     return 1
+
+
+def _login(args) -> int:
+    from .tui.credentials import forget
+    from .tui.login import LoginError, login
+
+    if args.forget:
+        oublie = forget(args.server)
+        print("jeton oublié" if oublie else "aucun jeton enregistré pour ce serveur")
+        return 0
+
+    try:
+        login(args.server, label=args.label, open_browser=not args.no_browser)
+    except LoginError as exc:
+        print(f"\x1b[31m{exc}\x1b[0m", file=sys.stderr)
+        return 2
+    return 0
+
+
+def _join(args) -> int:
+    from .tui.credentials import load
+
+    credential = load(args.server)
+    if credential is None:
+        print(
+            f"\x1b[31mAucun jeton pour {args.server}.\x1b[0m\n"
+            f"  claudeshare login --server {args.server}",
+            file=sys.stderr,
+        )
+        return 2
+
+    room = args.room or _choisir_salon(credential)
+    if room is None:
+        return 2
+
+    from .tui.app import run
+
+    run(credential.base_url, credential.token, room)
+    return 0
+
+
+def _choisir_salon(credential) -> str | None:
+    """Sans identifiant de salon, affiche ceux dont on est membre.
+
+    On n'en ouvre un d'office que s'il n'y en a qu'un : deviner lequel parmi
+    plusieurs, c'est se tromper une fois sur deux.
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    requete = urllib.request.Request(  # noqa: S310 — URL fournie par l'utilisateur
+        f"{credential.base_url}/api/rooms",
+        headers={"Authorization": f"Bearer {credential.token}"},
+    )
+    try:
+        with urllib.request.urlopen(requete, timeout=10) as reponse:  # noqa: S310
+            salons = json.loads(reponse.read() or b"[]")
+    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+        print(f"\x1b[31mserveur injoignable : {exc}\x1b[0m", file=sys.stderr)
+        return None
+
+    if not salons:
+        print("Vous n'êtes membre d'aucun salon.", file=sys.stderr)
+        return None
+    if len(salons) == 1:
+        return salons[0]["id"]
+
+    print("Salons disponibles :")
+    for salon in salons:
+        print(f"  {salon['id']}  {salon['title']}")
+    print("\nclaudeshare join <identifiant>")
+    return None
 
 
 def _serve(args) -> int:

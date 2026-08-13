@@ -1,9 +1,10 @@
 """Protocole WebSocket — vocabulaire commun au serveur et aux deux clients.
 
-Source de vérité unique côté Python. Le client web de l'étape 8 en aura besoin
-sous forme de `protocol.js` ; ce miroir devra venir avec un test qui échoue
-quand les deux divergent, faute de quoi c'est le genre de duplication qui se
-désynchronise en silence.
+**Source de vérité unique, ici en Python.** Le navigateur ne pouvant pas importer
+ce module, `server/static/protocol.js` en redit les constantes ; c'est de la
+duplication assumée, et `tests/test_protocol.py` la garde en échouant dès que les
+deux divergent. Modifier une valeur ici sans la reporter là-bas fait rater la
+suite — c'est voulu.
 
 Une seule enveloppe dans les deux sens :
 

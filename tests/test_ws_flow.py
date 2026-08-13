@@ -190,7 +190,9 @@ def test_la_reconnexion_ne_renvoie_que_le_manquant(harness: Harness, client):
     with client.websocket_connect(f"/ws/rooms/{room}", headers=headers) as ws:
         greet(ws)
         ws.send_json(send("salut"))
-        frames = collect(ws, "turn.ended")
+        # Jusqu'à la libération du jeton, et non jusqu'à `turn.ended` : le tour
+        # rend la main dans son `finally`, donc l'annonce suit sa propre fin.
+        frames = collect(ws, "turn.ended") + collect(ws, "floor.changed")
         dernier = max(f["seq"] for f in frames if f["seq"] is not None)
 
     with client.websocket_connect(f"/ws/rooms/{room}", headers=headers) as ws:

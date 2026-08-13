@@ -7,16 +7,20 @@ Claude Code packagé en bibliothèque — piloté avec les identifiants du CLI, 
 sur abonnement plutôt que sur l'API Messages.
 
 > [!WARNING]
-> **Projet en construction.** Le serveur est complet : identité, cloisonnement,
-> droits, invitations, jeton de parole et approbation d'outil. Il manque les
-> interfaces (étape 8) — tout passe pour l'instant par l'API et la WebSocket.
-> Gardez l'écoute sur `127.0.0.1` : rien n'a été éprouvé en exposition réelle.
+> **Projet en construction.** Tout est là — serveur, droits, invitations, jeton
+> de parole, client web et client terminal. Il manque l'hébergement (étape 9) :
+> ni TLS, ni limitation de débit, ni persistance du journal. Gardez l'écoute sur
+> `127.0.0.1`, rien n'a été éprouvé en exposition réelle.
 
 ## Démarrer
 
 ```bash
-uv sync --extra server
+uv sync --extra server --extra tui
 ```
+
+L'extra `server` porte l'hôte, `tui` le client terminal. Ils sont séparés pour
+qu'on puisse installer le client sans traîner FastAPI et SQLAlchemy — la suite
+de tests, elle, a besoin des deux.
 
 **Session locale, seul** — le chemin utilisable aujourd'hui :
 
@@ -37,8 +41,15 @@ Tous les dossiers de salon sont confinés sous `--workspace-root`. Créer un sal
 revient à choisir ce que l'agent peut lire et écrire : sans ce confinement, ce
 serait n'importe quel dossier de la machine.
 
-Le serveur expose le WebSocket et l'API, mais l'interface web et le client
-terminal n'existent pas encore (étape 8).
+Le client web est servi par le même processus : ouvrez
+<http://127.0.0.1:8765/>.
+
+**Depuis un terminal** :
+
+```bash
+uv run claudeshare login --server http://127.0.0.1:8765
+uv run claudeshare join            # ou : join <identifiant de salon>
+```
 
 ### Se connecter
 
@@ -63,8 +74,23 @@ CLAUDESHARE_SECRET_KEY=$(openssl rand -base64 32)   # sinon les sessions sautent
 ```
 
 Le serveur ClaudeShare est le **seul client OAuth enregistré** : un client
-terminal ne parle jamais à GitHub, il s'authentifie contre le serveur et repart
-avec un jeton porteur (`POST /auth/tokens`).
+terminal ne parle jamais à GitHub. Il ouvre un appairage, affiche un code court,
+et vous l'approuvez dans un navigateur déjà connecté :
+
+```
+terminal ──── code ZWSL-X2K8 ────► vous ──── /auth/cli?code=… ────► serveur
+   ▲                                                                   │
+   └──────────────────── jeton porteur, en 0600 ───────────────────────┘
+```
+
+Le plan prévoyait deux chemins — un écouteur `127.0.0.1` en local, un code
+d'appairage en SSH. Un seul est implémenté : celui-ci marche dans les deux cas
+(en local le navigateur s'ouvre tout seul), et un second chemin
+d'authentification serait un chemin peu emprunté, donc peu testé.
+
+Le code court ne vaut rien pour qui le devine : l'approuver exige d'être déjà
+connecté, et donne alors un jeton pour *son propre* compte. C'est pour ça que le
+terminal affiche « connecté en tant que @… » à la fin — c'est la vérification.
 
 ```bash
 uv run pytest -q
@@ -301,6 +327,61 @@ Les routes qu'emprunte une personne pas encore membre (`/api/invites/*`,
 y répondrait 404, puisque c'est justement ce qu'on vient corriger. Les mélanger
 obligerait à percer un trou dans la barrière de salon.
 
+## Les deux clients
+
+Web et terminal parlent le **même protocole** et n'ont aucun privilège l'un sur
+l'autre. Ce sont deux vues du même salon.
+
+| | Web | Terminal |
+|---|---|---|
+| Servi par | le même processus, sans build | `claudeshare join` |
+| Rendu | sous-ensemble markdown en nœuds DOM | `rich.text.Text` |
+| Jeton de parole | boutons, grisés selon les droits | F2 · F3 · F4 · F5 |
+| Approbation | boutons dans le panneau | F8 approuver · F9 refuser |
+
+Les deux appliquent les mêmes deux règles de reprise, et ce sont celles qui se
+ratent : **dédoublonner sur `seq`**, parce que le serveur s'abonne avant de lire
+son journal et qu'un événement peut donc arriver deux fois ; et **remplacer le
+partiel d'un tour, jamais y concaténer**, sans quoi se reconnecter en pleine
+réponse en duplique tout le début.
+
+Un instantané de **reprise** ne contient que ce qui manque depuis `last_seq`. Le
+traiter comme un instantané initial — en effaçant l'historique avant de
+l'appliquer — viderait la conversation à chaque coupure réseau. Et il échappe au
+dédoublonnage, parce qu'il porte le `seq` courant du salon : le lui appliquer le
+ferait jeter dès qu'aucun événement n'est survenu pendant la coupure, et le
+client repartirait sans droits ni état du jeton.
+
+### Ne jamais construire de balisage depuis une chaîne
+
+Le texte affiché vient d'autres participants, du modèle, et de sorties d'outils —
+c'est-à-dire du contenu de fichiers arbitraires. Il est hostile par défaut.
+
+Le plan disait « échapper systématiquement, jamais d'`innerHTML` sur du contenu
+non échappé ». La règle appliquée est plus stricte : **aucun `innerHTML`, nulle
+part**. Tout passe par `createElement` et `textContent`. La différence n'est pas
+cosmétique — « échapper d'abord » se vérifie en relisant chaque appel, celle-ci
+se vérifie par un grep, et c'est ce que fait `tests/test_protocol.py`.
+
+Le terminal a son jumeau exact : une chaîne passée à un widget Textual est lue
+comme du **balisage console**, donc tout ce qui vient du réseau y est enveloppé
+dans un `Text`. Une sortie d'outil contenant `[bold red]` ne repeint l'écran de
+personne.
+
+Deux verrous de plus côté web : une CSP sans `unsafe-inline` (aucun script en
+ligne, aucune origine externe joignable), et les liens markdown limités à `http:`
+et `https:` — un `javascript:` s'affiche en texte brut plutôt que de disparaître,
+pour que le lecteur voie qu'on a filtré quelque chose.
+
+### Le miroir du protocole
+
+`server/static/protocol.js` redit en JavaScript des constantes qui vivent en
+Python. C'est de la duplication, et une duplication non gardée se désynchronise
+en silence — le symptôme serait un client qui ignore un type d'événement sans
+rien signaler. `tests/test_protocol.py` compare les deux et échoue à la moindre
+divergence, sur les quatre énumérations et la version de protocole. C'est la
+seule raison pour laquelle ce fichier a le droit d'exister.
+
 ## Architecture
 
 ```
@@ -334,6 +415,10 @@ arrivant tardif récupère via l'instantané.
 | `core/floor.py` | jeton de parole : file priorisée, préemption, expiration |
 | `agent/approval.py` | `can_use_tool` relié à une décision humaine |
 | `server/authz.py` | application sur les routes, déclaration pour la couverture |
+| `server/static/` | client web sans build : `protocol.js`, `render.js`, `app.js` |
+| `server/auth/cli.py` | appairage d'un terminal, façon *device code* |
+| `tui/client.py` | réduction d'état et reconnexion, sans terminal |
+| `tui/app.py` | interface Textual, simple vue de `RoomView` |
 
 ## État
 
@@ -346,7 +431,7 @@ arrivant tardif récupère via l'instantané.
 | 5. Permissions (rôles, droits à la carte) | ✅ |
 | 6. Invitations | ✅ |
 | 7. Jeton de parole et priorités | ✅ |
-| 8. Clients web et TUI | ⬜ |
+| 8. Clients web et TUI | ✅ |
 | 9. Hébergement | ⬜ |
 
 **Limites assumées en v1** : l'hôte est votre machine (les identifiants et les

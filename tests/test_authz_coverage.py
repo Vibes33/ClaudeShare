@@ -34,6 +34,17 @@ PUBLIQUES = {
     "/api/invites/preview": "présenter un lien avant de s'en servir",
     "/api/invites/redeem": "entrer dans un salon par un lien",
     "/api/join-requests": "demander l'accès à un salon dont on n'est pas membre",
+    # Appairage d'un terminal : par construction antérieur à toute identité.
+    # `start` et `poll` ne peuvent pas exiger de connexion — c'est précisément
+    # ce qu'on est en train d'obtenir. Ce qui protège, c'est qu'aucune des deux
+    # ne délivre quoi que ce soit tant qu'`approve`, elle, n'a pas vérifié une
+    # session authentifiée.
+    "/auth/cli/start": "ouvre un appairage, ne donne rien",
+    "/auth/cli/poll": "réclame le jeton d'un appairage déjà approuvé",
+    "/auth/cli": "page d'approbation ; l'identification se fait par ses appels",
+    "/auth/cli/pending": "exige une session dans son corps, pas un droit de salon",
+    "/auth/cli/approve": "exige une session dans son corps, pas un droit de salon",
+    "/": "page d'accueil du client web, servie à tout le monde",
 }
 # `/docs`, `/openapi.json` et `/redoc` sont des `Route` et non des `APIRoute` :
 # le parcours ne les collecte pas, elles n'ont donc pas à figurer ici.

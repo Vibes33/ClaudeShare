@@ -95,11 +95,6 @@ class Outcome:
     #: Secondes restantes, pour un refus de cooldown.
     retry_in: float | None = None
 
-    @property
-    def changed(self) -> bool:
-        """Y a-t-il de quoi diffuser un nouvel état ?"""
-        return bool(self.granted or self.revoked or self.position is not None)
-
 
 class Floor:
     """Le jeton de parole d'un salon.
@@ -147,6 +142,23 @@ class Floor:
 
     def waiting(self, who: str) -> bool:
         return any(w.who == who for w in self._queue)
+
+    @property
+    def signature(self) -> tuple[Any, ...]:
+        """Ce qui, dans `view()`, mérite d'être rediffusé quand ça change.
+
+        C'est ce que l'appelant compare pour décider s'il annonce un nouvel
+        état. Le faire ainsi plutôt qu'en marquant chaque transition n'est pas
+        un détail : deux transitions changeaient l'état sans se déclarer —
+        `begin_turn`, et la fin d'un tour sans personne en file — et les
+        interfaces restaient bloquées sur « en cours » indéfiniment. Une règle
+        qu'on ne peut pas oublier d'appliquer vaut mieux qu'un drapeau qu'on
+        oublie de poser.
+
+        `expires_in` en est volontairement absent : il bouge en continu, et le
+        diffuser inonderait le salon d'événements qui ne disent rien.
+        """
+        return (self._state, self._holder, tuple(w.who for w in sorted(self._queue)))
 
     def view(self) -> dict[str, Any]:
         """État diffusable. L'échéance est **relative** : une horloge monotone
