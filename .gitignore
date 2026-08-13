@@ -1,0 +1,21 @@
+# Environnement virtuel — contient le CLI Claude Code embarqué (~290 Mo)
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Configuration locale : peut contenir une clé API
+.env
+.env.*
+!.env.example
+
+# Réglages d'éditeur
+.DS_Store
+.idea/
+.vscode/
