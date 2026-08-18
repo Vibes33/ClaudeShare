@@ -58,22 +58,29 @@ def test_les_roles_livres_sont_semes_dans_chaque_salon(harness: Harness):
     assert noms == {"proprietaire", "moderateur", "ecrivain", "lecteur"}
 
 
-def test_le_dossier_de_travail_reste_sous_la_racine(harness: Harness, client):
-    """Le point le plus dangereux de cette API : sans confinement, créer un
-    salon revient à choisir n'importe quel dossier de la machine."""
+def test_le_relais_n_ouvre_aucun_dossier(harness: Harness, client):
+    """Le danger d'hier a changé de machine.
+
+    Tant que le serveur exécutait, créer un salon revenait à lui désigner un
+    dossier de sa machine — d'où un confinement sous une racine, et un refus des
+    noms d'évasion. Le relais n'ouvre plus rien : le dossier est choisi par
+    l'agent qui héberge, chez lui, par `claudeshare agent --workspace`.
+    L'étiquette est donc conservée telle quelle, y compris quand elle ressemble
+    à une attaque — parce qu'elle n'en est plus une, et prétendre la refuser
+    laisserait croire à une protection qui n'a plus d'objet.
+    """
     alice = harness.token(harness.user("alice"))
-    for evasion in ("../../etc", "/etc", "..", ".ssh"):
-        response = client.post(
+    for etiquette in ("../../etc", "/etc", "..", ".ssh"):
+        reponse = client.post(
             "/api/rooms",
-            json={"title": "malin", "workspace": evasion},
+            json={"title": "malin", "workspace": etiquette},
             headers=harness.auth(alice),
         )
-        assert response.status_code == 400, evasion
+        assert reponse.status_code == 201, etiquette
+        assert reponse.json()["workspace"] == etiquette
 
-    ok = client.post(
-        "/api/rooms", json={"title": "sain", "workspace": "sain"}, headers=harness.auth(alice)
-    ).json()
-    assert ok["workspace"].startswith(str(harness.ctx.workspace_root))
+    # Et rien n'a été créé sur le disque du relais.
+    assert not (harness.ctx.workspace_root / "etc").exists()
 
 
 def test_deux_salons_ont_deux_dossiers(harness: Harness, client):

@@ -37,6 +37,8 @@ const state = {
   order: [],
   present: [],
   floor: { state: "open", holder: null, queue: [], expires_in: null },
+  //: Qui héberge le salon. Sans agent, on lit mais on n'exécute pas.
+  agent: { connected: false, host: null, workspace: "" },
   approvals: new Map(),
   queued: null,
   //: Dernier prompt envoyé, rendu à son auteur s'il part en file.
@@ -54,7 +56,7 @@ let keepalive = 0;
 document.addEventListener("DOMContentLoaded", async () => {
   for (const id of [
     "app", "login", "providers", "rooms", "room", "title", "status", "who",
-    "transcript", "composer", "prompt", "send", "floor", "queue", "presence",
+    "transcript", "composer", "prompt", "send", "floor", "queue", "presence", "host",
     "approvals", "toasts", "actions",
   ]) {
     dom[id] = document.getElementById(id);
@@ -256,8 +258,11 @@ function appliquer(trame) {
       return erreur(d);
     case ServerMessage.PONG:
       return;
-    case "presence":
+    case ServerMessage.PRESENCE:
       state.present = d.present || [];
+      return peindre();
+    case ServerMessage.AGENT:
+      state.agent = d;
       return peindre();
     default:
       return evenement(trame.type, d);
@@ -278,7 +283,11 @@ function instantane(d) {
   state.caps = new Set(d.capabilities || []);
   state.present = d.present || [];
   state.floor = d.floor || state.floor;
+  state.agent = d.agent || state.agent;
   state.approvals = new Map((d.approvals || []).map((a) => [a.approval_id, a]));
+  // Le début de l'historique manque : dit une fois, à la reprise, plutôt que
+  // laissé deviner par une conversation qui commence au milieu.
+  if (d.truncated) toast("Historique tronqué : seuls les événements récents sont affichés.");
 
   if (!reprise) {
     state.turns = new Map();
@@ -424,6 +433,7 @@ function peindre(complet = false) {
 function dessiner() {
   dom.title.textContent = state.title;
   dom.presence.textContent = state.present.join(" · ") || "personne";
+  dessinerHote();
   dessinerJeton();
   dessinerApprobations();
   dessinerActions();
@@ -487,6 +497,28 @@ function texteDe(contenu) {
     return contenu.map((b) => (typeof b === "string" ? b : b.text || JSON.stringify(b))).join("\n");
   }
   return JSON.stringify(contenu, null, 2);
+}
+
+/**
+ * Qui exécute. Un salon sans agent se lit mais n'exécute pas — c'est la
+ * première chose à montrer, sinon un prompt qui ne part pas ressemble à une
+ * panne alors qu'il manque juste quelqu'un pour lancer son agent.
+ */
+function dessinerHote() {
+  const a = state.agent || {};
+  if (a.connected) {
+    replace(
+      dom.host,
+      elem("span", "etat", `hébergé par ${a.host || "?"}`),
+      ...(a.workspace ? [elem("span", "chemin", a.workspace)] : []),
+    );
+  } else {
+    replace(
+      dom.host,
+      elem("span", "etat absent", "aucun agent"),
+      elem("span", "vide", "Le propriétaire doit lancer « claudeshare agent »."),
+    );
+  }
 }
 
 function dessinerJeton() {
@@ -562,9 +594,14 @@ function dessinerActions() {
     }),
   );
 
-  dom.send.disabled = !peut(Capability.SPEAK);
+  // Le droit d'écrire et la présence d'un exécutant sont deux choses
+  // différentes, et le placeholder doit dire laquelle manque.
+  const heberge = !!(state.agent && state.agent.connected);
+  dom.send.disabled = !peut(Capability.SPEAK) || !heberge;
   dom.prompt.disabled = !peut(Capability.SPEAK);
-  dom.prompt.placeholder = peut(Capability.SPEAK) ? "Écrire à Claude…" : "Lecture seule";
+  dom.prompt.placeholder = !peut(Capability.SPEAK)
+    ? "Lecture seule"
+    : (heberge ? "Écrire à Claude…" : "Personne n'héberge ce salon");
 }
 
 function statut(texte) {

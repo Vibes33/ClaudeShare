@@ -1,10 +1,15 @@
-"""Application ASGI.
+"""Application ASGI — le relais.
 
 Pourquoi ASGI et pas WSGI : ClaudeShare n'est presque que des connexions
 longues, et WSGI n'a aucune notion de connexion bidirectionnelle persistante.
-Surtout, le superviseur est déjà de l'asyncio — sous ASGI il tourne dans *la
-même boucle* que les WebSockets, et pousser un delta vers les abonnés est un
-simple `await`, sans pont entre threads.
+Deux familles de sockets s'y rejoignent dans la même boucle — les participants
+sur `/ws/rooms/{id}`, les agents sur `/ws/agents/{id}` — et relayer un delta de
+l'une vers les autres est un simple `await`, sans pont entre threads.
+
+**Ce processus n'exécute rien.** Ni CLI Claude Code, ni shell, ni bac à sable :
+tout ça vit chez les agents, sur les machines de leurs propriétaires. Ce qui
+reste ici est de l'identité, des droits, de la coordination et un journal —
+c'est-à-dire un service sans état d'exécution, déployable n'importe où.
 """
 
 from __future__ import annotations
@@ -17,14 +22,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from claude_agent_sdk import CLINotFoundError, ProcessError
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from ..config import AuthMode, Settings, check_auth_mode, describe_auth
+from ..config import Settings, check_auth_mode, describe_auth
 from ..core.broker import build_broadcaster
+from ..core.capabilities import Capability
 from ..core.workspace import ensure_root
 from ..db.eventstore import DatabaseLogStore
 from ..db.models import Room
@@ -42,6 +47,7 @@ from .middleware import RateLimitMiddleware, SecurityHeadersMiddleware
 from .ratelimit import Rule
 from .room import RoomManager
 from .ws import serve_socket
+from .ws_agents import serve_agent
 
 logger = logging.getLogger(__name__)
 
@@ -79,45 +85,15 @@ RATE_RULES: tuple[tuple[str, Rule], ...] = (
 RATE_DEFAULT = Rule(limit=240, per_s=60)
 
 
-def _startup_hint(exc: Exception, settings: Settings, sandbox: bool) -> str:
-    """Traduit un échec de démarrage du CLI en quelque chose d'actionnable."""
-    causes = ["Le CLI Claude Code n'a pas démarré."]
-
-    if isinstance(exc, CLINotFoundError):
-        causes.append("Binaire introuvable — vérifiez l'installation du SDK.")
-        return "\n".join(causes)
-
-    if settings.auth_mode is AuthMode.PILOT:
-        causes.append(
-            "Cause la plus probable : aucune session d'abonnement ouverte.\n"
-            "  En local     : claude auth login\n"
-            "  En conteneur : docker compose run --rm claudeshare-login"
-        )
-    else:
-        causes.append("Mode libre : vérifiez que ANTHROPIC_API_KEY est valide.")
-
-    if sandbox:
-        causes.append(
-            "Autre cause possible : le bac à sable n'a pas pu démarrer. Sous Docker,\n"
-            "  bubblewrap a besoin de `security_opt: seccomp:unconfined`, faute de quoi\n"
-            "  le serveur refuse de démarrer plutôt que d'exécuter du shell sans\n"
-            "  confinement. Sinon, lancez avec --no-sandbox."
-        )
-
-    causes.append(f"Erreur d'origine : {exc}")
-    return "\n".join(causes)
-
-
 def create_app(
     *,
     workspace_root: Path,
     settings: Settings | None = None,
-    sandbox: bool = True,
     database_url: str | None = None,
     secret_key: str | None = None,
     public_https: bool = False,
 ) -> FastAPI:
-    settings = settings or Settings(workspace=workspace_root, sandbox=sandbox)
+    settings = settings or Settings(workspace=workspace_root)
     # Le mode d'authentification est vérifié au démarrage, jamais deviné en
     # cours de route : une clé API oubliée dans l'environnement basculerait la
     # facturation à l'usage sans le dire.
@@ -156,7 +132,6 @@ def create_app(
         ),
         workspace_root=root,
         public_https=public_https or settings.public_https,
-        sandbox=sandbox,
     )
 
     @asynccontextmanager
@@ -203,7 +178,9 @@ def create_app(
         return {
             "status": "ok",
             "auth_mode": str(settings.auth_mode),
-            "sandbox": sandbox,
+            # Le relais n'exécute rien : le bac à sable est une affaire d'agent,
+            # et l'annoncer ici laisserait croire qu'il protège ce processus.
+            "agents": sorted(r.id for r in ctx.rooms.list() if r.hosted),
             "providers": sorted(str(p) for p in providers),
             "live_rooms": [r.id for r in ctx.rooms.list()],
         }
@@ -241,7 +218,7 @@ def create_app(
                 return
             detached = (record.id, record.title, record.workspace, record.session_id)
 
-        live = await _ensure_live(ctx, detached, sandbox)
+        live = await _ensure_live(ctx, detached)
         try:
             await serve_socket(
                 websocket,
@@ -254,6 +231,59 @@ def create_app(
             )
         finally:
             ctx.remember_session(room_id)
+
+    @app.websocket("/ws/agents/{room_id}")
+    async def agent_socket(websocket: WebSocket, room_id: str) -> None:
+        """Point d'entrée des agents. Réservé à qui peut héberger le salon."""
+        with ctx.db.session() as session:
+            principal = ctx.principal_ws(websocket, session)
+            if principal is None:
+                await websocket.close(code=4401)
+                return
+
+            from ..core.permissions import resolve
+            from ..db.models import Role
+            from .auth.identity import membership_of
+
+            membership = membership_of(session, room_id, principal.user_id)
+            if membership is None:
+                await websocket.close(code=4404)
+                return
+            # `room.settings` règle « dossier de travail, politique d'outils,
+            # mode de permission » : c'est exactement ce que décide la machine
+            # qui exécute. Héberger sans elle serait contourner ce réglage.
+            if str(Capability.SETTINGS) not in resolve(
+                session.get(Role, membership.role_id), membership
+            ):
+                await websocket.close(code=4403)
+                return
+
+            record = session.get(Room, room_id)
+            if record is None or record.archived:
+                await websocket.close(code=4404)
+                return
+            detached = (record.id, record.title, record.workspace, record.session_id)
+
+        live = await _ensure_live(ctx, detached)
+
+        async def retenir(session_id: str) -> None:
+            """Persiste la session et le dossier annoncés par l'agent.
+
+            C'est le relais qui s'en souvient, parce que l'agent suivant peut
+            être sur une autre machine — et c'est la session qui lui permettra
+            de reprendre le contexte plutôt que de repartir de zéro.
+            """
+            live.session_id = session_id
+            with ctx.db.session() as session:
+                enregistrement = session.get(Room, room_id)
+                if enregistrement is None:
+                    return
+                if enregistrement.session_id != session_id:
+                    enregistrement.session_id = session_id
+                if live.agent.workspace:
+                    enregistrement.workspace = live.agent.workspace
+
+        await serve_agent(websocket, live, principal.label, on_session=retenir)
 
     # Montés en dernier : `/static` ne doit pas pouvoir masquer une route d'API,
     # et `/` est la page qui sert de porte d'entrée à tout le reste.
@@ -326,24 +356,20 @@ def _priority_of(ctx: ServerContext, room_id: str, user_id: str) -> int:
         return membership.priority if membership else 0
 
 
-async def _ensure_live(ctx: ServerContext, detached: tuple, sandbox: bool):
-    """Monte la session du salon à la demande."""
-    room_id, title, workspace, session_id = detached
+async def _ensure_live(ctx: ServerContext, detached: tuple):
+    """Monte la coordination d'un salon à la demande.
+
+    Ne démarre plus aucune session Claude : elle vit chez l'agent de son
+    propriétaire. Ce qu'on monte ici est un journal, un jeton de parole et une
+    liste de présents — de quoi lire et se coordonner, même quand personne
+    n'héberge.
+    """
+    room_id, title, _workspace, session_id = detached
     existing = ctx.rooms.get(room_id)
     if existing is not None:
         return existing
 
-    live = ctx.rooms.create(
-        room_id,
-        workspace=Path(workspace),
-        title=title,
-        sandbox=sandbox,
-        session_id=session_id,
-    )
-    try:
-        await live.start()
-    except (CLINotFoundError, ProcessError) as exc:
-        await ctx.rooms.aclose()
-        raise RuntimeError(_startup_hint(exc, ctx.settings, sandbox)) from exc
+    live = ctx.rooms.create(room_id, title=title, session_id=session_id)
+    await live.start()
     ctx._started.add(room_id)
     return live

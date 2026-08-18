@@ -109,18 +109,14 @@ def main(argv: list[str] | None = None) -> int:
 
     serve = sub.add_parser("serve", help="exposer des salons partagés")
     serve.add_argument(
-        "--workspace-root",
+        "--state-dir",
         type=Path,
-        default=Path.cwd() / "workspaces",
-        help="racine sous laquelle tous les dossiers de salon sont confinés",
+        default=Path.cwd() / "state",
+        dest="workspace_root",
+        help="où le relais range sa base (il n'exécute rien : pas de workspace)",
     )
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8765)
-    serve.add_argument(
-        "--no-sandbox",
-        action="store_true",
-        help="désactiver le bac à sable (déconseillé : la session a un shell)",
-    )
     serve.add_argument(
         "--workers",
         type=int,
@@ -145,9 +141,10 @@ def main(argv: list[str] | None = None) -> int:
         help="défaut : CLAUDESHARE_DATABASE_URL, sinon la base locale du workspace",
     )
     migrate.add_argument(
-        "--workspace-root",
+        "--state-dir",
         type=Path,
-        default=Path.cwd() / "workspaces",
+        default=Path.cwd() / "state",
+        dest="workspace_root",
         help="sert à retrouver la base locale quand aucune URL n'est donnée",
     )
     migrate.add_argument(
@@ -166,6 +163,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     login.add_argument("--forget", action="store_true", help="oublier le jeton local de ce serveur")
 
+    agent = sub.add_parser(
+        "agent", help="héberger un de vos salons depuis cette machine"
+    )
+    agent.add_argument("room", nargs="?", help="identifiant du salon ; omis, la liste s'affiche")
+    agent.add_argument("--server", default=DEFAULT_SERVER, help=f"défaut : {DEFAULT_SERVER}")
+    agent.add_argument(
+        "--workspace",
+        type=Path,
+        default=Path.cwd(),
+        help="dossier de travail de la session (défaut : dossier courant)",
+    )
+    agent.add_argument(
+        "--no-sandbox",
+        action="store_true",
+        help="désactiver le bac à sable (déconseillé : la session a un shell)",
+    )
+
     join = sub.add_parser("join", help="ouvrir un salon dans le terminal")
     join.add_argument("room", nargs="?", help="identifiant du salon ; omis, la liste s'affiche")
     join.add_argument("--server", default=DEFAULT_SERVER, help=f"défaut : {DEFAULT_SERVER}")
@@ -182,6 +196,8 @@ def main(argv: list[str] | None = None) -> int:
             return _login(args)
         if args.command == "join":
             return _join(args)
+        if args.command == "agent":
+            return _agent(args)
     except KeyboardInterrupt:
         return 130
     return 1
@@ -200,6 +216,62 @@ def _login(args) -> int:
         login(args.server, label=args.label, open_browser=not args.no_browser)
     except LoginError as exc:
         print(f"\x1b[31m{exc}\x1b[0m", file=sys.stderr)
+        return 2
+    return 0
+
+
+def _agent(args) -> int:
+    """Héberge un salon : c'est ici que tourne la session Claude Code.
+
+    Le processus reste au premier plan tant qu'il héberge. C'est voulu : tant
+    qu'il tourne, le salon est exécutable ; dès qu'il s'arrête, les
+    participants le voient et savent que plus rien ne partira.
+    """
+    from .agent.worker import Worker
+    from .tui.credentials import load
+
+    settings = Settings()
+    try:
+        check_auth_mode(settings)
+    except AuthModeError as exc:
+        print(f"\x1b[31m{exc}\x1b[0m", file=sys.stderr)
+        return 2
+
+    credential = load(args.server)
+    if credential is None:
+        print(
+            f"\x1b[31mAucun jeton pour {args.server}.\x1b[0m\n"
+            f"  claudeshare login --server {args.server}",
+            file=sys.stderr,
+        )
+        return 2
+
+    room = args.room or _choisir_salon(credential)
+    if room is None:
+        return 2
+
+    workspace = args.workspace.resolve()
+    if args.no_sandbox:
+        print(
+            "\x1b[33m⚠ bac à sable désactivé — la session peut exécuter du shell "
+            "sans confinement. N'invitez personne.\x1b[0m",
+            file=sys.stderr,
+        )
+
+    print(f"\x1b[2mworkspace : {workspace}\x1b[0m")
+    print(f"\x1b[2m{describe_auth(settings)}\x1b[0m")
+    print(f"\x1b[2msalon {room} sur {args.server} — Ctrl-C arrête l'hébergement\x1b[0m\n")
+
+    ouvrier = Worker(
+        credential.base_url,
+        credential.token,
+        room,
+        workspace=workspace,
+        sandbox=not args.no_sandbox,
+    )
+    asyncio.run(ouvrier.run())
+    if ouvrier.fatal:
+        print(f"\x1b[31m{ouvrier.fatal}\x1b[0m", file=sys.stderr)
         return 2
     return 0
 
@@ -318,7 +390,6 @@ def _serve(args) -> int:
         app = create_app(
             workspace_root=args.workspace_root.resolve(),
             settings=settings,
-            sandbox=not args.no_sandbox,
             database_url=settings.database_url or None,
             secret_key=settings.secret_key or None,
             public_https=args.public_https,
@@ -327,12 +398,6 @@ def _serve(args) -> int:
         print(f"\x1b[31m{exc}\x1b[0m", file=sys.stderr)
         return 2
 
-    if args.no_sandbox:
-        print(
-            "\x1b[33m⚠ bac à sable désactivé — la session peut exécuter du shell "
-            "sans confinement. N'invitez personne.\x1b[0m",
-            file=sys.stderr,
-        )
     if args.host != "127.0.0.1" and not (args.public_https or args.behind_proxy):
         print(
             "\x1b[33m⚠ écoute hors de la boucle locale sans TLS annoncé. Les cookies\n"

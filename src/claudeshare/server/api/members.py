@@ -200,4 +200,8 @@ async def apply_live(
     )
 
     if str(Capability.SPEAK) in (perdues or ()) and live.agent.current_author == handle:
+        # L'interruption traverse maintenant le réseau jusqu'à l'agent. Le
+        # comportement ne change pas : retirer le droit de parler à quelqu'un
+        # dont le tour tourne doit couper ce tour, sinon ce n'est pas une
+        # révocation.
         await live.agent.interrupt()

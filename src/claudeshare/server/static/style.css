@@ -153,6 +153,10 @@ h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; colo
 #queue .moi { color: var(--texte); font-weight: 600; }
 #actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.8rem; }
 #presence { color: var(--doux); font-size: 0.88rem; }
+#host { display: flex; flex-direction: column; gap: 0.15rem; font-size: 0.88rem; }
+#host .etat { font-weight: 600; color: var(--ok); }
+#host .etat.absent { color: var(--alerte); }
+#host .chemin { word-break: break-all; }
 
 .bouton {
   padding: 0.4rem 0.75rem; font: inherit; font-size: 0.85rem;

@@ -9,13 +9,14 @@ import pytest
 from claude_agent_sdk import AssistantMessage, StreamEvent, TextBlock
 from fastapi.testclient import TestClient
 
-from claudeshare.agent import SessionSupervisor
+from claudeshare.config import Settings
 from claudeshare.core.capabilities import DEFAULT_ROLE, OWNER_ROLE
 from claudeshare.db.models import Provider, User
 from claudeshare.server.app import create_app
+from claudeshare.server.room import RoomManager
 from claudeshare.server.auth.identity import add_member, create_room, issue_token, upsert_user
 
-from .fakes import FakeClient, result
+from .fakes import FakeClient, LocalAgent, result
 
 SECRET = "k" * 32
 
@@ -38,12 +39,36 @@ def script() -> list:
 
 
 class Harness:
-    """Application montée, avec de quoi fabriquer identités et salons."""
+    """Application montée, avec de quoi fabriquer identités et salons.
 
-    def __init__(self, app, ctx, fake: FakeClient) -> None:
+    Depuis que l'exécution vit chez les agents, un salon monté par le relais
+    n'exécute rien tant que personne ne l'héberge. Le harnais branche donc un
+    `LocalAgent` sur chaque salon dès qu'il apparaît — c'est ce qui rend les
+    tests d'avant l'étape 10 encore lisibles : ils décrivent toujours un salon
+    utilisable, simplement l'exécutant est ailleurs.
+    """
+
+    def __init__(self, app, ctx, fake: FakeClient, reglage: dict) -> None:
         self.app = app
         self.ctx = ctx
         self.fake = fake
+        self.agents: dict[str, LocalAgent] = {}
+        self._reglage = reglage
+
+    @property
+    def auto_host(self) -> bool:
+        """Un agent est-il branché d'office sur chaque salon monté ?
+
+        Vrai par défaut, pour que les tests antérieurs à l'étape 10 continuent
+        de décrire un salon utilisable. Le mettre à faux donne un salon **sans
+        hôte** — l'état normal d'un salon dont le propriétaire a fermé son
+        portable, et qu'il faut savoir tester.
+        """
+        return self._reglage["auto"]
+
+    @auto_host.setter
+    def auto_host(self, valeur: bool) -> None:
+        self._reglage["auto"] = valeur
 
     def user(
         self,
@@ -78,9 +103,9 @@ class Harness:
             return secret
 
     def room(self, owner_id: str, *, title: str = "salon", workspace: str = "demo") -> str:
-        from claudeshare.core.workspace import resolve_workspace
-
-        path = resolve_workspace(self.ctx.workspace_root, workspace)
+        """Crée un salon. `workspace` n'est qu'une étiquette : le dossier réel
+        est celui que l'agent annoncera."""
+        path = workspace
         with self.ctx.db.session() as session:
             owner = session.get(User, owner_id)
             room, _ = create_room(
@@ -102,6 +127,21 @@ class Harness:
     @staticmethod
     def auth(secret: str) -> dict[str, str]:
         return {"Authorization": f"Bearer {secret}"}
+
+    async def host(self, room_id: str) -> LocalAgent:
+        """Attache un agent au salon monté, s'il n'en a pas déjà un."""
+        live = self.ctx.rooms.get(room_id)
+        assert live is not None, "le salon n'est pas monté"
+        if room_id in self.agents:
+            return self.agents[room_id]
+        agent = await LocalAgent(live, self.fake).attach()
+        self.agents[room_id] = agent
+        return agent
+
+    async def unhost(self, room_id: str) -> None:
+        agent = self.agents.pop(room_id, None)
+        if agent is not None:
+            await agent.detach()
 
 
 def database_url(tmp_path: Path) -> str:
@@ -137,25 +177,42 @@ def database_url(tmp_path: Path) -> str:
 @pytest.fixture
 def harness(tmp_path: Path, monkeypatch) -> Harness:
     """Application réelle sur base éphémère, session Claude factice."""
-    fake = FakeClient(scripts=[script() for _ in range(6)])
-    original = SessionSupervisor.__init__
+    fake = FakeClient(scripts=[script() for _ in range(12)])
 
-    def patched(self, **kwargs):
-        kwargs.setdefault("client_factory", lambda *, options: _bind(fake, options))
-        original(self, **kwargs)
+    # Un agent est branché automatiquement à chaque salon monté. Sans ça, tous
+    # les tests écrits avant l'étape 10 se heurteraient à `no_agent` — or ce
+    # qu'ils décrivent (droits, jeton, diffusion) n'a pas changé de sens, seul
+    # l'exécutant a déménagé.
+    original_create = RoomManager.create
+    attaches: dict = {}
+    reglage = {"auto": True}
 
-    def _bind(client, options):
-        client.options = options
-        return client
+    def create(self, room_id: str, **kwargs):
+        room = original_create(self, room_id, **kwargs)
+        agent = LocalAgent(room, fake)
+        attaches[room_id] = agent
+        if reglage["auto"]:
+            room.schedule(agent.attach())
+        return room
 
-    monkeypatch.setattr(SessionSupervisor, "__init__", patched)
+    monkeypatch.setattr(RoomManager, "create", create)
+
+    # Réglages construits **sans** `.env` ni variables d'environnement : sinon
+    # la suite dépend de la machine qui la lance. Un `.env` local contenant de
+    # vrais identifiants OAuth suffirait à faire passer ou échouer des tests
+    # selon le poste — c'est exactement ce qui est arrivé.
+    for nom in [n for n in os.environ if n.startswith("CLAUDESHARE_")]:
+        monkeypatch.delenv(nom, raising=False)
 
     app = create_app(
         workspace_root=tmp_path / "workspaces",
+        settings=Settings(_env_file=None, workspace=tmp_path),
         database_url=database_url(tmp_path),
         secret_key=SECRET,
     )
-    return Harness(app, app.state.ctx, fake)
+    harnais = Harness(app, app.state.ctx, fake, reglage)
+    harnais.agents = attaches
+    return harnais
 
 
 @pytest.fixture

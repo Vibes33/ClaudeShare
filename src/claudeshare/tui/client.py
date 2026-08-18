@@ -73,6 +73,10 @@ class RoomView:
     floor: dict[str, Any] = field(
         default_factory=lambda: {"state": "open", "holder": None, "queue": [], "expires_in": None}
     )
+    #: Qui héberge le salon. Sans agent, on lit mais on n'exécute pas.
+    agent: dict[str, Any] = field(
+        default_factory=lambda: {"connected": False, "host": None, "workspace": ""}
+    )
     approvals: dict[str, dict[str, Any]] = field(default_factory=dict)
     turns: dict[str, Turn] = field(default_factory=dict)
     order: list[str] = field(default_factory=list)
@@ -87,6 +91,10 @@ class RoomView:
 
     def can(self, capability: str) -> bool:
         return str(capability) in self.capabilities
+
+    @property
+    def hosted(self) -> bool:
+        return bool(self.agent.get("connected"))
 
     def turn(self, turn_id: str, author: str | None = None) -> Turn:
         existant = self.turns.get(turn_id)
@@ -131,8 +139,11 @@ class RoomView:
             self.queued = data.get("position")
             self.floor = {k: v for k, v in data.items() if k != "position"}
             return (type_, None)
-        if type_ == "presence":
+        if type_ == ServerMessage.PRESENCE:
             self.present = list(data.get("present") or [])
+            return (type_, None)
+        if type_ == ServerMessage.AGENT:
+            self.agent = data
             return (type_, None)
         if type_ in (ServerMessage.ERROR, ServerMessage.PONG):
             return (type_, None)
@@ -157,8 +168,9 @@ class RoomView:
         self.capabilities = frozenset(data.get("capabilities") or ())
         self.present = list(data.get("present") or [])
         self.floor = data.get("floor") or self.floor
-        self.approvals = {d["approval_id"]: d for d in data.get("approvals") or []}
+        self.agent = data.get("agent") or self.agent
         self.truncated = bool(data.get("truncated"))
+        self.approvals = {d["approval_id"]: d for d in data.get("approvals") or []}
 
         if not reprise:
             self.turns = {}

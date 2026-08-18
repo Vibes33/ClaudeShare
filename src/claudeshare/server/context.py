@@ -28,7 +28,6 @@ class ServerContext:
     rooms: RoomManager
     workspace_root: Path
     public_https: bool = False
-    sandbox: bool = True
     _started: set[str] = field(default_factory=set)
 
     # ------------------------------------------------------------- identité
@@ -42,36 +41,37 @@ class ServerContext:
     # --------------------------------------------------------------- salons
 
     async def live_room(self, record: Room) -> LiveRoom:
-        """Salon actif correspondant à l'enregistrement, démarré au besoin.
+        """Salon coordonné correspondant à l'enregistrement, monté au besoin.
 
-        Les sessions sont montées **à la demande** : démarrer un CLI Claude Code
-        par salon au lancement du serveur coûterait un processus et une reprise
-        de contexte pour des salons que personne ne regarde.
+        Monté **à la demande** et sans rien exécuter : depuis que les sessions
+        Claude vivent chez les agents, un salon monté ici ne coûte qu'un journal
+        et un jeton de parole.
         """
         existing = self.rooms.get(record.id)
         if existing is not None:
             return existing
 
         live = self.rooms.create(
-            record.id,
-            workspace=Path(record.workspace),
-            title=record.title,
-            sandbox=self.sandbox,
-            session_id=record.session_id,
+            record.id, title=record.title, session_id=record.session_id
         )
-        await live.agent.start()
+        await live.start()
         self._started.add(record.id)
         return live
 
     def remember_session(self, room_id: str) -> None:
-        """Persiste l'identifiant de session Claude pour la reprise ultérieure."""
+        """Persiste l'identifiant de session Claude annoncé par l'agent.
+
+        Conservé par le relais et non par l'agent : c'est lui qui le rendra à
+        l'agent suivant, qui peut être sur une autre machine.
+        """
         live = self.rooms.get(room_id)
-        if live is None or live.agent.session_id is None:
+        sid = live.agent.session_id if live is not None else None
+        if sid is None:
             return
         with self.db.session() as session:
             record = session.get(Room, room_id)
-            if record is not None and record.session_id != live.agent.session_id:
-                record.session_id = live.agent.session_id
+            if record is not None and record.session_id != sid:
+                record.session_id = sid
 
     async def aclose(self) -> None:
         for room_id in list(self._started):

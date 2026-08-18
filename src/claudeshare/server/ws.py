@@ -8,6 +8,11 @@ Deux boucles concurrentes par connexion :
 Elles sont indépendantes parce qu'un tour dure des minutes : pendant qu'un
 participant reçoit des tokens, il doit pouvoir envoyer `stream.stop`.
 
+Un salon peut n'avoir **aucun agent** connecté : il reste lisible, on peut y
+prendre la parole et se mettre en file, mais aucun tour ne part. L'instantané le
+dit (`agent.connected`), et une soumission dans ce cas est refusée avec un code
+`no_agent` — ce qui manque est une action humaine, pas une permission.
+
 Ordre important à la connexion : on s'abonne **avant** d'envoyer l'instantané.
 Dans l'autre sens, un événement produit entre la lecture du journal et
 l'abonnement serait perdu — le client afficherait un trou sans jamais le savoir.
@@ -34,6 +39,7 @@ from ..protocol import (
     error,
     parse_client_message,
 )
+from .agentlink import NoAgentError
 from .ratelimit import RateLimiter, Rule
 from .room import Room
 
@@ -230,9 +236,16 @@ async def _handle_prompt(
 
     from ..core.permissions import trust_level
 
-    issue = await room.submit(
-        prompt, author=who, trust=trust_level(caps), priority=priority
-    )
+    try:
+        issue = await room.submit(
+            prompt, author=who, trust=trust_level(caps), priority=priority
+        )
+    except NoAgentError as exc:
+        # Le salon existe et se lit, mais personne ne l'exécute. Un message
+        # explicite vaut mieux qu'un prompt qui part dans le vide : ce qui
+        # manque est une action humaine, pas une permission.
+        await websocket.send_json(error(room.id, "no_agent", str(exc)))
+        return
     if not issue.started:
         # Le brouillon reste côté client : il le renverra en obtenant la
         # parole. Le garder ici voudrait dire décider à sa place que ce qu'il a

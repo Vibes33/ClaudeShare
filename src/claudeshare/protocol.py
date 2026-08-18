@@ -47,6 +47,45 @@ class ClientMessage(StrEnum):
     PING = "ping"
 
 
+class AgentMessage(StrEnum):
+    """Protocole **agent ↔ relais**, distinct de celui des clients.
+
+    Un agent n'est pas un participant : c'est le processus qui détient
+    réellement la session Claude Code, sur la machine de son propriétaire, avec
+    son abonnement et son dossier de travail. Le relais, lui, n'exécute rien —
+    il coordonne et distribue.
+
+    Volontairement séparé de `ClientMessage` : un client envoie des *intentions*
+    qu'on peut refuser, un agent rend compte de ce qu'il a **déjà fait**. Les
+    mélanger reviendrait à laisser un navigateur prétendre qu'un tour est
+    terminé. Ce vocabulaire n'a donc pas de miroir dans `protocol.js` : aucun
+    navigateur n'a à le parler.
+    """
+
+    # --- agent → relais ---
+    #: Première trame. Annonce le salon hébergé, la session reprise, le dossier.
+    AGENT_HELLO = "agent.hello"
+    #: Un événement du superviseur, transmis tel quel. C'est ce qui rend le
+    #: changement contenu : en aval, le relais journalise et diffuse comme avant.
+    #: Porte aussi les demandes d'approbation — `can_use_tool` produit déjà un
+    #: `tool.approval_requested`, et lui inventer une seconde voie ferait deux
+    #: chemins à garder d'accord pour un seul fait.
+    AGENT_EVENT = "agent.event"
+    #: Le tour est terminé, drainage compris. Porte l'identifiant de session,
+    #: qui n'est connu qu'après le premier tour : c'est le relais qui le
+    #: conserve, parce que l'agent suivant peut être sur une autre machine.
+    AGENT_DONE = "agent.done"
+
+    # --- relais → agent ---
+    #: Exécute ce prompt. Porte le niveau de confiance de son auteur, que
+    #: l'agent applique lui-même — la défense tourne là où il y a à perdre.
+    RUN_TURN = "run.turn"
+    #: Coupe le tour en cours, drainage du tampon compris.
+    RUN_INTERRUPT = "run.interrupt"
+    #: Réponse à un `agent.ask`.
+    RUN_APPROVAL = "run.approval"
+
+
 class ServerMessage(StrEnum):
     """Trames propres au protocole. Les autres portent un type d'événement métier."""
 
@@ -56,6 +95,12 @@ class ServerMessage(StrEnum):
     #: Le prompt n'est pas parti : quelqu'un d'autre a la parole. Porte la place
     #: dans la file. Ce n'est pas une erreur — le client garde son brouillon.
     QUEUED = "queued"
+    #: Qui est connecté au salon. Un état, pas un historique : jamais journalisé.
+    PRESENCE = "presence"
+    #: Qui héberge le salon, et depuis quel dossier. Même nature que la présence
+    #: — un salon dont l'agent vient de partir reste lisible, mais plus
+    #: exécutable, et les interfaces doivent pouvoir le dire.
+    AGENT = "agent"
     ERROR = "error"
     PONG = "pong"
 

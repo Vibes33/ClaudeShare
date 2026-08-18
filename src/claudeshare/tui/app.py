@@ -94,6 +94,8 @@ class ClaudeShareTUI(App):
             self._dirty |= set(self.view.order)
             if self.view.truncated:
                 self._message = "⚠ début de l'historique tronqué par le serveur"
+        elif type_ == ServerMessage.AGENT:
+            self._message = "" if self.view.hosted else "⚠ personne n'héberge ce salon"
         elif type_ == ServerMessage.ERROR:
             d = frame.get("data") or {}
             retard = f" (réessayez dans {d['retry_in']} s)" if d.get("retry_in") else ""
@@ -248,8 +250,19 @@ def _rendre_cote(view: RoomView, statut: str, message: str) -> Text:
     out = Text()
     out.append(f"{statut}\n\n", style="dim")
 
+    # Qui exécute, d'abord : un prompt qui ne part pas ressemble à une panne
+    # alors qu'il manque seulement quelqu'un pour lancer son agent.
+    out.append("Hôte\n", style="bold")
+    if view.hosted:
+        out.append(f"  {view.agent.get('host') or '?'}\n", style="green")
+        if chemin := view.agent.get("workspace"):
+            out.append(f"  {chemin}\n", style="dim")
+    else:
+        out.append("  aucun agent\n", style="yellow")
+        out.append("  le propriétaire doit lancer `claudeshare agent`\n", style="dim")
+
     f = view.floor
-    out.append("Jeton\n", style="bold")
+    out.append("\nJeton\n", style="bold")
     out.append(f"  {f.get('state', '?')}", style="yellow")
     if f.get("holder"):
         out.append(f" · {f['holder']}")
@@ -272,6 +285,8 @@ def _rendre_cote(view: RoomView, statut: str, message: str) -> Text:
 
     if not view.can(Capability.SPEAK):
         out.append("\nLecture seule\n", style="dim italic")
+    if view.truncated:
+        out.append("\nHistorique tronqué\n", style="dim italic")
     if message:
         out.append(f"\n{message}\n", style="bold red")
     return out

@@ -5,25 +5,16 @@ services:
 
     ports:
       # Boucle locale : ce fichier seul est le mode « essayer chez soi ».
-      # Quiconque atteint ce port pilote un agent qui a un shell — l'exposer
-      # demande une terminaison TLS et une identité, c'est-à-dire la surcouche
-      # `docker-compose.deploy.yml`, qui retire cette publication.
+      # Le relais n'exécute rien, mais il distribue des droits sur les salons
+      # des autres : l'exposer demande une terminaison TLS, c'est-à-dire la
+      # surcouche `docker-compose.deploy.yml`, qui retire cette publication.
       - "127.0.0.1:${CLAUDESHARE_PORT:-8765}:8765"
 
     volumes:
-      # Racine sous laquelle tous les dossiers de salon sont confinés. C'est la
-      # seule partie de votre machine que le conteneur voit — le reste n'existe
-      # pas pour lui, et c'est la principale raison de le conteneuriser.
-      # La base (identités, salons, appartenances) vit dans `.claudeshare/`.
-      - "${CLAUDESHARE_WORKSPACES:-./workspaces}:/workspaces"
-
-      # Session d'abonnement du conteneur. On monte le home *entier* et non le
-      # seul `~/.claude` : le CLI répartit son état entre `~/.claude/` et le
-      # fichier frère `~/.claude.json`, et n'en persister qu'une moitié le fait
-      # échouer au démarrage sur un état incohérent.
-      # Volume nommé, jamais dans l'image : à ouvrir une fois avec
-      # `docker compose run --rm claudeshare-login`.
-      - claude-home:/home/claudeshare
+      # Le seul état du relais : sa base (identités, salons, appartenances,
+      # journal). Aucun dossier de travail à monter, aucun identifiant
+      # d'abonnement — les sessions Claude tournent chez les agents.
+      - "${CLAUDESHARE_STATE:-./state}:/state"
 
     environment:
       CLAUDESHARE_AUTH_MODE: "${CLAUDESHARE_AUTH_MODE:-pilot}"
@@ -36,44 +27,17 @@ services:
       CLAUDESHARE_GITHUB_CLIENT_SECRET: "${CLAUDESHARE_GITHUB_CLIENT_SECRET:-}"
       CLAUDESHARE_GOOGLE_CLIENT_ID: "${CLAUDESHARE_GOOGLE_CLIENT_ID:-}"
       CLAUDESHARE_GOOGLE_CLIENT_SECRET: "${CLAUDESHARE_GOOGLE_CLIENT_SECRET:-}"
-      # Base et diffusion : par défaut SQLite dans le workspace monté, et
-      # diffusion en mémoire. `docker-compose.deploy.yml` remplace les deux.
+      # Base et diffusion : par défaut SQLite dans `/state`, et diffusion en
+      # mémoire. `docker-compose.deploy.yml` remplace les deux.
       CLAUDESHARE_DATABASE_URL: "${CLAUDESHARE_DATABASE_URL:-}"
       CLAUDESHARE_REDIS_URL: "${CLAUDESHARE_REDIS_URL:-}"
       CLAUDESHARE_DB_SCHEMA: "${CLAUDESHARE_DB_SCHEMA:-create}"
 
     security_opt:
       - no-new-privileges:true
-      # Le bac à sable de Claude Code s'appuie sur bubblewrap, qui doit créer un
-      # espace de noms utilisateur. Le profil seccomp par défaut de Docker le
-      # refuse (le noyau, lui, l'autorise : c'est bien seccomp qui bloque), et
-      # le serveur échoue alors au démarrage à cause de `failIfUnavailable`.
-      #
-      # L'arbitrage, explicitement : on relâche le filtrage d'appels système
-      # *dans* le conteneur pour gagner le bac à sable, c'est-à-dire le
-      # **contrôle des sorties réseau** — la principale protection contre
-      # l'exfiltration. L'isolation du système de fichiers, elle, reste assurée
-      # par le conteneur, qui ne monte que le workspace, et le processus tourne
-      # en utilisateur non privilégié avec no-new-privileges.
-      #
-      # Si vous préférez conserver seccomp, retirez cette ligne et lancez le
-      # serveur avec `--no-sandbox` : le conteneur reste la frontière pour les
-      # fichiers, mais vous perdez le contrôle réseau.
-      - seccomp:unconfined
+      # Plus de `seccomp:unconfined`. Il servait à laisser bubblewrap créer un
+      # espace de noms pour le bac à sable ; le relais n'exécutant plus de
+      # shell, l'arbitrage n'a plus d'objet et le profil par défaut revient.
 
     restart: unless-stopped
 
-  # Ouverture de session, une fois : `docker compose run --rm claudeshare-login`
-  claudeshare-login:
-    build: .
-    image: claudeshare:latest
-    profiles: ["setup"]
-    entrypoint: ["claude"]
-    command: ["setup-token"]
-    stdin_open: true
-    tty: true
-    volumes:
-      - claude-home:/home/claudeshare
-
-volumes:
-  claude-home:

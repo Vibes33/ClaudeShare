@@ -32,24 +32,29 @@ uv run claudeshare debug --workspace /chemin/vers/projet
 
 `Ctrl-C` interrompt le tour en cours, `Ctrl-D` quitte.
 
-**Salons partagés** :
+**Salons partagés.** Le relais d'abord — il ne fait que coordonner :
 
 ```bash
-uv run claudeshare serve --workspace-root ./workspaces --port 8765
-curl -s http://127.0.0.1:8765/api/health
+uv run claudeshare serve --state-dir ./state --port 8765
 ```
 
-Tous les dossiers de salon sont confinés sous `--workspace-root`. Créer un salon
-revient à choisir ce que l'agent peut lire et écrire : sans ce confinement, ce
-serait n'importe quel dossier de la machine.
-
 Le client web est servi par le même processus : ouvrez
-<http://127.0.0.1:8765/>.
+<http://127.0.0.1:8765/>, connectez-vous, créez un salon.
 
-**Depuis un terminal** :
+Puis l'agent, qui est ce qui rend le salon exécutable. Sur **votre** machine,
+dans le dossier que Claude doit voir :
 
 ```bash
 uv run claudeshare login --server http://127.0.0.1:8765
+uv run claudeshare agent <identifiant du salon> --workspace ~/mon-projet
+```
+
+Il reste au premier plan tant qu'il héberge : tant qu'il tourne, le salon est
+exécutable ; dès qu'il s'arrête, les participants le voient.
+
+**Rejoindre depuis un terminal** — le sien ou celui de quelqu'un d'autre :
+
+```bash
 uv run claudeshare join            # ou : join <identifiant de salon>
 ```
 
@@ -100,23 +105,14 @@ uv run pytest -q
 
 ## Docker
 
-Le conteneur ne voit que le dossier de travail que vous montez : le reste de
-votre machine n'existe pas pour lui. C'est la principale raison de l'utiliser.
-
-**Ouvrir la session, une fois.** Le conteneur a sa propre session d'abonnement —
-sur macOS les identifiants de l'hôte sont dans le trousseau, qu'un conteneur
-Linux ne peut pas lire :
-
-```bash
-docker compose run --rm claudeshare-login
-```
-
-Elle est conservée dans un volume nommé, jamais dans l'image.
-
-**Lancer** :
+L'image ne contient **que le relais** : ni CLI Claude Code, ni bubblewrap, ni
+identifiants d'abonnement. Il n'y a plus de session à ouvrir dans le conteneur,
+plus d'arbitrage `seccomp:unconfined` à assumer, et l'image est passée d'environ
+1,5 Go à quelques centaines de mégaoctets — les 290 Mo de CLI embarqué vivent
+maintenant chez les agents, qui tournent hors conteneur.
 
 ```bash
-CLAUDESHARE_WORKSPACES=/chemin/vers/racine docker compose up --build
+docker compose up --build
 curl -s http://127.0.0.1:8765/api/health
 ```
 
@@ -124,24 +120,10 @@ Le port est lié à `127.0.0.1` : `docker-compose.yml` seul est le mode « essay
 chez soi ». Pour exposer, voir la section suivante.
 
 La configuration passe par l'environnement — copiez `.env.example` en `.env`.
+Le seul volume est `/state`, où le relais range sa base.
 
-### Deux points à connaître
-
-**`seccomp:unconfined` est activé par défaut.** Le bac à sable de Claude Code
-s'appuie sur bubblewrap, qui doit créer un espace de noms utilisateur ; le profil
-seccomp par défaut de Docker le refuse, et le serveur échoue alors au démarrage
-plutôt que d'exécuter du shell sans confinement. L'arbitrage est explicite : on
-relâche le filtrage d'appels système *dans* le conteneur pour gagner le
-**contrôle des sorties réseau**, principale protection contre l'exfiltration.
-L'isolation des fichiers reste assurée par le conteneur, et le processus tourne
-en utilisateur non privilégié.
-
-Pour conserver seccomp : retirez la ligne et lancez avec `--no-sandbox`. Le
-conteneur reste la frontière pour les fichiers, mais vous perdez le réseau.
-
-**L'image fait environ 1,5 Go**, dont ~290 Mo de CLI Claude Code embarqué dans la
-roue du SDK. La roue est spécifique à la plateforme, d'où le `.venv` exclu du
-contexte de build : le conteneur résout sa propre roue `manylinux`.
+Les agents, eux, ne se conteneurisent pas ici : ils tournent sur la machine de
+chaque participant, avec ses identifiants et ses fichiers.
 
 ## Exposer le service
 
@@ -163,7 +145,7 @@ son certificat par une requête ACME sur le port 80, qui échoue sinon.
 
 | | Local | Exposé |
 |---|---|---|
-| Base | SQLite dans le workspace | Postgres |
+| Base | SQLite dans `/state` | Postgres |
 | Schéma | `create_all` | `alembic upgrade head` |
 | Diffusion | mémoire | Redis |
 | Cookies | ordinaires | `Secure`, plus HSTS |
@@ -249,9 +231,10 @@ volée.
 
 ## Sécurité
 
-Partager une session Claude Code, ce n'est pas partager un chat : c'est partager
-un processus qui a `Bash`, `Read` et `Write`. Trois couches, aucune suffisante
-seule :
+Partager un salon, ce n'est pas partager un chat : c'est laisser d'autres
+personnes soumettre des prompts à un processus qui a `Bash`, `Read` et `Write`
+**sur votre machine**. Trois couches, aucune suffisante seule, et toutes les
+trois chez l'agent — c'est-à-dire chez vous :
 
 1. **Bac à sable** (`agent/sandbox.py`) — confine Bash, fichiers et réseau.
    `failIfUnavailable`, pas de rejeu hors bac à sable, aucun domaine ouvert par
@@ -262,30 +245,14 @@ seule :
 3. **Hook `PreToolUse`** (`agent/hooks.py`) — trace chaque appel d'outil avec son
    auteur, et refuse les emplacements sensibles.
 
+Le relais annonce le niveau de confiance de l'auteur d'un tour ; **c'est l'agent
+qui en tire les conséquences**. Ce partage n'est pas un détail d'implémentation :
+la défense tourne sur la machine qui a quelque chose à perdre, et n'a pas à faire
+confiance à un serveur qu'elle ne contrôle pas.
+
 Le bac à sable **n'isole que les sous-processus Bash** : `Read`/`Edit`/`Write`
 passent par le système de permissions. Une règle `Read(//**/.ssh/**)` n'empêche
 donc pas `cat ~/.ssh/id_rsa` — c'est le trou que le hook ferme.
-
-### Débit et en-têtes
-
-Deux menaces, deux réglages. **Deviner un secret** — un code d'appairage fait
-huit caractères, un lien d'invitation reste un secret porteur : ces routes sont
-les plus serrées du fichier. La vraie borne y demeure l'entropie du secret, mais
-sans limite l'attaque est gratuite et silencieuse. **Épuiser l'hôte** — un client
-en boucle n'ouvre rien, mais occupe la boucle et le pool pour tout le monde ; le
-WebSocket a sa propre limite, par connexion.
-
-Un seau à jetons plutôt qu'un compteur par fenêtre : un compteur autorise deux
-fois la limite à cheval sur une frontière, et remet tous les clients à zéro au
-même instant — ce qui les synchronise au lieu de les étaler.
-
-La limitation est **en mémoire, donc par processus**, et la table des seaux est
-bornée : sans borne, varier son adresse ferait grossir la table indéfiniment, et
-la limitation deviendrait elle-même le moyen d'épuiser l'hôte.
-
-Les en-têtes de sécurité sont posés sur **toutes** les réponses, API comprise :
-la balise `<meta>` des pages statiques ne protège que les pages qui la portent,
-et `frame-ancestors` y est de toute façon ignoré par le navigateur.
 
 *Angle mort connu :* un appel bloqué par une règle de refus n'atteint pas le hook
 et n'apparaît pas dans `/api/rooms/{id}/audit`. Le journal d'événements du salon,
@@ -517,8 +484,12 @@ horaire élague au-delà de la rétention configurée, hors du chemin d'écritur
 
 | Module | Rôle |
 |---|---|
+| `agent/worker.py` | l'agent : tourne chez vous, détient la session et le shell |
 | `agent/supervisor.py` | pilote une session : streaming, `resume`, interruption |
-| `agent/toolpolicy.py` · `sandbox.py` · `hooks.py` | les trois couches de défense |
+| `agent/toolpolicy.py` · `sandbox.py` · `hooks.py` | les trois couches de défense, chez l'agent |
+| `server/agentlink.py` | la poignée du relais sur un agent connecté |
+| `server/ws_agents.py` | `/ws/agents/{id}` — le point d'entrée des agents |
+| `server/approvals.py` | qui attend une approbation, et à qui renvoyer la réponse |
 | `core/eventlog.py` | journal avec `seq` monotone, magasin optionnel |
 | `db/eventstore.py` | persistance du journal, rejeu borné, rétention |
 | `db/migrate.py` · `db/migrations/` | migrations Alembic, pilotées depuis le code |
@@ -527,7 +498,6 @@ horaire élague au-delà de la rétention configurée, hors du chemin d'écritur
 | `protocol.py` | enveloppe WebSocket, source de vérité unique |
 | `server/room.py` · `ws.py` · `app.py` | salon, socket, application |
 | `server/auth/` | OAuth, sessions signées, jetons porteurs |
-| `core/workspace.py` | confinement des dossiers de salon |
 | `db/models.py` | personnes, salons, appartenances, rôles |
 | `core/permissions.py` | résolution des droits, barrière `require()`, garde-fous d'escalade |
 | `core/invites.py` | cibles nominatives, durées de vie, états |

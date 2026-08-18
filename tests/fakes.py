@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -97,3 +98,114 @@ class FakeClient:
                 yield self.on_interrupt
                 return
         yield script[-1]
+
+
+class LocalAgent:
+    """Un agent branché sur un salon **sans socket**.
+
+    Le vrai agent (`agent/worker.py`) parle au relais par WebSocket. Ici on
+    court-circuite le seul transport, et on garde tout le reste : vrai
+    `SessionSupervisor`, vrai courtier d'approbation, vraie `AgentLink`, vrai
+    `dispatch` côté relais. Ce qui est exercé reste donc le contrat entre le
+    salon et son agent, et pas une imitation qui divergerait au premier
+    changement de protocole.
+
+    Le transport lui-même est couvert séparément, par les tests qui montent une
+    vraie socket d'agent.
+    """
+
+    def __init__(self, room, client, *, who: str = "hôte", workspace: str = "/tmp/agent") -> None:
+        from claudeshare.agent import SessionSupervisor
+        from claudeshare.agent.approval import ApprovalBroker
+        from claudeshare.agent.toolpolicy import READ_ONLY_TOOLS, TrustLevel
+        from claudeshare.protocol import AgentMessage
+        from claudeshare.server.agentlink import AgentLink
+        from claudeshare.server.ws_agents import dispatch
+
+        self.room = room
+        self.client = client
+        self.who = who
+        self._AgentMessage = AgentMessage
+        self._dispatch = dispatch
+        self._trust = TrustLevel.READER
+        self._read_only = frozenset(READ_ONLY_TOOLS)
+        self._TrustLevel = TrustLevel
+        self.turns: list[asyncio.Task] = []
+
+        self.link = AgentLink(room.id, who, send=self._order, sink=room.on_agent_event)
+        self.approvals = ApprovalBroker(
+            sink=self._event,
+            context=lambda: (self.supervisor.current_author, self.supervisor.current_turn),
+        )
+        self.supervisor = SessionSupervisor(
+            workspace=Path(workspace),
+            sink=self._event,
+            client_factory=self._bind,
+            tools_gate=lambda: self._read_only if self._trust is TrustLevel.READER else None,
+            can_use_tool=self.approvals.ask,
+        )
+        self.workspace = workspace
+
+    def _bind(self, *, options):
+        self.client.options = options
+        return self.client
+
+    async def _event(self, event) -> None:
+        """Ce que fait `agent.event` : remonter l'événement tel quel au relais."""
+        await self._dispatch(
+            self._AgentMessage.AGENT_EVENT,
+            {
+                "type": str(event.type),
+                "turn_id": event.turn_id,
+                "author": event.author,
+                "data": event.data,
+            },
+            self.link,
+            self.room,
+        )
+
+    async def _order(self, message: dict) -> None:
+        """Ce que le relais envoie à l'agent."""
+        match message.get("type"):
+            case self._AgentMessage.RUN_TURN:
+                self._trust = self._TrustLevel(message.get("trust", "reader"))
+                self.turns.append(asyncio.create_task(self._play(message)))
+            case self._AgentMessage.RUN_INTERRUPT:
+                await self.supervisor.interrupt()
+            case self._AgentMessage.RUN_APPROVAL:
+                await self.approvals.decide(
+                    message["approval_id"],
+                    allow=bool(message.get("allow")),
+                    by=str(message.get("by") or "relais"),
+                    reason=str(message.get("reason", "")),
+                )
+
+    async def _play(self, message: dict) -> None:
+        turn_id = message["turn_id"]
+        try:
+            await self.supervisor.run_turn(
+                message["prompt"], author=message["author"], turn_id=turn_id
+            )
+        finally:
+            await self._dispatch(
+                self._AgentMessage.AGENT_DONE,
+                {"turn_id": turn_id, "session_id": self.supervisor.session_id},
+                self.link,
+                self.room,
+            )
+
+    async def attach(self) -> LocalAgent:
+        await self.supervisor.start()
+        self.room.host(self.link)
+        await self._dispatch(
+            self._AgentMessage.AGENT_HELLO,
+            {"session_id": None, "workspace": self.workspace},
+            self.link,
+            self.room,
+        )
+        await self.room.announce_agent()
+        return self
+
+    async def detach(self) -> None:
+        self.room.unhost(self.link)
+        await self.supervisor.stop()

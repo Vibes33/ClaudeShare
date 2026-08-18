@@ -28,6 +28,8 @@ export const ClientMessage = Object.freeze({
 export const ServerMessage = Object.freeze({
   SNAPSHOT: "snapshot",
   QUEUED: "queued",
+  PRESENCE: "presence",
+  AGENT: "agent",
   ERROR: "error",
   PONG: "pong",
 });

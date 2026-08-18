@@ -1,9 +1,15 @@
-"""Un salon : une session Claude Code, un journal, des abonnés.
+"""Un salon : un agent hôte, un journal, des abonnés.
 
-Le salon est le point où les trois briques se rejoignent — le superviseur
-produit des événements, le journal les numérote, le diffuseur les distribue.
-C'est aussi le seul endroit qui décide : les clients envoient des intentions,
-jamais des ordres.
+Le salon est le point où les briques se rejoignent — un agent distant produit
+des événements, le journal les numérote, le diffuseur les distribue. C'est aussi
+le seul endroit qui décide : les clients envoient des intentions, jamais des
+ordres.
+
+**Le salon n'exécute rien.** La session Claude Code vit chez l'agent, sur la
+machine de son propriétaire, avec son abonnement et son dossier de travail. Ce
+qui reste ici est de la coordination : qui a la parole, qui a le droit de quoi,
+ce qui s'est passé. Un salon sans agent connecté existe, s'affiche et se lit —
+il ne peut simplement pas faire tourner de tour.
 """
 
 from __future__ import annotations
@@ -12,18 +18,17 @@ import asyncio
 import contextlib
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
-from ..agent import SessionSupervisor
-from ..agent.approval import ApprovalBroker
 from ..agent.hooks import AuditRecord
-from ..agent.toolpolicy import READ_ONLY_TOOLS, TrustLevel
+from ..agent.toolpolicy import TrustLevel
 from ..core.broker import Broadcaster, InProcessBroadcaster
 from ..core.eventlog import EventLog, LogStore
 from ..core.floor import Floor, Outcome
 from ..events import Event, EventType
 from ..protocol import ServerMessage, envelope
+from .agentlink import AbsentAgent, AgentLink, NoAgentError
+from .approvals import ApprovalDesk
 
 logger = logging.getLogger(__name__)
 
@@ -49,20 +54,17 @@ class Room:
         self,
         room_id: str,
         *,
-        workspace: Path,
         broker: Broadcaster,
         title: str = "",
-        trust: TrustLevel = TrustLevel.PILOT,
-        sandbox: bool = True,
         session_id: str | None = None,
-        supervisor: SessionSupervisor | None = None,
         floor: Floor | None = None,
-        approval_timeout: float | None = None,
         store: LogStore | None = None,
     ) -> None:
         self.id = room_id
         self.title = title or room_id
-        self.workspace = workspace
+        #: Dernière session Claude annoncée par un agent. Conservée pour qu'un
+        #: agent qui revient reprenne le bon contexte (`resume`).
+        self.session_id = session_id
         # Sans magasin, le journal vit en mémoire et meurt avec le processus.
         # C'est ce qu'on veut pour les tests et une session locale jetable.
         self.log = EventLog(room_id=room_id, store=store)
@@ -75,39 +77,58 @@ class Room:
         #: Nettoyages en cours. Référencés pour qu'ils ne soient pas ramassés
         #: avant la fin — `create_task` ne garde qu'une référence faible.
         self._chores: set[asyncio.Task[Any]] = set()
-        # Créé avant le superviseur : sa fermeture capture `self.agent`, qui
-        # n'existe pas encore mais existera avant le premier appel d'outil.
-        self.approvals = ApprovalBroker(
-            sink=self._on_event,
-            context=lambda: (self.agent.current_author, self.agent.current_turn),
-            **({"timeout": approval_timeout} if approval_timeout else {}),
-        )
+        #: Guichet des approbations. Il ne décide pas — le courtier de l'agent
+        #: tient la promesse et le délai ; ici on sait seulement qui attend et à
+        #: quelle liaison renvoyer la réponse.
+        self.approvals = ApprovalDesk(answer=self._answer_approval)
         #: Pseudos actuellement connectés. Une même personne peut avoir plusieurs
         #: onglets, d'où le comptage.
         self._present: dict[str, int] = {}
         self._audit: list[AuditRecord] = []
         self._turn: asyncio.Task[Any] | None = None
-        #: Niveau de confiance de l'auteur du tour en cours. Les options du SDK
-        #: étant fixées à l'ouverture de la session, c'est par ce portail que la
-        #: politique par auteur s'applique — via le hook, à chaque appel d'outil.
-        self._turn_trust: TrustLevel = TrustLevel.WRITER
-        self.agent = supervisor or SessionSupervisor(
-            workspace=workspace,
-            sink=self._on_event,
-            trust=trust,
-            sandbox=sandbox,
-            session_id=session_id,
-            audit=self._on_audit,
-            tools_gate=self._tools_gate,
-            can_use_tool=self.approvals.ask,
-            shared=True,
-        )
+        #: L'agent qui héberge, ou son absence. Un objet plutôt qu'un `None` :
+        #: `busy` et `session_id` sont lus par les routes, l'instantané et le
+        #: WebSocket, et un test de présence oublié se verrait à l'exécution.
+        self.agent: AgentLink | AbsentAgent = AbsentAgent()
 
-    def _tools_gate(self) -> frozenset[str] | None:
-        """Outils permis pour le tour en cours, selon son auteur."""
-        if self._turn_trust is TrustLevel.READER:
-            return frozenset(READ_ONLY_TOOLS)
-        return None
+    # ------------------------------------------------------------ hébergement
+
+    def host(self, link: AgentLink) -> None:
+        """Attache un agent. Remplace le précédent, s'il y en avait un.
+
+        Le remplacement est voulu : après une coupure réseau, l'ancienne socket
+        peut mettre longtemps à être déclarée morte, et un propriétaire qui
+        relance son agent ne doit pas avoir à attendre ce délai.
+        """
+        ancien = self.agent
+        if isinstance(ancien, AgentLink) and ancien.connected:
+            logger.info("agent remplacé sur %s", self.id)
+            ancien.dropped()
+        self.agent = link
+
+    def unhost(self, link: AgentLink) -> None:
+        """Détache un agent, s'il est bien celui qui héberge encore."""
+        if self.agent is not link:
+            return
+        link.dropped()
+        self.agent = AbsentAgent()
+        # Les demandes en vol ne sont pas refusées ici : seul l'agent peut
+        # répondre à la promesse qu'il a faite au SDK, et son délai s'en charge.
+        self.approvals.forget()
+
+    @property
+    def hosted(self) -> bool:
+        return self.agent.connected
+
+    async def _answer_approval(
+        self, approval_id: str, *, allow: bool, by: str = "", reason: str = ""
+    ) -> None:
+        await self.agent.answer(approval_id, allow=allow, by=by, reason=reason)
+
+    async def on_agent_event(self, event: Event) -> None:
+        """Événement venu de l'agent : suivi, journalisé, diffusé."""
+        self.approvals.observe(event)
+        await self._on_event(event)
 
     # ------------------------------------------------------------ événements
 
@@ -147,7 +168,16 @@ class Room:
         alors affichée et le jeton réservé à quelqu'un qui n'est plus là. Le
         salon, lui, survit à ses connexions.
         """
-        tache = asyncio.create_task(self.left(who))
+        self.schedule(self.left(who))
+
+    def schedule(self, coro: Any) -> None:
+        """Confie un travail au salon, qui survit aux connexions.
+
+        Référencé le temps qu'il tourne : `create_task` ne garde qu'une
+        référence faible, et une tâche ramassée en plein vol disparaît sans
+        rien dire.
+        """
+        tache = asyncio.create_task(coro)
         self._chores.add(tache)
         tache.add_done_callback(self._chores.discard)
 
@@ -168,7 +198,18 @@ class Room:
 
     async def _announce(self) -> None:
         await self.broker.publish(
-            self.id, envelope("presence", self.id, {"present": self.present})
+            self.id, envelope(ServerMessage.PRESENCE, self.id, {"present": self.present})
+        )
+
+    async def announce_agent(self) -> None:
+        """Annonce l'arrivée ou le départ de l'hôte.
+
+        Un état, comme la présence, donc jamais journalisé : ce qui compte est
+        de savoir si le salon est exécutable *maintenant*, pas de conserver
+        l'histoire de ses coupures réseau.
+        """
+        await self.broker.publish(
+            self.id, envelope(ServerMessage.AGENT, self.id, self.agent.view())
         )
 
     # ---------------------------------------------------------------- tours
@@ -195,7 +236,11 @@ class Room:
                 "partials": self.log.partials(),
                 "present": self.present,
                 "busy": self.agent.busy,
-                "session_id": self.agent.session_id,
+                "session_id": self.agent.session_id or self.session_id,
+                # Qui héberge, et depuis quel dossier. Un salon sans agent
+                # s'affiche quand même : on peut lire l'historique, on ne peut
+                # pas soumettre. Le dire est plus utile qu'un envoi qui échoue.
+                "agent": self.agent.view(),
                 "floor": self.floor.view(),
                 # Sans ça, arriver pendant une demande d'approbation montrerait
                 # un tour figé sans dire pourquoi.
@@ -219,17 +264,29 @@ class Room:
         On ne bloque pas l'appelant : le tour dure des minutes, et sa
         progression arrive à tout le monde par la diffusion, pas par cette
         réponse.
+
+        Lève `NoAgentError` si personne n'héberge. Vérifié **avant** de toucher
+        au jeton : prendre la parole pour découvrir ensuite qu'aucun agent
+        n'écoute laisserait le salon bloqué le temps de l'expiration.
         """
+        if not self.hosted:
+            raise NoAgentError(
+                "aucun agent n'héberge ce salon — son propriétaire doit lancer "
+                "`claudeshare agent`"
+            )
+
         demande = await self._apply(self.floor.request(author, priority))
         if self.floor.holder != author:
             return Submission(started=False, position=demande.position)
 
         await self._apply(self.floor.begin_turn(author))
-        self._turn_trust = trust
 
         async def run() -> None:
             try:
-                await self.agent.run_turn(prompt, author=author)
+                # Le niveau de confiance voyage avec le tour : c'est l'agent qui
+                # l'applique, sur la machine qui a quelque chose à perdre si un
+                # invité obtient un outil de trop.
+                await self.agent.run_turn(prompt, author=author, trust=trust)
             except Exception:
                 logger.exception("le tour a échoué dans %s", self.id)
             finally:
@@ -294,7 +351,12 @@ class Room:
     # ------------------------------------------------------------ cycle de vie
 
     async def start(self) -> None:
-        await self.agent.start()
+        """Démarre la coordination. N'attend aucun agent.
+
+        Un salon existe sans hôte : on peut y lire l'historique et prendre la
+        parole en file. Attendre un agent pour ouvrir le salon rendrait la
+        conversation illisible dès que son propriétaire ferme son portable.
+        """
         if self._ticker is None:
             self._ticker = asyncio.create_task(self._tick_forever())
 
@@ -309,20 +371,18 @@ class Room:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._ticker
             self._ticker = None
-        # Avant l'interruption : une demande d'approbation en l'air empêcherait
-        # le tour de se terminer, et donc le drainage d'aboutir.
-        await self.approvals.abandon()
         if self._turn is not None and not self._turn.done():
             await self.agent.interrupt()
-        await self.agent.stop()
+        self.approvals.forget()
 
 
 class RoomManager:
-    """Salons actifs du process.
+    """Salons vivants du process.
 
-    Un seul salon en v1, mais la forme est celle de l'étape 4 : les sessions sont
-    épinglées à ce process, ce qui est exactement la limite que `Broadcaster`
-    permettra de lever.
+    « Vivants » et non « actifs » : depuis que l'exécution est partie chez les
+    agents, un salon monté ici ne consomme qu'un journal et un jeton de parole.
+    C'est ce qui rend l'épinglage au process beaucoup moins coûteux qu'avant —
+    il reste vrai, mais ce qu'on épingle ne pèse plus rien.
     """
 
     def __init__(
@@ -333,11 +393,11 @@ class RoomManager:
         self.store = store
         self._rooms: dict[str, Room] = {}
 
-    def create(self, room_id: str, *, workspace: Path, **kwargs: Any) -> Room:
+    def create(self, room_id: str, **kwargs: Any) -> Room:
         if room_id in self._rooms:
             raise ValueError(f"le salon {room_id} existe déjà")
         kwargs.setdefault("store", self.store)
-        room = Room(room_id, workspace=workspace, broker=self.broker, **kwargs)
+        room = Room(room_id, broker=self.broker, **kwargs)
         self._rooms[room_id] = room
         return room
 

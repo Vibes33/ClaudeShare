@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 
 from ...core.capabilities import Capability
-from ...core.workspace import WorkspaceError, resolve_workspace
 from ...db.models import Room
 from ..auth.identity import create_room, rooms_for
 from ..authz import requires, room_access
@@ -17,22 +16,34 @@ from ..deps import require_principal
 
 class RoomCreate(BaseModel):
     title: str = Field(min_length=1, max_length=128)
-    #: Nom du dossier, pas un chemin : il est résolu sous la racine des
-    #: workspaces. Voir `core/workspace.py` pour la raison.
-    workspace: str = Field(min_length=1, max_length=64)
+    #: Étiquette libre, purement indicative. Le dossier réel est choisi par
+    #: l'agent qui héberge (`claudeshare agent --workspace …`), sur sa propre
+    #: machine : le relais n'a plus de système de fichiers à réserver, et
+    #: prétendre le contraire ici induirait en erreur.
+    workspace: str = Field(default="", max_length=256)
 
 
 def _room_view(record: Room, live: Any | None = None) -> dict[str, Any]:
     view = {
         "id": record.id,
         "title": record.title,
+        # Ce que l'agent a annoncé la dernière fois qu'il s'est connecté, ou
+        # l'étiquette donnée à la création. Indicatif : le dossier vit ailleurs.
         "workspace": record.workspace,
         "created_at": record.created_at.isoformat(),
         "session_id": record.session_id,
         "live": live is not None,
     }
     if live is not None:
-        view |= {"present": live.present, "busy": live.agent.busy, "last_seq": live.log.last_seq}
+        view |= {
+            "present": live.present,
+            "busy": live.agent.busy,
+            "last_seq": live.log.last_seq,
+            # Un salon monté mais sans agent est lisible, pas exécutable. La
+            # distinction est la première chose qu'une interface doit montrer.
+            "hosted": live.hosted,
+            "host": live.agent.who or None,
+        }
     return view
 
 
@@ -58,16 +69,11 @@ def build_rooms_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
         with ctx.db.session() as session:
             principal = require_principal(ctx.principal(request, session))
 
-            try:
-                workspace = resolve_workspace(ctx.workspace_root, payload.workspace)
-            except WorkspaceError as exc:
-                raise HTTPException(400, str(exc)) from None
-
             from ...db.models import User
 
             owner = session.get(User, principal.user_id)
             record, _ = create_room(
-                session, title=payload.title, workspace=str(workspace), owner=owner
+                session, title=payload.title, workspace=payload.workspace, owner=owner
             )
             return _room_view(record)
 
