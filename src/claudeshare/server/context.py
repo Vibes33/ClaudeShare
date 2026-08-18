@@ -10,10 +10,12 @@ from fastapi import Request, WebSocket
 from sqlalchemy.orm import Session
 
 from ..config import Settings
+from ..core.secretbox import SecretBox
 from ..db.models import Provider, Room
 from ..db.session import Database
 from .auth.identity import Principal, SessionSigner
 from .daemons import DaemonRegistry
+from .managed import ManagedAgents
 from .deps import principal_from_request, principal_from_websocket
 from .room import Room as LiveRoom
 from .room import RoomManager
@@ -30,6 +32,12 @@ class ServerContext:
     workspace_root: Path
     #: Démons connectés, par personne. En mémoire du process, comme les salons.
     daemons: DaemonRegistry = field(default_factory=DaemonRegistry)
+    #: Chiffrement des identifiants déposés. Inerte sans clé configurée.
+    secrets: SecretBox = field(default_factory=SecretBox)
+    #: Agents que ce relais lance lui-même. Désactivés par défaut.
+    managed: ManagedAgents = field(
+        default_factory=lambda: ManagedAgents(Path("state/agents"))
+    )
     public_https: bool = False
     _started: set[str] = field(default_factory=set)
 
@@ -79,6 +87,9 @@ class ServerContext:
     async def aclose(self) -> None:
         for room_id in list(self._started):
             self.remember_session(room_id)
+        # Avant les salons : un agent géré tient des sessions Claude ouvertes,
+        # et le laisser tourner après l'arrêt du relais en ferait un orphelin.
+        await self.managed.aclose()
         await self.rooms.aclose()
         # Le diffuseur Redis tient des tâches de pompe ; celui en mémoire n'a
         # rien à fermer, d'où le test d'attribut plutôt qu'une méthode imposée

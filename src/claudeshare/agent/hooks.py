@@ -161,11 +161,39 @@ def _deny(reason: str) -> dict[str, Any]:
     }
 
 
+def outside(root: Path, candidate: str) -> bool:
+    """Le chemin sort-il de la racine autorisée ?
+
+    Sert au cas où plusieurs agents partagent une machine : sans lui, l'agent
+    d'une personne peut lire le dossier d'une autre, puisque `Read` et `Write`
+    ne passent pas par le bac à sable — celui-ci ne confine que les
+    sous-processus Bash.
+
+    On résout des deux côtés avant de comparer : comparer des chaînes laisserait
+    passer `…/mon-dossier/../celui-du-voisin`.
+    """
+    try:
+        vise = Path(candidate).expanduser().resolve(strict=False)
+        borne = root.expanduser().resolve(strict=False)
+    except (OSError, RuntimeError):
+        return True
+    return not vise.is_relative_to(borne)
+
+
+def paths_outside(root: Path, tool: str, tool_input: dict[str, Any]) -> list[str]:
+    return [
+        raw
+        for key in PATH_ARGUMENTS.get(tool, ())
+        if isinstance(raw := tool_input.get(key), str) and raw and outside(root, raw)
+    ]
+
+
 def build_guard_hook(
     *,
     context: Callable[[], tuple[str | None, str | None]],
     audit: Callable[[AuditRecord], Awaitable[None]] | None = None,
     tools_gate: Callable[[], frozenset[str] | None] | None = None,
+    confine: Path | None = None,
 ) -> HookMatcher:
     """Construit le hook de garde.
 
@@ -178,6 +206,11 @@ def build_guard_hook(
     restriction. C'est le seul endroit où une politique par auteur peut
     s'appliquer : les options du SDK (`tools`, `allowed_tools`) sont fixées à
     l'ouverture de la session et ne changent pas d'un tour à l'autre.
+
+    `confine` borne les accès fichiers à une racine. Nécessaire dès que
+    plusieurs agents tournent sur la même machine — le cas d'un relais qui les
+    lance lui-même : sans elle, l'agent d'une personne peut lire le dossier
+    d'une autre.
     """
 
     async def guard(
@@ -216,6 +249,11 @@ def build_guard_hook(
                 )
                 await record("deny", reason, tool=tool)
                 return _deny(reason)
+
+        if confine is not None and (dehors := paths_outside(confine, tool, tool_input)):
+            reason = f"accès refusé hors de votre dossier : {', '.join(dehors)}"
+            await record("deny", reason, paths=dehors)
+            return _deny(reason)
 
         if hits := sensitive_paths_in_tool_input(tool, tool_input):
             reason = f"accès refusé à un emplacement sensible : {', '.join(hits)}"

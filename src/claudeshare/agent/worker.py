@@ -68,6 +68,7 @@ class Hosted:
         sandbox: bool = True,
         session_id: str | None = None,
         client_factory: Any = None,
+        confine: Path | None = None,
     ) -> None:
         self.room_id = room_id
         self.workspace = workspace
@@ -91,6 +92,7 @@ class Hosted:
             session_id=session_id,
             tools_gate=self._tools_gate,
             can_use_tool=self.approvals.ask,
+            confine=confine,
             shared=True,
             **({"client_factory": client_factory} if client_factory else {}),
         )
@@ -184,12 +186,17 @@ class Worker:
         sandbox: bool = True,
         connector: Any = None,
         client_factory: Any = None,
+        confine: Path | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         #: Dossier de départ proposé à l'interface web. Le relais ne l'ouvre
         #: pas : il ne fait que le renvoyer pour pré-remplir un champ.
         self.base = base
         self.sandbox = sandbox
+        #: Racine hors de laquelle les accès fichiers sont refusés. Posée par le
+        #: relais quand il lance l'agent lui-même, laissée vide sur une machine
+        #: personnelle où l'on est déjà chez soi.
+        self.confine = confine
         self.status = "hors ligne"
         self.fatal: str | None = None
         self.hosted: dict[str, Hosted] = {}
@@ -278,6 +285,7 @@ class Worker:
             sandbox=self.sandbox,
             session_id=str(data.get("session_id") or "") or None,
             client_factory=self._client_factory,
+            confine=self.confine,
         )
         try:
             await salon.start()

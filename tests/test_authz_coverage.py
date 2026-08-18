@@ -46,6 +46,11 @@ PUBLIQUES = {
     "/auth/cli/approve": "exige une session dans son corps, pas un droit de salon",
     "/": "page d'accueil du client web, servie à tout le monde",
     "/api/agent": "l'état de son propre démon, aucun salon en jeu",
+    # Son propre identifiant et son propre agent : personnels, hors périmètre
+    # d'un salon. La barrière est l'identité, vérifiée dans le corps.
+    "/api/credential": "son identifiant Anthropic, jamais relu",
+    "/api/agent/start": "lancer son propre agent",
+    "/api/agent/stop": "arrêter son propre agent",
     # Rejoindre par code s'adresse par définition à quelqu'un qui n'est pas
     # encore membre : `room_access()` y répondrait 404, ce qu'on vient
     # justement corriger. Sa barrière est le secret du code, plus la limitation

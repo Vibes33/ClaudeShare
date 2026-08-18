@@ -261,6 +261,56 @@ class ApiToken(Base):
         return self.revoked_at is None
 
 
+class CredentialKind(StrEnum):
+    """Comment un profil paie ses tours."""
+
+    #: Jeton d'abonnement, obtenu par `claude setup-token`. Facturé sur le
+    #: forfait de la personne — c'est le mode « chacun son abonnement ».
+    SUBSCRIPTION = "subscription"
+    #: Clé API. Obtenable entièrement depuis le web, mais facturée à l'usage.
+    API_KEY = "api_key"
+
+
+#: Variable d'environnement que le CLI Claude Code lit pour chaque forme.
+CREDENTIAL_ENV = {
+    CredentialKind.SUBSCRIPTION: "CLAUDE_CODE_OAUTH_TOKEN",
+    CredentialKind.API_KEY: "ANTHROPIC_API_KEY",
+}
+
+
+class Credential(Base):
+    """L'identifiant Anthropic d'un profil, chiffré au repos.
+
+    Déposé pour que le relais puisse lancer l'agent de cette personne sans
+    qu'elle ait à ouvrir un terminal. C'est un dépôt lourd de conséquences, et
+    le schéma en porte la trace : **le secret n'existe ici que chiffré**, et
+    l'empreinte sert à le reconnaître sans jamais le réafficher.
+
+    Un seul identifiant par personne : en garder plusieurs obligerait à choisir
+    lequel utiliser, et ce choix n'a pas de bonne réponse automatique.
+    """
+
+    __tablename__ = "credentials"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: _uid("cred"))
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    kind: Mapped[str] = mapped_column(String(16))
+    #: Chiffré par `core/secretbox.py`. Jamais lu ailleurs que pour construire
+    #: l'environnement d'un agent, jamais renvoyé à un client.
+    sealed: Mapped[str] = mapped_column(String(2048))
+    #: Douze caractères de l'empreinte du secret. De quoi reconnaître lequel de
+    #: ses jetons est déposé, sans rien en révéler.
+    fingerprint: Mapped[str] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    user: Mapped[User] = relationship()
+
+
 class Event(Base):
     """Un fait de collaboration, conservé pour être rejoué.
 

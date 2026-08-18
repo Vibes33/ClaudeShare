@@ -41,7 +41,9 @@ const state = {
   agent: { connected: false, host: null, workspace: "" },
   //: Mon propre démon, tel que `/api/agent` le décrit. Distinct de `agent`
   //: ci-dessus, qui décrit l'hôte du salon regardé — ce n'est pas toujours moi.
-  demon: { connected: false, base: "", rooms: [] },
+  demon: { connected: false, base: "", rooms: [], managed: { running: false } },
+  //: L'identifiant Anthropic déposé — son empreinte, jamais le secret.
+  identifiant: { present: false, storable: false, managed: false },
   approvals: new Map(),
   queued: null,
   //: Dernier prompt envoyé, rendu à son auteur s'il part en file.
@@ -95,12 +97,13 @@ async function json(url, options) {
 }
 
 /**
- * POST JSON. Renvoie `{ok, data}` plutôt que `null` en cas d'échec : à la
- * création d'un salon, savoir *pourquoi* ça a raté est tout l'intérêt.
+ * Envoie du JSON. Renvoie `{ok, data}` plutôt que `null` en cas d'échec : à la
+ * création d'un salon ou au dépôt d'un identifiant, savoir *pourquoi* ça a raté
+ * est tout l'intérêt.
  */
-async function post(url, corps) {
+async function post(url, corps, methode = "POST") {
   const res = await fetch(url, {
-    method: "POST",
+    method: methode,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(corps),
   });
@@ -143,6 +146,7 @@ async function afficherConnexion() {
 async function rafraichir() {
   state.rooms = (await json("/api/rooms")) || state.rooms;
   state.demon = (await json("/api/agent")) || state.demon;
+  state.identifiant = (await json("/api/credential")) || state.identifiant;
 }
 
 // ------------------------------------------------------------------ routage
@@ -165,6 +169,76 @@ function afficherSalons() {
   dom.rooms.appendChild(formulaireCreation());
   dom.rooms.appendChild(formulaireCode());
   dom.rooms.appendChild(etatDemon());
+}
+
+function carteSalon(r) {
+  const a = elem("a", "salon");
+  a.href = `#/rooms/${r.id}`;
+  a.appendChild(elem("strong", "", r.title));
+  // L'état qui décide si le salon sert à quelque chose passe avant le reste :
+  // un salon sans hôte se lit, mais n'exécute rien.
+  a.appendChild(
+    r.hosted
+      ? elem("span", "puce hote", `hébergé par ${r.host || "?"}`)
+      : elem("span", "puce absent", "aucun agent"),
+  );
+  if (r.live && r.present.length) {
+    a.appendChild(elem("span", "puce", `${r.present.length} en ligne`));
+  }
+  return a;
+}
+
+/**
+ * Création d'un salon. Un seul champ : le titre.
+ *
+ * Le dossier de travail n'en fait volontairement pas partie. Il est choisi par
+ * l'agent qui héberge, sur sa propre machine ; le demander ici laisserait
+ * croire que le relais réserve un dossier, ce qu'il ne fait plus.
+ */
+function formulaireCreation() {
+  const bloc = elem("div", "creation");
+  bloc.appendChild(elem("h2", "", "Nouveau salon"));
+
+  const champ = elem("input", "titre");
+  champ.type = "text";
+  champ.placeholder = "Titre du salon";
+  champ.maxLength = 128;
+
+  const bouton = elem("button", "bouton", "Créer");
+  const lancer = () => creer(champ, bouton);
+  bouton.addEventListener("click", lancer);
+  champ.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      lancer();
+    }
+  });
+
+  const ligne = elem("div", "ligne");
+  ligne.append(champ, bouton);
+  bloc.appendChild(ligne);
+  bloc.appendChild(
+    elem("p", "vide",
+      "Vous en serez propriétaire, et votre agent l'exécutera."),
+  );
+  return bloc;
+}
+
+async function creer(champ, bouton) {
+  const titre = champ.value.trim();
+  if (!titre) return champ.focus();
+
+  // Désarmé pendant l'aller-retour : un double clic créerait deux salons, et
+  // rien dans l'API ne les distinguerait ensuite.
+  bouton.disabled = true;
+  const reponse = await post("/api/rooms", { title: titre });
+  bouton.disabled = false;
+
+  if (!reponse.ok) return toast(`Création refusée : ${motif(reponse)}`);
+
+  champ.value = "";
+  await rafraichir();
+  location.hash = `#/rooms/${reponse.data.id}`;
 }
 
 /** Rejoindre un salon dont on nous a dicté le code. */
@@ -215,92 +289,147 @@ async function rejoindre(champ, bouton) {
   location.hash = `#/rooms/${reponse.data.room_id}`;
 }
 
-/** L'état de sa propre machine, en bas de la liste. */
+/**
+ * Votre agent : l'identifiant déposé, et le processus qui tourne.
+ *
+ * Deux faits distincts, et l'interface doit les séparer. On peut avoir déposé
+ * un jeton sans agent démarré ; on peut avoir un agent démarré qui n'a pas
+ * encore ouvert sa socket. Les confondre en un seul voyant ferait chercher au
+ * mauvais endroit.
+ */
 function etatDemon() {
   const bloc = elem("div", "demon");
+  bloc.appendChild(elem("h2", "", "Votre agent"));
+
   if (state.demon.connected) {
-    bloc.appendChild(elem("span", "etat", "votre agent est connecté"));
+    bloc.appendChild(elem("span", "etat", "connecté"));
     bloc.appendChild(elem("span", "vide", `dossier proposé : ${state.demon.base || "—"}`));
+  } else {
+    bloc.appendChild(elem("span", "etat absent", "aucun agent"));
+    bloc.appendChild(
+      elem("span", "vide", "Sans lui, vos salons se lisent mais n'exécutent rien."),
+    );
+  }
+
+  // Ce relais ne lance pas d'agents : la seule voie est la ligne de commande,
+  // et le dire vaut mieux que de montrer un bouton qui refusera.
+  if (!state.identifiant.managed) {
+    bloc.appendChild(elem("code", "commande", "claudeshare agent"));
     return bloc;
   }
-  bloc.appendChild(elem("span", "etat absent", "aucun agent sur votre machine"));
-  bloc.appendChild(
-    elem("span", "vide", "Sans lui, vos salons se lisent mais n'exécutent rien."),
-  );
-  bloc.appendChild(elem("code", "commande", "claudeshare agent"));
+
+  bloc.appendChild(formulaireIdentifiant());
+  bloc.appendChild(boutonsAgent());
+  const journal = (state.demon.managed || {}).log || [];
+  if (journal.length) {
+    bloc.appendChild(elem("pre", "sortie", journal.join("\n")));
+  }
   return bloc;
 }
 
-function carteSalon(r) {
-  const a = elem("a", "salon");
-  a.href = `#/rooms/${r.id}`;
-  a.appendChild(elem("strong", "", r.title));
-  // L'état qui décide si le salon sert à quelque chose passe avant le reste :
-  // un salon sans hôte se lit, mais n'exécute rien.
-  a.appendChild(
-    r.hosted
-      ? elem("span", "puce hote", `hébergé par ${r.host || "?"}`)
-      : elem("span", "puce absent", "aucun agent"),
-  );
-  if (r.live && r.present.length) {
-    a.appendChild(elem("span", "puce", `${r.present.length} en ligne`));
-  }
-  return a;
-}
+/** Dépôt de l'identifiant Anthropic. Le secret n'est jamais réaffiché. */
+function formulaireIdentifiant() {
+  const bloc = elem("div", "identifiant");
 
-/**
- * Création d'un salon. Un seul champ : le titre.
- *
- * Le dossier de travail n'en fait volontairement pas partie. Il est choisi par
- * l'agent qui héberge, sur sa propre machine (`claudeshare agent --workspace`) ;
- * le demander ici laisserait croire que le relais réserve un dossier, ce qu'il
- * ne fait plus.
- */
-function formulaireCreation() {
-  const bloc = elem("div", "creation");
-  bloc.appendChild(elem("h2", "", "Nouveau salon"));
+  if (!state.identifiant.storable) {
+    // Dit avant qu'on colle quoi que ce soit : coller un jeton pour s'entendre
+    // répondre « impossible » est le pire ordre possible.
+    bloc.appendChild(
+      elem("p", "vide",
+        "Ce relais n'est pas configuré pour conserver un identifiant "
+        + "(CLAUDESHARE_CREDENTIAL_KEY manquante)."),
+    );
+    return bloc;
+  }
+
+  if (state.identifiant.present) {
+    bloc.appendChild(
+      elem("span", "vide",
+        `identifiant déposé · ${state.identifiant.kind} · ${state.identifiant.fingerprint}`),
+    );
+    const oublier = elem("button", "bouton non", "Oublier");
+    oublier.addEventListener("click", async () => {
+      oublier.disabled = true;
+      await fetch("/api/credential", { method: "DELETE" });
+      await rafraichir();
+      afficherSalons();
+    });
+    bloc.appendChild(oublier);
+    return bloc;
+  }
+
+  const choix = elem("select", "titre");
+  for (const [valeur, libelle] of [
+    ["subscription", "Abonnement (claude setup-token)"],
+    ["api_key", "Clé API (facturée à l'usage)"],
+  ]) {
+    const option = elem("option", "", libelle);
+    option.value = valeur;
+    choix.appendChild(option);
+  }
 
   const champ = elem("input", "titre");
-  champ.type = "text";
-  champ.placeholder = "Titre du salon";
-  champ.maxLength = 128;
+  champ.type = "password";
+  champ.placeholder = "collez votre jeton";
+  champ.autocomplete = "off";
 
-  const bouton = elem("button", "bouton", "Créer");
-  const lancer = () => creer(champ, bouton);
-  bouton.addEventListener("click", lancer);
-  champ.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      lancer();
-    }
+  const poser = elem("button", "bouton", "Déposer");
+  poser.addEventListener("click", async () => {
+    const secret = champ.value.trim();
+    if (!secret) return champ.focus();
+    poser.disabled = true;
+    // `PUT` : déposer un identifiant remplace le précédent, ce n'est pas une
+    // création répétable.
+    const reponse = await post("/api/credential", { kind: choix.value, secret }, "PUT");
+    poser.disabled = false;
+    champ.value = "";
+    if (!reponse.ok) return toast(motif(reponse));
+    await rafraichir();
+    afficherSalons();
   });
 
-  const ligne = elem("div", "ligne");
-  ligne.append(champ, bouton);
-  bloc.appendChild(ligne);
-  bloc.appendChild(
+  bloc.append(
     elem("p", "vide",
-      "Vous en serez propriétaire. Il faudra ensuite l'héberger depuis votre "
-      + "machine pour qu'il puisse exécuter quoi que ce soit."),
+      "Obtenez un jeton d'abonnement avec « claude setup-token », ou une clé API "
+      + "depuis la console Anthropic. Il est chiffré ici et jamais réaffiché."),
+    choix,
+    champ,
+    poser,
   );
   return bloc;
 }
 
-async function creer(champ, bouton) {
-  const titre = champ.value.trim();
-  if (!titre) return champ.focus();
+function boutonsAgent() {
+  const ligne = elem("div", "ligne");
+  const gere = state.demon.managed || {};
 
-  // Désarmé pendant l'aller-retour : un double clic créerait deux salons, et
-  // rien dans l'API ne les distinguerait ensuite.
+  if (gere.running) {
+    const arreter = elem("button", "bouton non", "Arrêter mon agent");
+    arreter.addEventListener("click", () => piloter("stop", arreter));
+    ligne.appendChild(arreter);
+  } else if (state.identifiant.present) {
+    const lancer = elem("button", "bouton", "Démarrer mon agent");
+    lancer.addEventListener("click", () => piloter("start", lancer));
+    ligne.appendChild(lancer);
+  }
+  if (gere.error) ligne.appendChild(elem("span", "vide", gere.error));
+  return ligne;
+}
+
+async function piloter(action, bouton) {
   bouton.disabled = true;
-  const reponse = await post("/api/rooms", { title: titre });
-  bouton.disabled = false;
-
-  if (!reponse.ok) return toast(`Création refusée : ${motif(reponse)}`);
-
-  champ.value = "";
-  state.rooms = (await json("/api/rooms")) || state.rooms;
-  location.hash = `#/rooms/${reponse.data.id}`;
+  const reponse = await post(`/api/agent/${action}`, {});
+  if (!reponse.ok) {
+    bouton.disabled = false;
+    return toast(motif(reponse));
+  }
+  // Le processus met un instant à ouvrir sa socket : on laisse passer ce délai
+  // avant de redessiner, sinon on affiche « aucun agent » juste après l'avoir
+  // démarré.
+  setTimeout(async () => {
+    await rafraichir();
+    afficherSalons();
+  }, 1200);
 }
 
 function ouvrir(roomId) {

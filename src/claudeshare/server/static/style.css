@@ -192,11 +192,19 @@ h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; colo
   user-select: all;
 }
 .demon {
-  margin-top: 1.5rem; display: flex; flex-direction: column; gap: 0.2rem;
+  margin-top: 1.5rem; padding: 1rem;
+  border: 1px dashed var(--bord); border-radius: 8px;
+  display: flex; flex-direction: column; gap: 0.2rem;
   font-size: 0.88rem;
 }
 .demon .etat { font-weight: 600; color: var(--ok); }
 .demon .etat.absent { color: var(--alerte); }
+.demon h2 { margin-top: 0; }
+.demon .ligne { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 0.6rem; }
+.identifiant { display: flex; flex-direction: column; align-items: flex-start; gap: 0.4rem; margin-top: 0.8rem; }
+.identifiant .titre { width: 100%; max-width: 26rem; }
+.identifiant .vide { display: block; }
+.demon .sortie { margin-top: 0.8rem; max-height: 10rem; white-space: pre-wrap; }
 .demon .commande {
   align-self: flex-start; margin-top: 0.2rem; padding: 0.3rem 0.5rem;
   font-family: var(--mono); font-size: 0.82rem;

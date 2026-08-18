@@ -68,6 +68,27 @@ class Settings(BaseSettings):
     #: Zéro désactive l'élagage — à réserver aux salons qu'on archive à la main.
     event_retention: int = 5000
 
+    # --- agents gérés par le relais ---
+    #: Clé de chiffrement des identifiants Anthropic déposés. Sans elle, le
+    #: relais refuse d'en conserver — plutôt que de les écrire en clair.
+    credential_key: str = ""
+    #: Lancer des agents pour ses utilisateurs. **Désactivé par défaut** : les
+    #: activer, c'est exécuter du shell pour d'autres sur sa propre machine, et
+    #: ça ne doit pas arriver parce qu'on a oublié de lire une option.
+    managed_agents: bool = False
+    #: Racine des dossiers de profil, un par personne.
+    agent_root: Path = Field(default_factory=lambda: Path.cwd() / "state" / "agents")
+    #: URL par laquelle un agent géré joint ce relais. Le plus souvent la boucle
+    #: locale, puisqu'il tourne sur la même machine.
+    internal_url: str = "http://127.0.0.1:8765"
+
+    # --- côté agent, posé par le relais qui le lance ---
+    agent_base: Path | None = None
+    #: Racine hors de laquelle l'agent refuse les accès fichiers. Nécessaire dès
+    #: que plusieurs agents partagent une machine : le bac à sable ne confine
+    #: que Bash, pas `Read`.
+    agent_confine: Path | None = None
+
     #: Le service est joignable en HTTPS. Conditionne le `Secure` des cookies et
     #: l'en-tête HSTS. À ne pas activer sans terminaison TLS réelle : un cookie
     #: `Secure` sur une origine en clair n'est jamais renvoyé, et HSTS épinglerait

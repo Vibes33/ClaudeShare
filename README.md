@@ -404,6 +404,43 @@ Les routes qu'emprunte une personne pas encore membre (`/api/invites/*`,
 y répondrait 404, puisque c'est justement ce qu'on vient corriger. Les mélanger
 obligerait à percer un trou dans la barrière de salon.
 
+## Déposer son identifiant Anthropic
+
+Un relais qui lance les agents conserve l'identifiant de chaque profil. C'est la
+décision la plus lourde du projet, et elle mérite d'être vue en face.
+
+**Ce qui est fait pour la rendre tenable :**
+
+- Le secret est **chiffré au repos** (`core/secretbox.py`), avec une clé qui vit
+  hors de la base — variable d'environnement, gestionnaire de secrets, et
+  surtout pas dans la même sauvegarde. Sans clé configurée, le relais **refuse**
+  de conserver quoi que ce soit plutôt que d'écrire en clair.
+- Il n'est **jamais renvoyé**, même à qui l'a déposé. L'interface n'en montre
+  qu'une empreinte de douze caractères, de quoi reconnaître lequel de ses jetons
+  est posé.
+- L'agent lancé reçoit un **environnement construit, jamais hérité**. Le
+  processus a un shell : s'il héritait de celui du relais, un prompt suffirait à
+  lire la clé de session, l'URL de la base ou les secrets OAuth avec un `env`.
+- Chaque profil a **son dossier en `0700`**, et le hook `PreToolUse` refuse tout
+  accès fichier au-dehors. Le bac à sable ne confine que Bash ; `Read` et
+  `Write` passent par le système de permissions, donc sans cette borne l'agent
+  d'une personne lirait le dossier d'une autre.
+- L'agent reçoit **son propre jeton ClaudeShare**, étiqueté et révoqué à
+  l'arrêt.
+
+**Ce que ça ne protège pas**, et qu'il faut accepter avant d'activer :
+
+- un serveur compromis **pendant qu'il tourne** a la clé en mémoire, par
+  construction ;
+- tous les agents tournent sous le **même compte système** que le relais, sauf à
+  monter davantage. L'isolation entre participants est celle du bac à sable et
+  du confinement décrits ci-dessus, pas celle de machines séparées ;
+- l'administrateur du serveur peut, en pratique, lire ce qui passe.
+
+D'où le réglage `CLAUDESHARE_MANAGED_AGENTS`, **désactivé par défaut** : lancer
+des agents pour ses utilisateurs, c'est exécuter du shell en leur nom sur sa
+propre machine, et ça ne doit pas arriver par oubli d'une option.
+
 ## Le code de salon
 
 Chaque salon reçoit à sa création un code à sept chiffres. On le dicte, on
@@ -519,6 +556,9 @@ horaire élague au-delà de la rétention configurée, hors du chemin d'écritur
 | `server/agentlink.py` | la poignée du relais sur un agent connecté |
 | `server/ws_agents.py` | `/ws/agents/{id}` — le point d'entrée des agents |
 | `server/approvals.py` | qui attend une approbation, et à qui renvoyer la réponse |
+| `server/daemons.py` | démons connectés : une socket par personne |
+| `server/managed.py` | agents que le relais lance lui-même |
+| `core/secretbox.py` | chiffrement des identifiants déposés |
 | `core/eventlog.py` | journal avec `seq` monotone, magasin optionnel |
 | `db/eventstore.py` | persistance du journal, rejeu borné, rétention |
 | `db/migrate.py` · `db/migrations/` | migrations Alembic, pilotées depuis le code |

@@ -161,3 +161,19 @@ def test_le_client_web_est_servi(client):
 
     for nom in ("app.js", "protocol.js", "render.js", "style.css"):
         assert client.get(f"/static/{nom}").status_code == 200, nom
+
+
+# ------------------------------------------------------------- ce qui manque
+#
+# Ce fichier ne vérifie **pas** que le JavaScript s'exécute : il n'y a pas de
+# Node ici. J'ai essayé d'y suppléer par un contrôle statique — repérer un nom
+# appelé mais défini nulle part, le défaut qui laisse une page blanche. Chaque
+# correctif de cet analyseur en révélait un autre : parenthèses dans du texte
+# affiché, paramètres de fonctions fléchées, accents graves dans une expression
+# régulière, apostrophes françaises dans un gabarit. Un analyseur à moitié juste
+# efface des morceaux de fichier sans le dire, et un test qui lit un fichier
+# tronqué est pire qu'un test absent — il rassure.
+#
+# Ce qui a réellement attrapé ce défaut est l'ouverture du client dans un
+# navigateur. C'est donc là que se fait cette vérification, à la main, avant
+# chaque livraison touchant aux statiques.

@@ -170,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
     agent.add_argument(
         "--base",
         type=Path,
-        default=Path.cwd(),
+        default=None,
         help="dossier proposé par défaut dans l'interface (défaut : dossier courant)",
     )
     agent.add_argument(
@@ -246,7 +246,10 @@ def _agent(args) -> int:
         )
         return 2
 
-    base = args.base.resolve()
+    # Le relais, quand c'est lui qui lance l'agent, pose le dossier et la borne
+    # dans l'environnement : la même commande sert des deux côtés.
+    base = (args.base or settings.agent_base or Path.cwd()).resolve()
+    confine = settings.agent_confine.resolve() if settings.agent_confine else None
     if args.no_sandbox:
         print(
             "\x1b[33m⚠ bac à sable désactivé — les sessions peuvent exécuter du shell "
@@ -261,8 +264,15 @@ def _agent(args) -> int:
         "hébergez vos salons depuis l'interface web · Ctrl-C arrête\x1b[0m\n"
     )
 
+    if confine is not None:
+        print(f"\x1b[2maccès fichiers bornés à {confine}\x1b[0m")
+
     demon = Worker(
-        credential.base_url, credential.token, base=base, sandbox=not args.no_sandbox
+        credential.base_url,
+        credential.token,
+        base=base,
+        sandbox=not args.no_sandbox,
+        confine=confine,
     )
     asyncio.run(demon.run())
     if demon.fatal:

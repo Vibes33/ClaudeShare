@@ -93,8 +93,12 @@ class SessionSupervisor:
         audit: Callable[[AuditRecord], Awaitable[None]] | None = None,
         tools_gate: Callable[[], frozenset[str] | None] | None = None,
         can_use_tool: Any | None = None,
+        confine: Path | None = None,
         shared: bool = True,
     ) -> None:
+        #: Racine hors de laquelle les accès fichiers sont refusés. Posée quand
+        #: plusieurs agents partagent une machine — voir `hooks.build_guard_hook`.
+        self._confine = confine
         #: Branché sur `ClaudeAgentOptions.can_use_tool`. Rappel du piège : un
         #: outil auto-approuvé n'arrive jamais jusqu'ici — voir `approval.py`.
         self._can_use_tool = can_use_tool
@@ -193,6 +197,7 @@ class SessionSupervisor:
                 context=lambda: (self._current_author, self._current_turn),
                 audit=self._audit,
                 tools_gate=self._tools_gate,
+                confine=self._confine,
             )
         )
         base.hooks = hooks

@@ -30,6 +30,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from ..config import Settings, check_auth_mode, describe_auth
 from ..core.broker import build_broadcaster
 from ..core.capabilities import Capability
+from ..core.secretbox import SecretBox
 from ..core.workspace import ensure_root
 from ..db.eventstore import DatabaseLogStore
 from ..db.models import Room
@@ -37,6 +38,7 @@ from ..db.session import Database, Schema, default_url
 from .api.invites import build_invites_router, build_redeem_router
 from .api.members import build_members_router
 from .api.roles import build_roles_router
+from .api.credentials import build_credentials_router
 from .api.rooms import build_rooms_router
 from .auth.cli import build_cli_router
 from .auth.identity import SessionSigner
@@ -46,6 +48,7 @@ from .context import ServerContext
 from .middleware import RateLimitMiddleware, SecurityHeadersMiddleware
 from .ratelimit import Rule
 from .daemons import AgentDaemon
+from .managed import ManagedAgents
 from .room import RoomManager
 from .ws import serve_socket
 from .ws_agents import AgentSession, serve_agent
@@ -139,6 +142,13 @@ def create_app(
         ),
         workspace_root=root,
         public_https=public_https or settings.public_https,
+        secrets=SecretBox(settings.credential_key),
+        managed=ManagedAgents(
+            settings.agent_root,
+            enabled=settings.managed_agents,
+            sandbox=settings.sandbox,
+            server_url=settings.internal_url,
+        ),
     )
 
     @asynccontextmanager
@@ -174,6 +184,7 @@ def create_app(
     # dans l'ordre de déclaration, routeurs compris.
     app.include_router(build_cli_router(ctx, STATIC_DIR))
     app.include_router(build_auth_router(ctx))
+    app.include_router(build_credentials_router(ctx))
     app.include_router(build_rooms_router(ctx))
     app.include_router(build_members_router(ctx))
     app.include_router(build_roles_router(ctx))
@@ -192,7 +203,13 @@ def create_app(
             principal = ctx.principal(request, session)
             if principal is None:
                 raise HTTPException(401, "authentification requise")
-            return ctx.daemons.view(principal.user_id)
+            return {
+                **ctx.daemons.view(principal.user_id),
+                # L'agent géré et le démon connecté sont deux faits distincts :
+                # le processus peut tourner sans avoir encore ouvert sa socket,
+                # et l'interface doit pouvoir montrer cet entre-deux.
+                "managed": ctx.managed.view(principal.user_id),
+            }
 
     @app.get("/api/health")
     async def health() -> dict[str, Any]:
