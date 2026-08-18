@@ -164,15 +164,14 @@ def main(argv: list[str] | None = None) -> int:
     login.add_argument("--forget", action="store_true", help="oublier le jeton local de ce serveur")
 
     agent = sub.add_parser(
-        "agent", help="héberger un de vos salons depuis cette machine"
+        "agent", help="rendre cette machine disponible pour héberger vos salons"
     )
-    agent.add_argument("room", nargs="?", help="identifiant du salon ; omis, la liste s'affiche")
     agent.add_argument("--server", default=DEFAULT_SERVER, help=f"défaut : {DEFAULT_SERVER}")
     agent.add_argument(
-        "--workspace",
+        "--base",
         type=Path,
         default=Path.cwd(),
-        help="dossier de travail de la session (défaut : dossier courant)",
+        help="dossier proposé par défaut dans l'interface (défaut : dossier courant)",
     )
     agent.add_argument(
         "--no-sandbox",
@@ -221,11 +220,12 @@ def _login(args) -> int:
 
 
 def _agent(args) -> int:
-    """Héberge un salon : c'est ici que tourne la session Claude Code.
+    """Rend cette machine disponible : c'est ici que tourneront les sessions.
 
-    Le processus reste au premier plan tant qu'il héberge. C'est voulu : tant
-    qu'il tourne, le salon est exécutable ; dès qu'il s'arrête, les
-    participants le voient et savent que plus rien ne partira.
+    Une seule commande, plus une par salon : le démon reste ouvert et le relais
+    lui pousse les prises en charge décidées depuis l'interface web. Tant qu'il
+    tourne, vos salons sont exécutables ; dès qu'il s'arrête, les participants
+    le voient.
     """
     from .agent.worker import Worker
     from .tui.credentials import load
@@ -246,32 +246,27 @@ def _agent(args) -> int:
         )
         return 2
 
-    room = args.room or _choisir_salon(credential)
-    if room is None:
-        return 2
-
-    workspace = args.workspace.resolve()
+    base = args.base.resolve()
     if args.no_sandbox:
         print(
-            "\x1b[33m⚠ bac à sable désactivé — la session peut exécuter du shell "
+            "\x1b[33m⚠ bac à sable désactivé — les sessions peuvent exécuter du shell "
             "sans confinement. N'invitez personne.\x1b[0m",
             file=sys.stderr,
         )
 
-    print(f"\x1b[2mworkspace : {workspace}\x1b[0m")
+    print(f"\x1b[2mdossier proposé : {base}\x1b[0m")
     print(f"\x1b[2m{describe_auth(settings)}\x1b[0m")
-    print(f"\x1b[2msalon {room} sur {args.server} — Ctrl-C arrête l'hébergement\x1b[0m\n")
-
-    ouvrier = Worker(
-        credential.base_url,
-        credential.token,
-        room,
-        workspace=workspace,
-        sandbox=not args.no_sandbox,
+    print(
+        f"\x1b[2mconnecté à {args.server} en tant que @{credential.handle} — "
+        "hébergez vos salons depuis l'interface web · Ctrl-C arrête\x1b[0m\n"
     )
-    asyncio.run(ouvrier.run())
-    if ouvrier.fatal:
-        print(f"\x1b[31m{ouvrier.fatal}\x1b[0m", file=sys.stderr)
+
+    demon = Worker(
+        credential.base_url, credential.token, base=base, sandbox=not args.no_sandbox
+    )
+    asyncio.run(demon.run())
+    if demon.fatal:
+        print(f"\x1b[31m{demon.fatal}\x1b[0m", file=sys.stderr)
         return 2
     return 0
 

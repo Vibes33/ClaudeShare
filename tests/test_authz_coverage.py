@@ -45,6 +45,12 @@ PUBLIQUES = {
     "/auth/cli/pending": "exige une session dans son corps, pas un droit de salon",
     "/auth/cli/approve": "exige une session dans son corps, pas un droit de salon",
     "/": "page d'accueil du client web, servie à tout le monde",
+    "/api/agent": "l'état de son propre démon, aucun salon en jeu",
+    # Rejoindre par code s'adresse par définition à quelqu'un qui n'est pas
+    # encore membre : `room_access()` y répondrait 404, ce qu'on vient
+    # justement corriger. Sa barrière est le secret du code, plus la limitation
+    # de débit qui le rend coûteux à deviner.
+    "/api/rooms/join": "entrer dans un salon avec son code",
 }
 # `/docs`, `/openapi.json` et `/redoc` sont des `Route` et non des `APIRoute` :
 # le parcours ne les collecte pas, elles n'ont donc pas à figurer ici.

@@ -44,6 +44,12 @@ class EventType(StrEnum):
     #: une trame perdue ne les laisse pas désynchronisées.
     FLOOR_CHANGED = "floor.changed"
 
+    # --- vie du salon ---
+    #: Quelqu'un est entré. Durable : le propriétaire doit pouvoir constater
+    #: après coup qui est arrivé par où, et un code qui circule trop se repère
+    #: là.
+    MEMBER_JOINED = "member.joined"
+
     # --- quotas d'abonnement ---
     RATE_LIMIT = "rate_limit"
 

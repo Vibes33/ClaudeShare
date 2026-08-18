@@ -39,11 +39,7 @@ uv run claudeshare serve --state-dir ./state --port 8765
 ```
 
 Le client web est servi par le même processus : ouvrez
-<http://127.0.0.1:8765/>, connectez-vous, créez un salon. Il s'ouvre en
-annonçant qu'aucun agent ne l'héberge, et affiche la commande exacte à lancer —
-l'identifiant du salon est la seule chose qu'on ne peut pas deviner.
-
-C'est cet agent qui rend le salon exécutable. Sur **votre** machine, dans le
+<http://127.0.0.1:8765/>, connectez-vous, créez un salon. Sur **votre** machine, dans le
 dossier que Claude doit voir :
 
 ```bash
@@ -54,7 +50,14 @@ uv run claudeshare agent <identifiant du salon> --workspace ~/mon-projet
 Il reste au premier plan tant qu'il héberge : tant qu'il tourne, le salon est
 exécutable ; dès qu'il s'arrête, les participants le voient.
 
-**Rejoindre depuis un terminal** — le sien ou celui de quelqu'un d'autre :
+Dans le salon, le panneau affiche « Héberger ici » avec le dossier pré-rempli :
+un clic, et votre agent prend la main.
+
+**Rejoindre le salon de quelqu'un d'autre** : il vous dicte son code à sept
+chiffres, vous le tapez dans « Rejoindre avec un code ». Vous entrez en
+écrivain — vous parlez avec *son* agent, donc sur *son* abonnement.
+
+**Depuis un terminal** :
 
 ```bash
 uv run claudeshare join            # ou : join <identifiant de salon>
@@ -400,6 +403,30 @@ Les routes qu'emprunte une personne pas encore membre (`/api/invites/*`,
 `POST /api/join-requests`) sont hors du préfixe `/api/rooms/{id}` : `room_access()`
 y répondrait 404, puisque c'est justement ce qu'on vient corriger. Les mélanger
 obligerait à percer un trou dans la barrière de salon.
+
+## Le code de salon
+
+Chaque salon reçoit à sa création un code à sept chiffres. On le dicte, on
+l'entre, on est dedans — en **écrivain**, parce que le code sert à parler avec
+l'agent de l'hôte ; « entrer pour regarder » est ce que fait un lien
+d'invitation en lecteur.
+
+Sept chiffres font **23 bits**, contre 40 pour un code d'appairage et 256 pour
+un lien d'invitation. C'est assumé — un code se dicte au téléphone — mais un
+salon vit longtemps là où un appairage expire en dix minutes. L'entropie ne
+suffit donc pas seule, et trois choses la complètent :
+
+- **dix essais par minute et par adresse** sur la route de jonction : épuiser
+  dix millions de valeurs demanderait des siècles ;
+- **le code se change en un clic**, et l'ancien cesse aussitôt de fonctionner ;
+- **chaque entrée par code est journalisée** dans le salon, donc un code qui a
+  trop circulé se repère.
+
+Le code peut aussi être désactivé : le salon reste alors accessible par
+invitation nominative ou par lien.
+
+Conséquence à connaître avant de le diffuser : qui a le code écrit à l'agent du
+propriétaire, donc **consomme son abonnement**.
 
 ## Les deux clients
 

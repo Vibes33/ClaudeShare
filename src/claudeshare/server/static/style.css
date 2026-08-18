@@ -183,6 +183,26 @@ h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; colo
   user-select: all;
 }
 #host .bouton { align-self: flex-start; }
+#host .titre { margin: 0.3rem 0; font-size: 0.85rem; }
+#code { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+#code .commande {
+  padding: 0.25rem 0.5rem;
+  font-family: var(--mono); font-size: 1rem; letter-spacing: 0.12em;
+  background: var(--fond); border: 1px solid var(--bord); border-radius: 6px;
+  user-select: all;
+}
+.demon {
+  margin-top: 1.5rem; display: flex; flex-direction: column; gap: 0.2rem;
+  font-size: 0.88rem;
+}
+.demon .etat { font-weight: 600; color: var(--ok); }
+.demon .etat.absent { color: var(--alerte); }
+.demon .commande {
+  align-self: flex-start; margin-top: 0.2rem; padding: 0.3rem 0.5rem;
+  font-family: var(--mono); font-size: 0.82rem;
+  background: var(--panneau); border: 1px solid var(--bord); border-radius: 6px;
+  user-select: all;
+}
 
 .bouton {
   padding: 0.4rem 0.75rem; font: inherit; font-size: 0.85rem;

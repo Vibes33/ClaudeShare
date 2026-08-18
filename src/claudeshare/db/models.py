@@ -91,16 +91,16 @@ class Role(Base):
 
 
 class Room(Base):
-    """Une conversation partagée, adossée à un dossier de travail."""
+    """Une conversation partagée, hébergée par l'agent de son propriétaire."""
 
     __tablename__ = "rooms"
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: _uid("room"))
     title: Mapped[str] = mapped_column(String(128))
-    #: Chemin absolu, toujours confiné sous la racine des workspaces — voir
-    #: `server/api/rooms.py`. Sans ça, créer un salon reviendrait à choisir
-    #: n'importe quel dossier de la machine hôte.
-    workspace: Mapped[str] = mapped_column(String(1024))
+    #: Dossier annoncé par le dernier agent qui a hébergé, ou l'étiquette donnée
+    #: à la création. **Purement indicatif** : le relais n'ouvre aucun dossier,
+    #: le chemin désigne quelque chose sur la machine de l'hôte.
+    workspace: Mapped[str] = mapped_column(String(1024), default="")
     created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     archived_at: Mapped[datetime | None] = mapped_column(
@@ -108,6 +108,16 @@ class Room(Base):
     )
     #: Session Claude Code associée, pour la reprendre au redémarrage.
     session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    #: Code à sept chiffres qui permet de rejoindre le salon. `None` quand le
+    #: propriétaire l'a désactivé.
+    #:
+    #: Sept chiffres font 23 bits — bien moins qu'un lien d'invitation (256) ou
+    #: qu'un code d'appairage (40). C'est assumé : un code se dicte au
+    #: téléphone. Mais un salon vit longtemps là où un appairage expire en dix
+    #: minutes, donc l'entropie ne suffit pas seule. Trois choses la complètent :
+    #: une limitation de débit serrée sur la route de jonction, la possibilité
+    #: de faire tourner le code, et une entrée au journal à chaque usage.
+    code: Mapped[str | None] = mapped_column(String(16), unique=True, index=True, nullable=True)
 
     memberships: Mapped[list[Membership]] = relationship(
         back_populates="room", cascade="all, delete-orphan"
@@ -282,6 +292,18 @@ class Event(Base):
     author: Mapped[str | None] = mapped_column(String(128), nullable=True)
     data: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+#: Chiffres seulement : le code est fait pour être dicté, et une lettre
+#: obligerait à épeler.
+CODE_LENGTH = 7
+
+
+def new_room_code() -> str:
+    """Code de salon. Jamais de zéro en tête : recopié à la main, il se perd."""
+    premier = secrets.choice("123456789")
+    reste = "".join(secrets.choice("0123456789") for _ in range(CODE_LENGTH - 1))
+    return premier + reste
 
 
 def new_token_secret() -> str:

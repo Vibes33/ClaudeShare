@@ -16,7 +16,6 @@ cassables :
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 
 import pytest
 
@@ -27,11 +26,37 @@ from claudeshare.server.agentlink import AbsentAgent, AgentLink, NoAgentError
 from claudeshare.server.room import Room
 
 from .conftest import Harness
-from .test_ws_flow import expect, greet, send
+from .test_ws_flow import collect, expect, greet, send
 
 
 def trame(type_: str, **data) -> dict:
     return {"v": PROTOCOL_VERSION, "type": str(type_), "data": data}
+
+
+def demon(client, harness: Harness, secret: str):
+    """Ouvre une socket de démon. Une par personne, pas par salon."""
+    return client.websocket_connect("/ws/agent", headers=harness.auth(secret))
+
+
+def prendre_en_charge(agent, room_id: str, workspace: str = "/chez/alice") -> None:
+    """Annonce une prise en charge, comme le ferait le démon après `run.host`."""
+    agent.send_json(trame(AgentMessage.AGENT_HELLO, base=workspace))
+    agent.send_json(
+        trame(AgentMessage.AGENT_HOSTED, room_id=room_id, ok=True, workspace=workspace)
+    )
+
+
+def heberge(client, harness: Harness, room_id: str, user_id: str) -> bool:
+    """Ce qu'un participant voit de l'hébergement, à l'instantané.
+
+    On le lit depuis une connexion ordinaire plutôt que depuis l'état interne :
+    une prise en charge refusée ne monte même pas le salon, et l'affirmation qui
+    compte est de toute façon celle que les gens voient.
+    """
+    with client.websocket_connect(
+        f"/ws/rooms/{room_id}", headers=harness.auth(harness.token(user_id))
+    ) as ws:
+        return bool(greet(ws)["data"]["agent"]["connected"])
 
 
 def salon(harness: Harness, room_id: str) -> Room:
@@ -91,10 +116,8 @@ def test_l_arrivee_d_un_hote_est_annoncee(harness: Harness, client):
 
     with client.websocket_connect(f"/ws/rooms/{room}", headers=harness.auth(secret)) as vue:
         greet(vue)
-        with client.websocket_connect(
-            f"/ws/agents/{room}", headers=harness.auth(secret)
-        ) as agent:
-            agent.send_json(trame(AgentMessage.AGENT_HELLO, workspace="/chez/alice"))
+        with demon(client, harness, secret) as agent:
+            prendre_en_charge(agent, room)
             annonce = expect(vue, "agent")
 
     assert annonce["data"]["connected"] is True
@@ -108,33 +131,37 @@ def test_un_ecrivain_ne_peut_pas_heberger(harness: Harness, client):
     """Héberger, c'est choisir la machine qui exécutera le shell du salon et la
     politique d'outils qui s'y applique. C'est `room.settings`, et rien de
     moins."""
+    harness.auto_host = False
     alice, bob = harness.user("alice"), harness.user("bob")
     room = harness.room(alice, workspace="a")
     harness.join(room, bob, role="ecrivain")
 
-    with pytest.raises(Exception):  # noqa: B017 — la fermeture remonte en exception
-        with client.websocket_connect(
-            f"/ws/agents/{room}", headers=harness.auth(harness.token(bob))
-        ):
-            pass
+    # Ouvrir la socket est permis à tout le monde : c'est *héberger ce salon*
+    # qui demande `room.settings`, et le refus se voit à la prise en charge.
+    with demon(client, harness, harness.token(bob)) as agent:
+        prendre_en_charge(agent, room)
+        agent.send_json(trame(AgentMessage.AGENT_HELLO, base="/chez/bob"))
+
+    assert not heberge(client, harness, room, alice)
 
 
 def test_un_non_membre_ne_peut_pas_heberger(harness: Harness, client):
+    harness.auto_host = False
     alice, mallory = harness.user("alice"), harness.user("mallory")
     room = harness.room(alice, workspace="a")
 
-    with pytest.raises(Exception):  # noqa: B017
-        with client.websocket_connect(
-            f"/ws/agents/{room}", headers=harness.auth(harness.token(mallory))
-        ):
-            pass
+    with demon(client, harness, harness.token(mallory)) as agent:
+        prendre_en_charge(agent, room)
+        agent.send_json(trame(AgentMessage.AGENT_HELLO, base="/ailleurs"))
+
+    assert not heberge(client, harness, room, alice)
 
 
 def test_un_agent_sans_jeton_est_refuse(harness: Harness, client):
-    room = harness.room(harness.user("alice"), workspace="a")
+    harness.room(harness.user("alice"), workspace="a")
 
     with pytest.raises(Exception):  # noqa: B017
-        with client.websocket_connect(f"/ws/agents/{room}"):
+        with client.websocket_connect("/ws/agent"):
             pass
 
 
@@ -151,13 +178,12 @@ def test_un_evenement_d_agent_arrive_aux_participants(harness: Harness, client):
 
     with client.websocket_connect(f"/ws/rooms/{room}", headers=harness.auth(secret)) as vue:
         greet(vue)
-        with client.websocket_connect(
-            f"/ws/agents/{room}", headers=harness.auth(secret)
-        ) as agent:
-            agent.send_json(trame(AgentMessage.AGENT_HELLO, workspace="/chez/alice"))
+        with demon(client, harness, secret) as agent:
+            prendre_en_charge(agent, room)
             agent.send_json(
                 trame(
                     AgentMessage.AGENT_EVENT,
+                    room_id=room,
                     type=str(EventType.ASSISTANT_MESSAGE),
                     turn_id="t1",
                     author="alice",
@@ -181,13 +207,15 @@ def test_un_evenement_inconnu_ne_tue_pas_la_connexion(harness: Harness, client):
 
     with client.websocket_connect(f"/ws/rooms/{room}", headers=harness.auth(secret)) as vue:
         greet(vue)
-        with client.websocket_connect(
-            f"/ws/agents/{room}", headers=harness.auth(secret)
-        ) as agent:
-            agent.send_json(trame(AgentMessage.AGENT_EVENT, type="venu.du.futur", data={}))
+        with demon(client, harness, secret) as agent:
+            prendre_en_charge(agent, room)
+            agent.send_json(
+                trame(AgentMessage.AGENT_EVENT, room_id=room, type="venu.du.futur", data={})
+            )
             agent.send_json(
                 trame(
                     AgentMessage.AGENT_EVENT,
+                    room_id=room,
                     type=str(EventType.ASSISTANT_MESSAGE),
                     turn_id="t1",
                     data={"text": "toujours là"},
@@ -206,10 +234,19 @@ def test_la_session_annoncee_est_retenue(harness: Harness, client):
     room = harness.room(alice, workspace="a")
     secret = harness.token(alice)
 
-    with client.websocket_connect(f"/ws/agents/{room}", headers=harness.auth(secret)) as agent:
+    with demon(client, harness, secret) as agent:
+        agent.send_json(trame(AgentMessage.AGENT_HELLO, base="/chez/alice"))
         agent.send_json(
-            trame(AgentMessage.AGENT_HELLO, session_id="sess-42", workspace="/chez/alice")
+            trame(
+                AgentMessage.AGENT_HOSTED,
+                room_id=room,
+                ok=True,
+                workspace="/chez/alice",
+                session_id="sess-42",
+            )
         )
+        # Une seconde trame force le traitement de la première avant fermeture.
+        agent.send_json(trame(AgentMessage.AGENT_HELLO, base="/chez/alice"))
 
     with harness.ctx.db.session() as session:
         assert session.get(RoomRow, room).session_id == "sess-42"
@@ -321,85 +358,55 @@ def _broker():
     return InProcessBroadcaster()
 
 
-# ------------------------------------------------- l'agent réel, bout en bout
+# ------------------------------------------------- le démon réel, bout en bout
 
 
-async def test_un_vrai_agent_joue_un_tour_pour_un_participant(harness: Harness, client):
-    """Le circuit complet, avec le vrai `Worker` et la vraie `AgentLink`.
+def test_un_vrai_demon_joue_un_tour_pour_un_participant(harness: Harness, client):
+    """Le circuit complet : vrai `Worker`, vraie `AgentSession`, vrai salon.
 
-    Les autres tests court-circuitent le transport (`LocalAgent`). Celui-ci
-    branche l'ouvrier tel qu'il tourne chez les gens, à travers une paire de
-    files qui tient lieu de socket : c'est la seule vérification que les deux
-    moitiés du protocole se comprennent réellement.
+    Seul le transport est court-circuité (`LocalAgent`), et le client SDK est
+    factice. Tout le reste — prise en charge, dispatch, superviseur, jeton de
+    parole — est le code de production.
+
+    Le tour est déclenché **par la socket** et non par un appel direct à
+    `submit` : le client de test fait tourner l'application dans sa propre
+    boucle, et lancer un tour depuis celle du test attendrait un objet créé
+    ailleurs, qui ne se réveillerait jamais.
     """
-    import contextlib
-    import json
-
-    from claudeshare.agent import SessionSupervisor
-    from claudeshare.agent.worker import Worker
-    from claudeshare.protocol import PROTOCOL_VERSION as V
-    from claudeshare.server.ws_agents import dispatch, parse_agent_message
-
-    harness.auto_host = False
     alice = harness.user("alice")
     room_id = harness.room(alice, workspace="a")
 
     with client.websocket_connect(
         f"/ws/rooms/{room_id}", headers=harness.auth(harness.token(alice))
     ) as vue:
-        greet(vue)
-        live = salon(harness, room_id)
+        assert greet(vue)["data"]["agent"]["connected"] is True
 
-        vers_ouvrier: asyncio.Queue[str] = asyncio.Queue()
+        vue.send_json(send("bonjour"))
+        recus = collect(vue, "turn.ended")
 
-        class Socket:
-            """Le transport, réduit à ce que les deux bouts en attendent."""
-
-            async def send(self, brut: str) -> None:
-                kind, data = parse_agent_message(json.loads(brut))
-                await dispatch(kind, data, ouvrier.link, live)
-
-            async def __aiter__(self):
-                while True:
-                    yield await vers_ouvrier.get()
-
-        @contextlib.asynccontextmanager
-        async def transport(url: str, token: str):
-            yield Socket()
-
-        ouvrier = Worker(
-            "http://relais", "jeton", room_id,
-            workspace=Path("/chez/alice"),
-            supervisor=SessionSupervisor(
-                workspace=Path("/chez/alice"),
-                sink=lambda e: ouvrier._emit(e),
-                client_factory=lambda *, options: harness.fake,
-            ),
-            connector=transport,
-        )
-        # La liaison que le relais tiendrait : elle pousse les ordres dans la
-        # file que l'ouvrier lit, exactement comme le ferait la socket.
-        ouvrier.link = AgentLink(
-            room_id,
-            "alice",
-            send=lambda m: vers_ouvrier.put(json.dumps({"v": V, **m})),
-            sink=live.on_agent_event,
-        )
-        live.host(ouvrier.link)
-
-        boucle = asyncio.create_task(ouvrier.run())
-        try:
-            issue = await live.submit("bonjour", author="alice")
-            assert issue.started
-            await asyncio.wait_for(live._turn, 5)
-        finally:
-            boucle.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await boucle
-
-    # Le tour a bien été joué chez l'ouvrier, et son résultat est revenu au
-    # relais par le seul chemin prévu : `agent.event` puis `agent.done`.
+    live = salon(harness, room_id)
     assert harness.fake.prompts == ["bonjour"]
-    assert live.floor.state is FloorState.OPEN
-    textes = [e["text"] for e in live.log.since(0).events if e["type"] == "assistant.message"]
-    assert textes == ["bonjour"]
+    assert [f["data"]["text"] for f in recus if f["type"] == "assistant.message"] == ["bonjour"]
+    # Le dossier annoncé est celui que le démon a réellement ouvert chez lui.
+    assert live.agent.workspace == str(harness.agents[room_id].worker.hosted[room_id].workspace)
+
+
+async def test_un_demon_tient_plusieurs_salons(harness: Harness, client):
+    """Une socket par personne : deux salons, deux sessions, deux dossiers.
+
+    Les mêler ferait répondre l'un avec la mémoire de l'autre — c'est la raison
+    d'être d'un `Hosted` par salon plutôt que d'un superviseur partagé.
+    """
+    alice = harness.user("alice")
+    un = harness.room(alice, title="un", workspace="a")
+    deux = harness.room(alice, title="deux", workspace="b")
+    entete = harness.auth(harness.token(alice))
+
+    with client.websocket_connect(f"/ws/rooms/{un}", headers=entete) as a:
+        greet(a)
+        with client.websocket_connect(f"/ws/rooms/{deux}", headers=entete) as b:
+            greet(b)
+
+            premier, second = salon(harness, un), salon(harness, deux)
+            assert premier.hosted and second.hosted
+            assert premier.agent is not second.agent

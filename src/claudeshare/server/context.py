@@ -13,6 +13,7 @@ from ..config import Settings
 from ..db.models import Provider, Room
 from ..db.session import Database
 from .auth.identity import Principal, SessionSigner
+from .daemons import DaemonRegistry
 from .deps import principal_from_request, principal_from_websocket
 from .room import Room as LiveRoom
 from .room import RoomManager
@@ -27,6 +28,8 @@ class ServerContext:
     oauth_providers: set[Provider]
     rooms: RoomManager
     workspace_root: Path
+    #: Démons connectés, par personne. En mémoire du process, comme les salons.
+    daemons: DaemonRegistry = field(default_factory=DaemonRegistry)
     public_https: bool = False
     _started: set[str] = field(default_factory=set)
 

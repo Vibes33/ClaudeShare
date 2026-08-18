@@ -22,7 +22,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
@@ -45,9 +45,10 @@ from .auth.routes import build_auth_router
 from .context import ServerContext
 from .middleware import RateLimitMiddleware, SecurityHeadersMiddleware
 from .ratelimit import Rule
+from .daemons import AgentDaemon
 from .room import RoomManager
 from .ws import serve_socket
-from .ws_agents import serve_agent
+from .ws_agents import AgentSession, serve_agent
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,12 @@ STATIC_DIR = Path(__file__).parent / "static"
 #: même sortie NAT partage un seau, et la limite doit gêner le martèlement, pas
 #: l'affluence.
 RATE_RULES: tuple[tuple[str, Rule], ...] = (
+    # Un code de salon ne vaut que 23 bits — dix millions de valeurs. C'est le
+    # prix d'un code qu'on dicte au téléphone, et c'est cette limite qui le rend
+    # tenable : à dix essais par minute, épuiser l'espace demanderait des
+    # siècles depuis une adresse. Elle ne remplace pas la rotation du code, elle
+    # lui laisse le temps d'être utile.
+    ("/api/rooms/join", Rule(limit=10, per_s=60)),
     ("/auth/cli/approve", Rule(limit=10, per_s=60)),
     ("/api/invites/", Rule(limit=20, per_s=60)),
     # Le sondage d'appairage est légitimement répétitif — toutes les deux
@@ -173,6 +180,20 @@ def create_app(
     app.include_router(build_invites_router(ctx))
     app.include_router(build_redeem_router(ctx))
 
+    @app.get("/api/agent")
+    async def my_agent(request: Request) -> dict[str, Any]:
+        """L'état du démon de l'appelant.
+
+        C'est ce que l'interface interroge pour savoir si elle peut proposer un
+        bouton « héberger » ou si elle doit d'abord expliquer comment lancer
+        `claudeshare agent`.
+        """
+        with ctx.db.session() as session:
+            principal = ctx.principal(request, session)
+            if principal is None:
+                raise HTTPException(401, "authentification requise")
+            return ctx.daemons.view(principal.user_id)
+
     @app.get("/api/health")
     async def health() -> dict[str, Any]:
         return {
@@ -232,60 +253,72 @@ def create_app(
         finally:
             ctx.remember_session(room_id)
 
-    @app.websocket("/ws/agents/{room_id}")
-    async def agent_socket(websocket: WebSocket, room_id: str) -> None:
-        """Point d'entrée des agents. Réservé à qui peut héberger le salon."""
+    @app.websocket("/ws/agent")
+    async def agent_socket(websocket: WebSocket) -> None:
+        """Point d'entrée des démons. Une socket par personne, pas par salon.
+
+        Ouvrir la socket ne demande qu'une identité valide : c'est *héberger tel
+        salon* qui demande un droit, vérifié salon par salon au moment de la
+        prise en charge.
+        """
         with ctx.db.session() as session:
             principal = ctx.principal_ws(websocket, session)
-            if principal is None:
-                await websocket.close(code=4401)
-                return
+        if principal is None:
+            await websocket.close(code=4401)
+            return
 
-            from ..core.permissions import resolve
-            from ..db.models import Role
-            from .auth.identity import membership_of
+        await websocket.accept()
 
-            membership = membership_of(session, room_id, principal.user_id)
-            if membership is None:
-                await websocket.close(code=4404)
-                return
-            # `room.settings` règle « dossier de travail, politique d'outils,
-            # mode de permission » : c'est exactement ce que décide la machine
-            # qui exécute. Héberger sans elle serait contourner ce réglage.
-            if str(Capability.SETTINGS) not in resolve(
-                session.get(Role, membership.role_id), membership
-            ):
-                await websocket.close(code=4403)
-                return
+        async def envoyer(message: dict[str, Any]) -> None:
+            await websocket.send_json({"v": 1, "type": message.pop("type"), "data": message})
 
-            record = session.get(Room, room_id)
-            if record is None or record.archived:
-                await websocket.close(code=4404)
-                return
-            detached = (record.id, record.title, record.workspace, record.session_id)
+        daemon = AgentDaemon(principal.user_id, principal.label, send=envoyer)
+        remplace = ctx.daemons.attach(daemon)
+        if remplace is not None:
+            for link in remplace.close():
+                if (live := ctx.rooms.get(link.room_id)) is not None:
+                    live.unhost(link)
+                    live.schedule(live.announce_agent())
 
-        live = await _ensure_live(ctx, detached)
+        async def salon_de(room_id: str):
+            with ctx.db.session() as session:
+                record = session.get(Room, room_id)
+                if record is None or record.archived:
+                    return None
+                detached = (record.id, record.title, record.workspace, record.session_id)
+            return await _ensure_live(ctx, detached)
 
-        async def retenir(session_id: str) -> None:
-            """Persiste la session et le dossier annoncés par l'agent.
+        async def retenir(room_id: str, session_id: str) -> None:
+            """Persiste la session et le dossier annoncés par le démon.
 
-            C'est le relais qui s'en souvient, parce que l'agent suivant peut
+            C'est le relais qui s'en souvient, parce que le démon suivant peut
             être sur une autre machine — et c'est la session qui lui permettra
             de reprendre le contexte plutôt que de repartir de zéro.
             """
-            live.session_id = session_id
+            live = ctx.rooms.get(room_id)
+            if live is not None:
+                live.session_id = session_id
             with ctx.db.session() as session:
                 enregistrement = session.get(Room, room_id)
                 if enregistrement is None:
                     return
                 if enregistrement.session_id != session_id:
                     enregistrement.session_id = session_id
-                if live.agent.workspace:
+                if live is not None and live.agent.workspace:
                     enregistrement.workspace = live.agent.workspace
 
-        await serve_agent(websocket, live, principal.label, on_session=retenir)
+        sortie = AgentSession(
+            daemon,
+            room_of=salon_de,
+            may_host=lambda room_id: _may_host(ctx, room_id, principal.user_id),
+            on_session=retenir,
+        )
+        try:
+            await serve_agent(websocket, daemon, sortie)
+        finally:
+            ctx.daemons.detach(daemon)
 
-    # Montés en dernier : `/static` ne doit pas pouvoir masquer une route d'API,
+        # Montés en dernier : `/static` ne doit pas pouvoir masquer une route d'API,
     # et `/` est la page qui sert de porte d'entrée à tout le reste.
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -324,6 +357,16 @@ async def _entretenir(ctx: ServerContext) -> None:
             raise
         except Exception:
             logger.exception("échec de l'entretien du journal")
+
+
+def _may_host(ctx: ServerContext, room_id: str, user_id: str) -> bool:
+    """`room.settings` sur ce salon précis.
+
+    Le plan la décrit comme la capacité qui règle « dossier de travail,
+    politique d'outils, mode de permission » — soit exactement ce que décide la
+    machine qui exécute. Héberger sans elle reviendrait à contourner ce réglage.
+    """
+    return str(Capability.SETTINGS) in _capabilities_of(ctx, room_id, user_id)
 
 
 def _capabilities_of(ctx: ServerContext, room_id: str, user_id: str) -> frozenset[str]:

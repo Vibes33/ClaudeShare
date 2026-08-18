@@ -23,7 +23,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...core.capabilities import DEFAULT_ROLE, OWNER_ROLE, ROLE_TEMPLATES, template_capabilities
-from ...db.models import ApiToken, Membership, Provider, Role, Room, User, new_token_secret
+from ...db.models import (
+    ApiToken,
+    Membership,
+    Provider,
+    Role,
+    Room,
+    User,
+    new_room_code,
+    new_token_secret,
+)
 
 SESSION_COOKIE = "claudeshare_session"
 #: Durée d'une session navigateur. Assez longue pour ne pas gêner, assez courte
@@ -252,11 +261,36 @@ def rooms_for(session: Session, user_id: str) -> list[Room]:
     )
 
 
+#: Tentatives avant d'abandonner l'allocation d'un code. Sept chiffres font dix
+#: millions de valeurs : une collision est déjà improbable, et en enchaîner
+#: quelques-unes voudrait dire qu'on approche la saturation — auquel cas c'est
+#: la longueur du code qu'il faut revoir, pas la boucle.
+CODE_TRIES = 8
+
+
+class CodeExhausted(RuntimeError):
+    """Impossible de trouver un code de salon libre."""
+
+
+def free_code(session: Session) -> str:
+    for _ in range(CODE_TRIES):
+        code = new_room_code()
+        if session.scalar(select(Room.id).where(Room.code == code)) is None:
+            return code
+    raise CodeExhausted("aucun code de salon disponible")
+
+
 def create_room(
     session: Session, *, title: str, workspace: str, owner: User
 ) -> tuple[Room, Membership]:
-    """Crée un salon, ses rôles, et y installe son créateur comme propriétaire."""
-    room = Room(title=title, workspace=workspace, created_by=owner.id)
+    """Crée un salon, ses rôles, et y installe son créateur comme propriétaire.
+
+    Le code de jonction est attribué ici et non par la route : le premier
+    réflexe après avoir créé un salon est de le partager, et un salon né sans
+    code obligerait à aller le demander. Tous les chemins de création passent
+    par cette fonction, donc aucun ne peut l'oublier.
+    """
+    room = Room(title=title, workspace=workspace, created_by=owner.id, code=free_code(session))
     session.add(room)
     session.flush()
     seed_roles(session, room)

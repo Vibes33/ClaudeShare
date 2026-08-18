@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ...core.capabilities import Capability
 from ...db.models import Room
-from ..auth.identity import create_room, rooms_for
+from ..auth.identity import create_room, free_code, rooms_for
 from ..authz import requires, room_access
 from ..deps import require_principal
 
@@ -23,10 +23,23 @@ class RoomCreate(BaseModel):
     workspace: str = Field(default="", max_length=256)
 
 
+class HostRequest(BaseModel):
+    #: Chemin **sur la machine du démon**. Le relais ne l'ouvre pas et ne le
+    #: valide pas : il ne saurait pas quoi en vérifier. C'est le démon qui
+    #: refuse un dossier absent, et son refus revient à l'interface.
+    workspace: str = Field(default="", max_length=1024)
+
+
+class JoinRequestByCode(BaseModel):
+    code: str = Field(min_length=1, max_length=16)
+
+
 def _room_view(record: Room, live: Any | None = None) -> dict[str, Any]:
     view = {
         "id": record.id,
         "title": record.title,
+        #: Code à sept chiffres qui permet de rejoindre. `None` = désactivé.
+        "code": record.code,
         # Ce que l'agent a annoncé la dernière fois qu'il s'est connecté, ou
         # l'étiquette donnée à la création. Indicatif : le dossier vit ailleurs.
         "workspace": record.workspace,
@@ -89,6 +102,71 @@ def build_rooms_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
             # Ce n'est jamais le contrôle : celui-ci est côté serveur.
             view["capabilities"] = sorted(access.capabilities)
             return view
+
+    @router.post("/{room_id}/host")
+    @requires(Capability.SETTINGS)
+    async def host(room_id: str, payload: HostRequest, request: Request) -> dict[str, Any]:
+        """Demande à *votre* démon de prendre ce salon en charge.
+
+        L'ordre part sur la socket que le démon a déjà ouverte : il n'y a ni
+        port à ouvrir chez l'hôte, ni origine à autoriser. La réponse ici ne dit
+        que « l'ordre est parti » — la prise en charge réelle arrive au salon
+        par une trame `agent`, parce qu'elle peut échouer côté machine (dossier
+        absent, session refusée) et que c'est là que le message utile se trouve.
+        """
+        with ctx.db.session() as session:
+            principal = require_principal(ctx.principal(request, session))
+            room_access(session, principal, room_id, Capability.SETTINGS)
+            user_id = principal.user_id
+
+        daemon = ctx.daemons.get(user_id)
+        if daemon is None:
+            raise HTTPException(
+                409,
+                "aucun agent connecté depuis votre machine — lancez `claudeshare agent`",
+            )
+
+        await daemon.host(room_id, payload.workspace or daemon.base)
+        return {"status": "demandé", "workspace": payload.workspace or daemon.base}
+
+    @router.post("/{room_id}/unhost")
+    @requires(Capability.SETTINGS)
+    async def unhost(room_id: str, request: Request) -> dict[str, str]:
+        with ctx.db.session() as session:
+            principal = require_principal(ctx.principal(request, session))
+            room_access(session, principal, room_id, Capability.SETTINGS)
+            user_id = principal.user_id
+
+        daemon = ctx.daemons.get(user_id)
+        if daemon is not None:
+            await daemon.unhost(room_id)
+        return {"status": "lâché"}
+
+    @router.post("/{room_id}/code")
+    @requires(Capability.INVITE)
+    async def rotate_code(room_id: str, request: Request) -> dict[str, Any]:
+        """Fait tourner le code. L'ancien cesse immédiatement de fonctionner.
+
+        C'est la réponse au principal défaut d'un code à sept chiffres : il ne
+        vaut que 23 bits, mais il peut être changé en un clic dès qu'il a trop
+        circulé.
+        """
+        with ctx.db.session() as session:
+            principal = require_principal(ctx.principal(request, session))
+            room_access(session, principal, room_id, Capability.INVITE)
+            record = session.get(Room, room_id)
+            record.code = free_code(session)
+            return {"code": record.code}
+
+    @router.delete("/{room_id}/code")
+    @requires(Capability.INVITE)
+    async def drop_code(room_id: str, request: Request) -> dict[str, Any]:
+        """Désactive le code. Le salon reste accessible par invitation."""
+        with ctx.db.session() as session:
+            principal = require_principal(ctx.principal(request, session))
+            room_access(session, principal, room_id, Capability.INVITE)
+            session.get(Room, room_id).code = None
+            return {"code": None}
 
     @router.get("/{room_id}/audit")
     @requires(Capability.MEMBERS_MANAGE)

@@ -48,23 +48,31 @@ class ClientMessage(StrEnum):
 
 
 class AgentMessage(StrEnum):
-    """Protocole **agent ↔ relais**, distinct de celui des clients.
+    """Protocole **démon ↔ relais**, distinct de celui des clients.
 
-    Un agent n'est pas un participant : c'est le processus qui détient
-    réellement la session Claude Code, sur la machine de son propriétaire, avec
-    son abonnement et son dossier de travail. Le relais, lui, n'exécute rien —
-    il coordonne et distribue.
+    Un démon n'est pas un participant : c'est le processus qui détient
+    réellement les sessions Claude Code, sur la machine de son propriétaire,
+    avec son abonnement et ses dossiers. Le relais, lui, n'exécute rien.
 
     Volontairement séparé de `ClientMessage` : un client envoie des *intentions*
-    qu'on peut refuser, un agent rend compte de ce qu'il a **déjà fait**. Les
+    qu'on peut refuser, un démon rend compte de ce qu'il a **déjà fait**. Les
     mélanger reviendrait à laisser un navigateur prétendre qu'un tour est
     terminé. Ce vocabulaire n'a donc pas de miroir dans `protocol.js` : aucun
     navigateur n'a à le parler.
+
+    **Une socket par personne, pas par salon.** C'est ce qui permet d'héberger
+    depuis l'interface web : la connexion est déjà ouverte, sortante, et le
+    relais n'a qu'à y pousser un ordre. Un démon local qu'il faudrait joindre
+    demanderait un port ouvert et une origine autorisée ; ici il n'y a rien à
+    négocier avec le réseau de personne. Toute trame liée à un salon porte donc
+    un `room_id`.
     """
 
-    # --- agent → relais ---
-    #: Première trame. Annonce le salon hébergé, la session reprise, le dossier.
+    # --- démon → relais ---
+    #: Première trame. Annonce ce que le démon sait faire et d'où il part.
     AGENT_HELLO = "agent.hello"
+    #: Un salon est pris en charge, ou l'a été refusé. Réponse à `run.host`.
+    AGENT_HOSTED = "agent.hosted"
     #: Un événement du superviseur, transmis tel quel. C'est ce qui rend le
     #: changement contenu : en aval, le relais journalise et diffuse comme avant.
     #: Porte aussi les demandes d'approbation — `can_use_tool` produit déjà un
@@ -73,16 +81,20 @@ class AgentMessage(StrEnum):
     AGENT_EVENT = "agent.event"
     #: Le tour est terminé, drainage compris. Porte l'identifiant de session,
     #: qui n'est connu qu'après le premier tour : c'est le relais qui le
-    #: conserve, parce que l'agent suivant peut être sur une autre machine.
+    #: conserve, parce que le démon suivant peut être sur une autre machine.
     AGENT_DONE = "agent.done"
 
-    # --- relais → agent ---
+    # --- relais → démon ---
+    #: Prends en charge ce salon, dans ce dossier.
+    RUN_HOST = "run.host"
+    #: Lâche ce salon.
+    RUN_UNHOST = "run.unhost"
     #: Exécute ce prompt. Porte le niveau de confiance de son auteur, que
-    #: l'agent applique lui-même — la défense tourne là où il y a à perdre.
+    #: le démon applique lui-même — la défense tourne là où il y a à perdre.
     RUN_TURN = "run.turn"
     #: Coupe le tour en cours, drainage du tampon compris.
     RUN_INTERRUPT = "run.interrupt"
-    #: Réponse à un `agent.ask`.
+    #: Réponse à une demande d'approbation.
     RUN_APPROVAL = "run.approval"
 
 

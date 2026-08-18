@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from ...core.capabilities import DEFAULT_ROLE, Capability
+from ...events import Event, EventType
 from ...core.invites import (
     DEFAULT_INVITE_TTL_HOURS,
     DEFAULT_LINK_TTL_HOURS,
@@ -49,10 +50,17 @@ from ...db.models import (
     User,
     new_invite_secret,
 )
-from ..auth.identity import hash_token
+from ..auth.identity import add_member, hash_token, membership_of
 from ..authz import requires, room_access, room_or_404
 from ..deps import require_principal
 from .members import apply_live, member_view
+
+
+#: Rôle donné par le code de salon. Écrivain, parce que le code sert à *parler*
+#: avec l'agent de l'hôte — « rejoindre pour regarder » est ce que fait un lien
+#: d'invitation en lecteur. La conséquence est assumée : qui a le code consomme
+#: l'abonnement du propriétaire, d'où un code rotatable et désactivable.
+CODE_ROLE = "ecrivain"
 
 
 class InviteCreate(BaseModel):
@@ -70,6 +78,13 @@ class LinkCreate(BaseModel):
 
 class Redeem(BaseModel):
     token: str = Field(min_length=8, max_length=200)
+
+
+class JoinByCode(BaseModel):
+    #: Saisi à la main, souvent avec des espaces ou des tirets : on ne garde que
+    #: les chiffres plutôt que de renvoyer « code invalide » pour une coquille
+    #: de présentation.
+    code: str = Field(min_length=1, max_length=32)
 
 
 class JoinAsk(BaseModel):
@@ -474,6 +489,61 @@ def build_redeem_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
                     )
                 )
             return {"status": "pending"}
+
+    @router.post("/rooms/join")
+    async def join_by_code(payload: JoinByCode, request: Request) -> dict[str, Any]:
+        """Rejoint un salon avec son code à sept chiffres.
+
+        Entre en **écrivain** : le code sert à parler avec l'agent de l'hôte,
+        pas seulement à regarder. C'est un choix de produit, et il a un prix —
+        quiconque a le code consomme l'abonnement du propriétaire. D'où le code
+        rotatable, désactivable, et l'entrée au journal ci-dessous.
+
+        Tous les refus renvoient le même message. Un code à sept chiffres est
+        devinable en masse ; distinguer « inconnu » de « désactivé » dirait à un
+        sondeur au hasard quand il a trouvé un salon réel.
+        """
+        from ...db.models import Room
+
+        refus = "code inconnu ou désactivé"
+        code = "".join(c for c in payload.code if c.isdigit())
+
+        with ctx.db.session() as session:
+            principal = require_principal(ctx.principal(request, session))
+            record = (
+                session.scalar(
+                    select(Room).where(Room.code == code, Room.archived_at.is_(None))
+                )
+                if code
+                else None
+            )
+            if record is None:
+                raise HTTPException(404, refus)
+
+            existante = membership_of(session, record.id, principal.user_id)
+            if existante is not None:
+                # Déjà membre : on ne change pas son rôle. Un code ne doit
+                # promouvoir personne dans son dos, ni rétrograder qui que ce soit.
+                return {"room_id": record.id, "title": record.title, "joined": False}
+
+            user = session.get(User, principal.user_id)
+            add_member(session, room=record, user=user, role_name=CODE_ROLE)
+            libelle = user.label
+            titre = record.title
+            room_id = record.id
+
+        # Journalisé dans le salon : le propriétaire doit pouvoir voir qui est
+        # entré par code, et quand. Un code qui circule trop se repère là.
+        live = ctx.rooms.get(room_id)
+        if live is not None:
+            await live.on_agent_event(
+                Event(
+                    type=EventType.MEMBER_JOINED,
+                    author=libelle,
+                    data={"how": "code"},
+                )
+            )
+        return {"room_id": room_id, "title": titre, "joined": True}
 
     return router
 

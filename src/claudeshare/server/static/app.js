@@ -39,6 +39,9 @@ const state = {
   floor: { state: "open", holder: null, queue: [], expires_in: null },
   //: Qui héberge le salon. Sans agent, on lit mais on n'exécute pas.
   agent: { connected: false, host: null, workspace: "" },
+  //: Mon propre démon, tel que `/api/agent` le décrit. Distinct de `agent`
+  //: ci-dessus, qui décrit l'hôte du salon regardé — ce n'est pas toujours moi.
+  demon: { connected: false, base: "", rooms: [] },
   approvals: new Map(),
   queued: null,
   //: Dernier prompt envoyé, rendu à son auteur s'il part en file.
@@ -56,7 +59,7 @@ let keepalive = 0;
 document.addEventListener("DOMContentLoaded", async () => {
   for (const id of [
     "app", "login", "providers", "rooms", "room", "title", "status", "who",
-    "transcript", "composer", "prompt", "send", "floor", "queue", "presence", "host",
+    "transcript", "composer", "prompt", "send", "floor", "queue", "presence", "host", "code",
     "approvals", "toasts", "actions",
   ]) {
     dom[id] = document.getElementById(id);
@@ -77,7 +80,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   if (!state.me) return afficherConnexion();
 
   dom.who.textContent = state.me.label;
-  state.rooms = await json("/api/rooms") || [];
+  await rafraichir();
   router();
 });
 
@@ -137,6 +140,11 @@ async function afficherConnexion() {
   }
 }
 
+async function rafraichir() {
+  state.rooms = (await json("/api/rooms")) || state.rooms;
+  state.demon = (await json("/api/agent")) || state.demon;
+}
+
 // ------------------------------------------------------------------ routage
 
 function router() {
@@ -155,6 +163,72 @@ function afficherSalons() {
     dom.rooms.appendChild(elem("p", "vide", "Vous n'êtes membre d'aucun salon."));
   }
   dom.rooms.appendChild(formulaireCreation());
+  dom.rooms.appendChild(formulaireCode());
+  dom.rooms.appendChild(etatDemon());
+}
+
+/** Rejoindre un salon dont on nous a dicté le code. */
+function formulaireCode() {
+  const bloc = elem("div", "creation");
+  bloc.appendChild(elem("h2", "", "Rejoindre avec un code"));
+
+  const champ = elem("input", "titre");
+  champ.type = "text";
+  champ.inputMode = "numeric";
+  champ.placeholder = "1234567";
+  champ.maxLength = 16;
+
+  const bouton = elem("button", "bouton", "Rejoindre");
+  const lancer = () => rejoindre(champ, bouton);
+  bouton.addEventListener("click", lancer);
+  champ.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      lancer();
+    }
+  });
+
+  const ligne = elem("div", "ligne");
+  ligne.append(champ, bouton);
+  bloc.appendChild(ligne);
+  bloc.appendChild(
+    elem("p", "vide",
+      "Vous pourrez écrire à l'agent de la personne qui héberge — donc sur son "
+      + "abonnement."),
+  );
+  return bloc;
+}
+
+async function rejoindre(champ, bouton) {
+  const code = champ.value.trim();
+  if (!code) return champ.focus();
+
+  bouton.disabled = true;
+  const reponse = await post("/api/rooms/join", { code });
+  bouton.disabled = false;
+
+  if (!reponse.ok) return toast(motif(reponse));
+
+  champ.value = "";
+  await rafraichir();
+  if (!reponse.data.joined) toast("Vous étiez déjà membre de ce salon.");
+  location.hash = `#/rooms/${reponse.data.room_id}`;
+}
+
+/** L'état de sa propre machine, en bas de la liste. */
+function etatDemon() {
+  const bloc = elem("div", "demon");
+  if (state.demon.connected) {
+    bloc.appendChild(elem("span", "etat", "votre agent est connecté"));
+    bloc.appendChild(elem("span", "vide", `dossier proposé : ${state.demon.base || "—"}`));
+    return bloc;
+  }
+  bloc.appendChild(elem("span", "etat absent", "aucun agent sur votre machine"));
+  bloc.appendChild(
+    elem("span", "vide", "Sans lui, vos salons se lisent mais n'exécutent rien."),
+  );
+  bloc.appendChild(elem("code", "commande", "claudeshare agent"));
+  return bloc;
 }
 
 function carteSalon(r) {
@@ -524,6 +598,7 @@ function dessiner() {
   dom.title.textContent = state.title;
   dom.presence.textContent = state.present.join(" · ") || "personne";
   dessinerHote();
+  dessinerCode();
   dessinerJeton();
   dessinerApprobations();
   dessinerActions();
@@ -602,37 +677,61 @@ function dessinerHote() {
       elem("span", "etat", `hébergé par ${a.host || "?"}`),
       ...(a.workspace ? [elem("span", "chemin", a.workspace)] : []),
     );
+    if (peut(Capability.SETTINGS) && state.demon.connected) {
+      const arret = elem("button", "bouton", "Arrêter l'hébergement");
+      arret.addEventListener("click", () => commander("unhost", arret));
+      dom.host.appendChild(arret);
+    }
     return;
   }
 
   replace(dom.host, elem("span", "etat absent", "aucun agent"));
   if (!peut(Capability.SETTINGS)) {
     dom.host.appendChild(
-      elem("span", "vide", "Le propriétaire doit lancer son agent pour que ce salon exécute."),
+      elem("span", "vide", "Le propriétaire doit héberger ce salon pour qu'il exécute."),
     );
     return;
   }
 
-  // À qui peut héberger, on donne la commande exacte plutôt qu'une consigne :
-  // l'identifiant du salon est la seule chose qu'on ne peut pas deviner, et
-  // c'est précisément ce qui envoyait les gens chercher dans une URL.
-  const commande = `claudeshare agent ${state.roomId} --workspace .`;
-  dom.host.appendChild(elem("span", "vide", "À lancer sur votre machine :"));
-  dom.host.appendChild(elem("code", "commande", commande));
+  if (!state.demon.connected) {
+    // Le démon n'est pas joignable : la seule action utile est de le lancer,
+    // et c'est la seule chose qui reste en ligne de commande. Une fois.
+    dom.host.appendChild(
+      elem("span", "vide", "Lancez votre agent une fois, sur votre machine :"),
+    );
+    dom.host.appendChild(elem("code", "commande", "claudeshare agent"));
+    return;
+  }
 
-  const copier = elem("button", "bouton", "Copier");
-  copier.addEventListener("click", async () => {
-    try {
-      await navigator.clipboard.writeText(commande);
-      copier.textContent = "Copié";
-      setTimeout(() => { copier.textContent = "Copier"; }, 2000);
-    } catch {
-      // Presse-papier refusé (contexte non sécurisé, permission) : la commande
-      // reste lisible à l'écran, ce qui suffit.
-      toast("Copie refusée par le navigateur — sélectionnez la commande à la main.");
-    }
-  });
-  dom.host.appendChild(copier);
+  // Le démon est là : héberger devient un bouton, et le dossier un champ
+  // pré-rempli avec ce que la machine a proposé.
+  const dossier = elem("input", "titre");
+  dossier.type = "text";
+  dossier.value = state.agent.workspace || state.demon.base || "";
+  dossier.placeholder = "dossier sur votre machine";
+
+  const bouton = elem("button", "bouton", "Héberger ici");
+  bouton.addEventListener("click", () => commander("host", bouton, dossier.value));
+
+  dom.host.append(
+    elem("span", "vide", "Votre agent est connecté."),
+    dossier,
+    bouton,
+  );
+}
+
+/**
+ * Demande au relais de transmettre un ordre à notre démon.
+ *
+ * La réponse ne dit que « l'ordre est parti » : la prise en charge réelle
+ * arrive par une trame `agent`, parce qu'elle peut échouer sur la machine
+ * (dossier absent, session refusée) et que c'est là qu'est le message utile.
+ */
+async function commander(action, bouton, workspace = "") {
+  bouton.disabled = true;
+  const reponse = await post(`/api/rooms/${state.roomId}/${action}`, { workspace });
+  bouton.disabled = false;
+  if (!reponse.ok) toast(motif(reponse));
 }
 
 function dessinerJeton() {
@@ -656,6 +755,45 @@ function dessinerJeton() {
         `${i + 1}. ${w.who}${w.priority ? ` (priorité ${w.priority})` : ""}`),
     ),
   );
+}
+
+/**
+ * Le code à sept chiffres. Montré à qui peut inviter, avec de quoi le changer.
+ *
+ * Sept chiffres ne font que 23 bits : le bouton de rotation n'est pas un
+ * confort, c'est ce qui rend le code tenable quand il a trop circulé.
+ */
+function dessinerCode() {
+  replace(dom.code);
+  if (!peut(Capability.INVITE)) return;
+
+  const salon = state.rooms.find((r) => r.id === state.roomId);
+  const code = salon ? salon.code : null;
+
+  dom.code.appendChild(elem("code", "commande", code || "désactivé"));
+
+  const tourner = elem("button", "bouton", code ? "Changer" : "Activer");
+  tourner.addEventListener("click", async () => {
+    tourner.disabled = true;
+    const reponse = await post(`/api/rooms/${state.roomId}/code`, {});
+    tourner.disabled = false;
+    if (!reponse.ok) return toast(motif(reponse));
+    await rafraichir();
+    peindre();
+  });
+  dom.code.appendChild(tourner);
+
+  if (!code) return;
+  const couper = elem("button", "bouton non", "Désactiver");
+  couper.addEventListener("click", async () => {
+    couper.disabled = true;
+    const res = await fetch(`/api/rooms/${state.roomId}/code`, { method: "DELETE" });
+    couper.disabled = false;
+    if (!res.ok) return toast("Impossible de désactiver le code.");
+    await rafraichir();
+    peindre();
+  });
+  dom.code.appendChild(couper);
 }
 
 function dessinerApprobations() {

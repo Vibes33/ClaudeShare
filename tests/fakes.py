@@ -8,6 +8,8 @@ le fait que `receive_response()` se termine sur un `ResultMessage`.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -101,111 +103,111 @@ class FakeClient:
 
 
 class LocalAgent:
-    """Un agent branché sur un salon **sans socket**.
+    """Un démon branché sur un salon **sans socket réseau**.
 
-    Le vrai agent (`agent/worker.py`) parle au relais par WebSocket. Ici on
-    court-circuite le seul transport, et on garde tout le reste : vrai
-    `SessionSupervisor`, vrai courtier d'approbation, vraie `AgentLink`, vrai
-    `dispatch` côté relais. Ce qui est exercé reste donc le contrat entre le
-    salon et son agent, et pas une imitation qui divergerait au premier
-    changement de protocole.
-
-    Le transport lui-même est couvert séparément, par les tests qui montent une
-    vraie socket d'agent.
+    Bâti sur le vrai `Worker` et la vraie `AgentSession` : seul le transport est
+    court-circuité, par une paire de files qui tient lieu de socket. Superviseur,
+    courtier d'approbation, liaison, dispatch — tout le reste est le code de
+    production. Ce qui est exercé reste donc le contrat entre le salon et son
+    démon, et pas une imitation qui divergerait au premier changement de
+    protocole.
     """
 
-    def __init__(self, room, client, *, who: str = "hôte", workspace: str = "/tmp/agent") -> None:
-        from claudeshare.agent import SessionSupervisor
-        from claudeshare.agent.approval import ApprovalBroker
-        from claudeshare.agent.toolpolicy import READ_ONLY_TOOLS, TrustLevel
-        from claudeshare.protocol import AgentMessage
-        from claudeshare.server.agentlink import AgentLink
-        from claudeshare.server.ws_agents import dispatch
+    def __init__(self, room, client, *, who: str = "hôte", workspace: str | None = None) -> None:
+        import tempfile
+
+        from claudeshare.agent.worker import Worker
+        from claudeshare.protocol import PROTOCOL_VERSION
+        from claudeshare.server.daemons import AgentDaemon
+        from claudeshare.server.ws_agents import AgentSession, parse_agent_message
 
         self.room = room
         self.client = client
         self.who = who
-        self._AgentMessage = AgentMessage
-        self._dispatch = dispatch
-        self._trust = TrustLevel.READER
-        self._read_only = frozenset(READ_ONLY_TOOLS)
-        self._TrustLevel = TrustLevel
-        self.turns: list[asyncio.Task] = []
+        self.workspace = workspace or tempfile.mkdtemp(prefix="cs-agent-")
+        self._version = PROTOCOL_VERSION
+        self._parse = parse_agent_message
 
-        self.link = AgentLink(room.id, who, send=self._order, sink=room.on_agent_event)
-        self.approvals = ApprovalBroker(
-            sink=self._event,
-            context=lambda: (self.supervisor.current_author, self.supervisor.current_turn),
+        #: Ordres du relais vers le démon. Le démon les lit comme une socket.
+        self._vers_demon: asyncio.Queue[str] = asyncio.Queue()
+
+        self.daemon = AgentDaemon(f"usr-{who}", who, send=self._au_demon)
+        self.session = AgentSession(
+            self.daemon,
+            room_of=self._salon,
+            may_host=lambda _room_id: True,
         )
-        self.supervisor = SessionSupervisor(
-            workspace=Path(workspace),
-            sink=self._event,
+        self.worker = Worker(
+            "http://relais",
+            "jeton",
+            base=Path(self.workspace),
+            connector=self._transport,
             client_factory=self._bind,
-            tools_gate=lambda: self._read_only if self._trust is TrustLevel.READER else None,
-            can_use_tool=self.approvals.ask,
         )
-        self.workspace = workspace
+        self._boucle: asyncio.Task | None = None
+
+    # -------------------------------------------------------- le transport
+
+    def _transport(self, url: str, token: str):
+        @contextlib.asynccontextmanager
+        async def ouvrir():
+            yield self._Socket(self)
+
+        return ouvrir()
+
+    class _Socket:
+        """Ce que le démon prend pour une socket."""
+
+        def __init__(self, agent: LocalAgent) -> None:
+            self._agent = agent
+
+        async def send(self, brut: str) -> None:
+            kind, data = self._agent._parse(json.loads(brut))
+            await self._agent.session.handle(kind, data)
+
+        async def __aiter__(self):
+            while True:
+                yield await self._agent._vers_demon.get()
+
+    async def _au_demon(self, message: dict) -> None:
+        type_ = message.pop("type")
+        await self._vers_demon.put(
+            json.dumps({"v": self._version, "type": type_, "data": message})
+        )
+
+    async def _salon(self, room_id: str):
+        return self.room if room_id == self.room.id else None
 
     def _bind(self, *, options):
+        """Le client SDK factice, à la place du vrai CLI."""
         self.client.options = options
         return self.client
 
-    async def _event(self, event) -> None:
-        """Ce que fait `agent.event` : remonter l'événement tel quel au relais."""
-        await self._dispatch(
-            self._AgentMessage.AGENT_EVENT,
-            {
-                "type": str(event.type),
-                "turn_id": event.turn_id,
-                "author": event.author,
-                "data": event.data,
-            },
-            self.link,
-            self.room,
-        )
-
-    async def _order(self, message: dict) -> None:
-        """Ce que le relais envoie à l'agent."""
-        match message.get("type"):
-            case self._AgentMessage.RUN_TURN:
-                self._trust = self._TrustLevel(message.get("trust", "reader"))
-                self.turns.append(asyncio.create_task(self._play(message)))
-            case self._AgentMessage.RUN_INTERRUPT:
-                await self.supervisor.interrupt()
-            case self._AgentMessage.RUN_APPROVAL:
-                await self.approvals.decide(
-                    message["approval_id"],
-                    allow=bool(message.get("allow")),
-                    by=str(message.get("by") or "relais"),
-                    reason=str(message.get("reason", "")),
-                )
-
-    async def _play(self, message: dict) -> None:
-        turn_id = message["turn_id"]
-        try:
-            await self.supervisor.run_turn(
-                message["prompt"], author=message["author"], turn_id=turn_id
-            )
-        finally:
-            await self._dispatch(
-                self._AgentMessage.AGENT_DONE,
-                {"turn_id": turn_id, "session_id": self.supervisor.session_id},
-                self.link,
-                self.room,
-            )
+    # ------------------------------------------------------------ cycle
 
     async def attach(self) -> LocalAgent:
-        await self.supervisor.start()
-        self.room.host(self.link)
-        await self._dispatch(
-            self._AgentMessage.AGENT_HELLO,
-            {"session_id": None, "workspace": self.workspace},
-            self.link,
-            self.room,
-        )
-        await self.room.announce_agent()
+        """Démarre le démon et lui fait prendre le salon en charge."""
+        self._boucle = asyncio.create_task(self.worker.run())
+        await self._attendre(lambda: self.worker.status == "connecté")
+        await self.daemon.host(self.room.id, self.workspace)
+        await self._attendre(lambda: self.room.hosted)
         return self
 
     async def detach(self) -> None:
-        self.room.unhost(self.link)
-        await self.supervisor.stop()
+        await self.session.release(self.room.id)
+        await self.worker._unhost(self.room.id)
+
+    async def aclose(self) -> None:
+        await self.detach()
+        if self._boucle is not None:
+            self._boucle.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._boucle
+
+    @staticmethod
+    async def _attendre(condition, limite: int = 200) -> None:
+        for _ in range(limite):
+            if condition():
+                return
+            await asyncio.sleep(0)
+        raise AssertionError("le démon n'a jamais atteint l'état attendu")
