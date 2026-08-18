@@ -119,3 +119,72 @@ def test_les_urls_postgres_des_hebergeurs_sont_ramenees_au_bon_pilote():
     # Déjà explicite : on n'y touche pas.
     assert normalize_url("postgresql+psycopg://u:p@h/db") == "postgresql+psycopg://u:p@h/db"
     assert normalize_url("sqlite:///x.db") == "sqlite:///x.db"
+
+
+# ------------------------------------------------------- le schéma en retard
+
+
+def test_une_base_en_retard_refuse_de_demarrer(tmp_path: Path):
+    """Le piège que `create_all` tend, et qu'on a payé pour de vrai.
+
+    `create_all` crée les tables manquantes mais **jamais** une colonne sur une
+    table existante. Une base née avant l'ajout d'une colonne démarre donc sans
+    broncher, puis renvoie une erreur SQL à la première requête qui la touche —
+    très loin de sa cause, et sous la forme d'un 500 qui ressemble à une perte
+    de données. C'est exactement ce qui est arrivé à `rooms.code`.
+    """
+    from sqlalchemy import text
+
+    from claudeshare.db.session import SchemaOutdated
+
+    url = f"sqlite:///{tmp_path / 'ancienne.db'}"
+    Database(url)  # base à jour
+
+    # On la fait régresser, comme le ferait une base d'une version antérieure.
+    # L'index part d'abord : SQLite refuse de retirer une colonne indexée.
+    moteur = create_engine(url)
+    with moteur.begin() as connexion:
+        connexion.execute(text("DROP INDEX ix_rooms_code"))
+        connexion.execute(text("ALTER TABLE rooms DROP COLUMN code"))
+    moteur.dispose()
+
+    with pytest.raises(SchemaOutdated) as echec:
+        Database(url)
+
+    # Le message doit nommer la colonne **et** la commande qui répare.
+    assert "rooms.code" in str(echec.value)
+    assert "claudeshare migrate" in str(echec.value)
+
+
+def test_une_base_a_jour_ne_derive_pas(tmp_path: Path):
+    """Garde-fou du garde-fou : une détection qui crie toujours ne sert à rien."""
+    from claudeshare.db.session import drift
+
+    url = f"sqlite:///{tmp_path / 'saine.db'}"
+    base = Database(url)
+    assert drift(base.engine) == []
+
+
+def test_declarer_une_base_anterieure_puis_la_migrer(tmp_path: Path):
+    """Le chemin de sortie annoncé par le message d'erreur.
+
+    Une base d'avant les migrations a les tables mais aucune trace de révision :
+    `upgrade` seul tenterait un `CREATE TABLE` sur ce qui existe déjà.
+    """
+    from alembic import command
+
+    from claudeshare.db.migrate import alembic_config
+
+    url = f"sqlite:///{tmp_path / 'ancienne.db'}"
+    upgrade(url, "0001_schema_initial")
+    # On efface la trace, comme si la base précédait Alembic.
+    moteur = create_engine(url)
+    with moteur.begin() as connexion:
+        connexion.exec_driver_sql("DROP TABLE alembic_version")
+    moteur.dispose()
+
+    command.stamp(alembic_config(url), "0001_schema_initial")
+    upgrade(url)
+
+    assert current(url) == head()
+    assert Database(url, schema=Schema.NONE) is not None

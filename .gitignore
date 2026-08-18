@@ -19,3 +19,17 @@ build/
 .DS_Store
 .idea/
 .vscode/
+
+# État d'exécution : bases SQLite, dossiers de travail des agents gérés.
+#
+# Suivre une base vivante dans git n'est pas une maladresse anodine : un
+# `checkout` ou un `pull` la remplace par celle du commit, et les salons
+# réapparaissent ou disparaissent au gré des opérations git. Les fichiers `-wal`
+# et `-shm` aggravent le cas — ils sont transitoires, donc un instantané peut
+# restituer un trio incohérent. Sans compter que l'historique se met à contenir
+# les identités et les journaux de conversation.
+state/
+workspaces/
+*.db
+*.db-shm
+*.db-wal

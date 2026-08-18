@@ -148,6 +148,12 @@ def main(argv: list[str] | None = None) -> int:
         help="sert à retrouver la base locale quand aucune URL n'est donnée",
     )
     migrate.add_argument(
+        "--stamp",
+        default="",
+        help="déclarer la base à cette révision sans rien exécuter "
+             "(pour une base antérieure aux migrations)",
+    )
+    migrate.add_argument(
         "--check",
         action="store_true",
         help="ne rien appliquer ; code de sortie 1 si la base est en retard",
@@ -365,6 +371,18 @@ def _migrate(args) -> int:
             return 1
         print(f"à jour ({head()})")
         return 0
+
+    if args.stamp:
+        # Une base née avant les migrations a déjà les tables mais aucune trace
+        # de révision : la déclarer évite qu'Alembic tente un `CREATE TABLE` sur
+        # ce qui existe. À ne faire qu'une fois, et seulement si on sait à quelle
+        # révision la base correspond.
+        from alembic import command
+
+        from .db.migrate import alembic_config
+
+        command.stamp(alembic_config(url), args.stamp)
+        print(f"base déclarée à la révision {args.stamp}")
 
     upgrade(url)
     print(f"schéma à jour ({head()})")

@@ -21,7 +21,7 @@ from contextlib import contextmanager
 from enum import StrEnum
 from pathlib import Path
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -108,6 +108,34 @@ def normalize_url(url: str) -> str:
     return url
 
 
+class SchemaOutdated(RuntimeError):
+    """La base existe mais lui manque des colonnes que les modèles déclarent."""
+
+
+def drift(engine: Engine) -> list[str]:
+    """Ce que les modèles déclarent et que la base n'a pas.
+
+    `create_all` crée les tables manquantes et **rien d'autre** : il n'ajoute
+    jamais une colonne à une table qui existe déjà. Une base née avant l'ajout
+    d'une colonne reste donc muette au démarrage, puis renvoie une erreur SQL à
+    la première requête qui touche cette colonne — très loin de sa cause, et
+    sous la forme d'un 500 qui ressemble à une perte de données.
+
+    C'est exactement ce qui s'est produit avec `rooms.code` : la table
+    `credentials` avait bien été créée, la colonne ajoutée à `rooms` ne l'avait
+    pas été, et la liste des salons échouait sans que rien ne l'explique.
+    """
+    inspecteur = inspect(engine)
+    presentes = set(inspecteur.get_table_names())
+    manquantes = []
+    for nom, table in sorted(Base.metadata.tables.items()):
+        if nom not in presentes:
+            continue  # `create_all` s'en charge
+        connues = {c["name"] for c in inspecteur.get_columns(nom)}
+        manquantes += [f"{nom}.{c.name}" for c in table.columns if c.name not in connues]
+    return manquantes
+
+
 class Database:
     """Fabrique de sessions, initialisée une fois au démarrage."""
 
@@ -119,6 +147,16 @@ class Database:
         match schema:
             case Schema.CREATE:
                 Base.metadata.create_all(self.engine)
+                if manquantes := drift(self.engine):
+                    raise SchemaOutdated(
+                        "La base est en retard sur les modèles : "
+                        + ", ".join(manquantes)
+                        + ".\n`create_all` crée les tables manquantes mais n'ajoute "
+                        "jamais de colonne à une table existante.\n\n"
+                        "  Corriger :  claudeshare migrate\n"
+                        "  (sur une base antérieure aux migrations, ajoutez "
+                        "`--stamp 0001_schema_initial` la première fois)"
+                    )
             case Schema.MIGRATE:
                 from .migrate import upgrade
 
