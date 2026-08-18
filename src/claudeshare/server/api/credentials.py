@@ -75,8 +75,12 @@ def build_credentials_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContex
     async def store(payload: CredentialIn, request: Request) -> dict[str, Any]:
         """Dépose ou remplace son identifiant.
 
-        Remplacer arrête l'agent en cours : il tourne avec l'ancien secret dans
-        son environnement, et rien ne le lui reprendrait autrement.
+        Un agent en cours tourne avec l'ancien secret dans son environnement,
+        fixé au démarrage du processus : rien ne le lui reprendrait autrement.
+        On l'arrête donc — et **on le relance aussitôt** s'il tournait, pour que
+        remplacer un jeton ne demande pas de tout recliquer. Les salons qu'il
+        hébergeait reviennent seuls : leur intention est en base, et l'agent qui
+        se reconnecte se les voit repousser (voir `Room.autohost`).
         """
         secret = payload.secret.strip()
         with ctx.db.session() as session:
@@ -97,9 +101,14 @@ def build_credentials_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContex
             session.flush()
             vue = _view(record)
 
-        await ctx.managed.stop(user_id)
+        tournait = ctx.managed.running(user_id)
+        await _arreter(user_id)
+        if tournait:
+            logger.info("agent relancé avec le nouvel identifiant (%s)", principal.handle)
+            await _lancer(user_id, principal.label)
+
         logger.info("identifiant déposé par %s (%s)", principal.handle, payload.kind)
-        return vue
+        return {**vue, "restarted": tournait}
 
     @router.delete("/credential")
     async def forget(request: Request) -> dict[str, Any]:
@@ -112,15 +121,18 @@ def build_credentials_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContex
 
         # L'agent tourne avec le secret en mémoire : l'oublier en base sans
         # l'arrêter ne retirerait rien.
-        await ctx.managed.stop(user_id)
+        await _arreter(user_id)
         return {"present": False}
 
-    @router.post("/agent/start")
-    async def start(request: Request) -> dict[str, Any]:
-        """Lance son agent sur le relais, avec l'identifiant déposé."""
+    async def _lancer(user_id: str, qui: str) -> dict[str, Any]:
+        """Démarre l'agent géré d'une personne avec l'identifiant déposé.
+
+        Partagé par le démarrage explicite et par le remplacement de jeton :
+        deux chemins vers le même processus finiraient par diverger sur un
+        détail — la révocation de l'ancien jeton, par exemple.
+        """
         with ctx.db.session() as session:
-            principal = require_principal(ctx.principal(request, session))
-            record = _current(session, principal.user_id)
+            record = _current(session, user_id)
             if record is None:
                 raise HTTPException(409, "aucun identifiant Anthropic déposé")
             try:
@@ -131,9 +143,9 @@ def build_credentials_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContex
             variable = CREDENTIAL_ENV[CredentialKind(record.kind)]
             # Un jeton à lui, étiqueté, révoqué à l'arrêt : l'agent ne reçoit
             # jamais le jeton personnel de qui que ce soit.
-            user = session.get(User, principal.user_id)
+            user = session.get(User, user_id)
             jeton, porteur = issue_token(session, user, label="agent géré")
-            user_id, qui, jeton_id = principal.user_id, principal.label, jeton.id
+            jeton_id = jeton.id
 
         from ..managed import ManagedError
 
@@ -148,16 +160,27 @@ def build_credentials_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContex
             raise HTTPException(409, str(exc)) from None
         return agent.view()
 
+    async def _arreter(user_id: str) -> None:
+        with ctx.db.session() as session:
+            agent = ctx.managed.get(user_id)
+            if agent is not None:
+                _revoke(session, agent.token_id)
+        await ctx.managed.stop(user_id)
+
+    @router.post("/agent/start")
+    async def start(request: Request) -> dict[str, Any]:
+        """Lance son agent sur le relais, avec l'identifiant déposé."""
+        with ctx.db.session() as session:
+            principal = require_principal(ctx.principal(request, session))
+            user_id, qui = principal.user_id, principal.label
+        return await _lancer(user_id, qui)
+
     @router.post("/agent/stop")
     async def stop(request: Request) -> dict[str, Any]:
         with ctx.db.session() as session:
             principal = require_principal(ctx.principal(request, session))
             user_id = principal.user_id
-            agent = ctx.managed.get(user_id)
-            if agent is not None:
-                _revoke(session, agent.token_id)
-
-        await ctx.managed.stop(user_id)
+        await _arreter(user_id)
         return {"running": False}
 
     return router

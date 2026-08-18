@@ -113,6 +113,10 @@ class ManagedAgents:
     def get(self, user_id: str) -> Managed | None:
         return self._agents.get(user_id)
 
+    def running(self, user_id: str) -> bool:
+        agent = self.get(user_id)
+        return bool(agent and agent.running)
+
     def view(self, user_id: str) -> dict:
         agent = self.get(user_id)
         return agent.view() if agent else {"running": False, "since": None, "error": ""}

@@ -76,11 +76,26 @@ h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; colo
   display: flex; flex-direction: column; gap: 0.5rem;
 }
 .salon {
-  display: flex; align-items: baseline; gap: 0.8rem;
-  padding: 0.8rem 1rem; border: 1px solid var(--bord); border-radius: 8px;
-  background: var(--panneau); color: var(--texte); text-decoration: none;
+  display: flex; align-items: center; gap: 0.5rem;
+  border: 1px solid var(--bord); border-radius: 8px;
+  background: var(--panneau);
 }
 .salon:hover { border-color: var(--accent); }
+.salon .lien {
+  flex: 1; min-width: 0;
+  display: flex; align-items: baseline; gap: 0.8rem;
+  padding: 0.8rem 1rem; color: var(--texte); text-decoration: none;
+}
+/* Discret par défaut : retirer un salon ne doit pas être le geste le plus
+   visible de la liste. */
+.retirer {
+  flex: 0 0 auto; margin-right: 0.6rem; padding: 0.1rem 0.5rem;
+  font: inherit; font-size: 1.1rem; line-height: 1.4;
+  color: var(--doux); background: none; border: none; border-radius: 6px;
+  cursor: pointer; opacity: 0.5;
+}
+.retirer:hover { color: var(--erreur); opacity: 1; background: var(--fond); }
+.retirer:disabled { opacity: 0.3; cursor: not-allowed; }
 .chemin { color: var(--doux); font-family: var(--mono); font-size: 0.8rem; }
 .puce { margin-left: auto; color: var(--ok); font-size: 0.8rem; }
 .puce.hote { color: var(--ok); }

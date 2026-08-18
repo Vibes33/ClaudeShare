@@ -29,6 +29,8 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from ..config import Settings, check_auth_mode, describe_auth
 from ..core.broker import build_broadcaster
+from sqlalchemy import select
+
 from ..core.capabilities import Capability
 from ..core.secretbox import SecretBox
 from ..core.workspace import ensure_root
@@ -329,6 +331,7 @@ def create_app(
             room_of=salon_de,
             may_host=lambda room_id: _may_host(ctx, room_id, principal.user_id),
             on_session=retenir,
+            wanted=lambda: _a_heberger(ctx, principal.user_id),
         )
         try:
             await serve_agent(websocket, daemon, sortie)
@@ -374,6 +377,32 @@ async def _entretenir(ctx: ServerContext) -> None:
             raise
         except Exception:
             logger.exception("échec de l'entretien du journal")
+
+
+def _a_heberger(ctx: ServerContext, user_id: str) -> list[tuple[str, str]]:
+    """Salons dont cette personne a demandé l'hébergement, et leur dossier.
+
+    Relu en base à chaque connexion d'agent plutôt que gardé en mémoire : c'est
+    ce qui fait que l'intention survit au redémarrage du relais, et pas
+    seulement à celui de l'agent.
+    """
+    from ..db.models import Membership
+
+    with ctx.db.session() as session:
+        lignes = session.execute(
+            select(Room.id, Room.workspace)
+            .join(Membership, Membership.room_id == Room.id)
+            .where(
+                Membership.user_id == user_id,
+                Room.autohost.is_(True),
+                Room.archived_at.is_(None),
+            )
+        ).all()
+    return [
+        (room_id, workspace)
+        for room_id, workspace in lignes
+        if _may_host(ctx, room_id, user_id)
+    ]
 
 
 def _may_host(ctx: ServerContext, room_id: str, user_id: str) -> bool:

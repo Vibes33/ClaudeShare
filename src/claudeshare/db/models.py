@@ -118,6 +118,14 @@ class Room(Base):
     #: une limitation de débit serrée sur la route de jonction, la possibilité
     #: de faire tourner le code, et une entrée au journal à chaque usage.
     code: Mapped[str | None] = mapped_column(String(16), unique=True, index=True, nullable=True)
+    #: Le propriétaire veut que ce salon soit hébergé dès que son agent est là.
+    #:
+    #: Une **intention**, pas un état : l'état, c'est `Room.hosted` en mémoire.
+    #: La distinction est ce qui permet à un salon de se relever tout seul —
+    #: après un changement de jeton, un redémarrage du relais ou une coupure
+    #: réseau, l'agent qui revient se voit repousser les salons qu'on lui avait
+    #: confiés, au lieu d'attendre qu'un humain reclique.
+    autohost: Mapped[bool] = mapped_column(Boolean, default=False)
 
     memberships: Mapped[list[Membership]] = relationship(
         back_populates="room", cascade="all, delete-orphan"

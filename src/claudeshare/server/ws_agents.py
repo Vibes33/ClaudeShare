@@ -94,17 +94,27 @@ class AgentSession:
         room_of: Callable[[str], Awaitable[Room | None]],
         may_host: Callable[[str], bool],
         on_session: Callable[[str, str], Awaitable[None]] | None = None,
+        wanted: Callable[[], list[tuple[str, str]]] | None = None,
     ) -> None:
         self.daemon = daemon
         self._room_of = room_of
         self._may_host = may_host
         self._on_session = on_session
+        #: Salons que cette personne veut voir hébergés, et dans quel dossier.
+        self._wanted = wanted or (lambda: [])
         #: Salons pris en charge par cette socket, pour les lâcher à la fermeture.
         self._rooms: dict[str, Room] = {}
 
     async def handle(self, kind: AgentMessage, data: dict[str, Any]) -> None:
         if kind is AgentMessage.AGENT_HELLO:
             self.daemon.greet(data)
+            # Un agent qui arrive reprend ce qu'on lui avait confié. Sans ça, un
+            # changement de jeton, un redémarrage du relais ou une coupure
+            # réseau laisseraient les salons éteints jusqu'à ce qu'un humain
+            # reclique — alors que l'intention, elle, n'a pas changé.
+            for room_id, workspace in self._wanted():
+                logger.info("reprise de %s par %s", room_id, self.daemon.who)
+                await self.daemon.host(room_id, workspace or self.daemon.base)
             return
 
         room_id = str(data.get("room_id") or "")

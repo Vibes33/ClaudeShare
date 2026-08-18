@@ -172,7 +172,8 @@ function afficherSalons() {
 }
 
 function carteSalon(r) {
-  const a = elem("a", "salon");
+  const ligne = elem("div", "salon");
+  const a = elem("a", "lien");
   a.href = `#/rooms/${r.id}`;
   a.appendChild(elem("strong", "", r.title));
   // L'état qui décide si le salon sert à quelque chose passe avant le reste :
@@ -185,7 +186,40 @@ function carteSalon(r) {
   if (r.live && r.present.length) {
     a.appendChild(elem("span", "puce", `${r.present.length} en ligne`));
   }
-  return a;
+  ligne.appendChild(a);
+
+  // Le retrait n'est proposé qu'à qui en a le droit — et le serveur revérifie.
+  if (r.can_delete) {
+    const retirer = elem("button", "retirer", "×");
+    retirer.title = `Retirer « ${r.title} »`;
+    retirer.setAttribute("aria-label", `Retirer ${r.title}`);
+    retirer.addEventListener("click", (e) => {
+      e.preventDefault();
+      archiver(r, retirer);
+    });
+    ligne.appendChild(retirer);
+  }
+  return ligne;
+}
+
+/**
+ * Retire un salon de la circulation.
+ *
+ * Une confirmation, parce que c'est irréversible depuis l'interface : le salon
+ * est archivé, pas effacé — le journal reste — mais rien ici ne le fait
+ * revenir. Mieux vaut une question de trop qu'une conversation disparue.
+ */
+async function archiver(r, bouton) {
+  if (!confirm(`Retirer « ${r.title} » ? Le salon disparaîtra de vos listes.`)) return;
+
+  bouton.disabled = true;
+  const res = await fetch(`/api/rooms/${r.id}`, { method: "DELETE" });
+  if (!res.ok) {
+    bouton.disabled = false;
+    return toast("Le salon n'a pas pu être retiré.");
+  }
+  await rafraichir();
+  afficherSalons();
 }
 
 /**

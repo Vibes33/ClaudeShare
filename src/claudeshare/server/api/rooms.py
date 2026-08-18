@@ -1,7 +1,9 @@
-"""API des salons : lister les siens, en créer, en consulter un."""
+"""API des salons : lister les siens, en créer, en consulter un, l'archiver."""
 
 from __future__ import annotations
 
+import logging
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -12,6 +14,8 @@ from ...db.models import Room
 from ..auth.identity import create_room, free_code, rooms_for
 from ..authz import requires, room_access
 from ..deps import require_principal
+
+logger = logging.getLogger(__name__)
 
 
 class RoomCreate(BaseModel):
@@ -34,7 +38,9 @@ class JoinRequestByCode(BaseModel):
     code: str = Field(min_length=1, max_length=16)
 
 
-def _room_view(record: Room, live: Any | None = None) -> dict[str, Any]:
+def _room_view(
+    record: Room, live: Any | None = None, *, caps: frozenset[str] = frozenset()
+) -> dict[str, Any]:
     view = {
         "id": record.id,
         "title": record.title,
@@ -44,6 +50,9 @@ def _room_view(record: Room, live: Any | None = None) -> dict[str, Any]:
         # l'étiquette donnée à la création. Indicatif : le dossier vit ailleurs.
         "workspace": record.workspace,
         "created_at": record.created_at.isoformat(),
+        #: Sert à ne pas proposer un bouton qui échouerait. Le serveur revérifie
+        #: de toute façon : ceci ne fait que griser, jamais autoriser.
+        "can_delete": str(Capability.DELETE) in caps,
         "session_id": record.session_id,
         "live": live is not None,
     }
@@ -60,6 +69,18 @@ def _room_view(record: Room, live: Any | None = None) -> dict[str, Any]:
     return view
 
 
+def _caps(session, user_id: str, room_id: str) -> frozenset[str]:
+    """Droits effectifs, pour décider quels boutons l'interface propose."""
+    from ...core.permissions import resolve
+    from ...db.models import Role
+    from ..auth.identity import membership_of
+
+    membership = membership_of(session, room_id, user_id)
+    if membership is None:
+        return frozenset()
+    return resolve(session.get(Role, membership.role_id), membership)
+
+
 def build_rooms_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
     router = APIRouter(prefix="/api/rooms", tags=["rooms"])
 
@@ -73,7 +94,11 @@ def build_rooms_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
         with ctx.db.session() as session:
             principal = require_principal(ctx.principal(request, session))
             return [
-                _room_view(record, ctx.rooms.get(record.id))
+                _room_view(
+                    record,
+                    ctx.rooms.get(record.id),
+                    caps=_caps(session, principal.user_id, record.id),
+                )
                 for record in rooms_for(session, principal.user_id)
             ]
 
@@ -118,16 +143,26 @@ def build_rooms_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
             principal = require_principal(ctx.principal(request, session))
             room_access(session, principal, room_id, Capability.SETTINGS)
             user_id = principal.user_id
+            record = session.get(Room, room_id)
+            # L'intention est notée **avant** l'ordre, et survit à tout : un
+            # changement de jeton, un redémarrage du relais, une coupure réseau.
+            # L'agent qui revient se voit repousser ce salon sans qu'on
+            # reclique. Voir `Room.autohost`.
+            record.autohost = True
+            if payload.workspace:
+                record.workspace = payload.workspace
+            dossier = payload.workspace or record.workspace
 
         daemon = ctx.daemons.get(user_id)
         if daemon is None:
             raise HTTPException(
                 409,
-                "aucun agent connecté depuis votre machine — lancez `claudeshare agent`",
+                "aucun agent connecté — déposez votre identifiant et démarrez "
+                "votre agent, ou lancez `claudeshare agent` sur votre machine",
             )
 
-        await daemon.host(room_id, payload.workspace or daemon.base)
-        return {"status": "demandé", "workspace": payload.workspace or daemon.base}
+        await daemon.host(room_id, dossier or daemon.base)
+        return {"status": "demandé", "workspace": dossier or daemon.base}
 
     @router.post("/{room_id}/unhost")
     @requires(Capability.SETTINGS)
@@ -136,6 +171,10 @@ def build_rooms_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
             principal = require_principal(ctx.principal(request, session))
             room_access(session, principal, room_id, Capability.SETTINGS)
             user_id = principal.user_id
+            # Lâcher est une décision, pas un accident : sans effacer
+            # l'intention, le salon se reprendrait tout seul à la reconnexion
+            # suivante.
+            session.get(Room, room_id).autohost = False
 
         daemon = ctx.daemons.get(user_id)
         if daemon is not None:
@@ -167,6 +206,37 @@ def build_rooms_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
             room_access(session, principal, room_id, Capability.INVITE)
             session.get(Room, room_id).code = None
             return {"code": None}
+
+    @router.delete("/{room_id}")
+    @requires(Capability.DELETE)
+    async def archive(room_id: str, request: Request) -> dict[str, Any]:
+        """Retire un salon de la circulation.
+
+        Archivé, pas effacé : le journal de collaboration et la trace d'audit
+        restent, et une suppression définitive par mégarde ne se rattrape pas.
+        Le salon disparaît des listes, son code est libéré, et l'agent qui
+        l'hébergeait le lâche.
+        """
+        with ctx.db.session() as session:
+            principal = require_principal(ctx.principal(request, session))
+            room_access(session, principal, room_id, Capability.DELETE)
+            record = session.get(Room, room_id)
+            if record.archived:
+                return {"archived": True}
+            record.archived_at = datetime.now(UTC)
+            # Le code repart dans le pot commun : un salon archivé ne doit plus
+            # se rejoindre, et garder son code le réserverait pour rien.
+            record.code = None
+            record.autohost = False
+            user_id = principal.user_id
+
+        if (daemon := ctx.daemons.get(user_id)) is not None:
+            await daemon.unhost(room_id)
+        if (live := ctx.rooms.get(room_id)) is not None:
+            await live.aclose()
+            ctx.rooms.forget(room_id)
+        logger.info("salon %s archivé par %s", room_id, principal.handle)
+        return {"archived": True}
 
     @router.get("/{room_id}/audit")
     @requires(Capability.MEMBERS_MANAGE)

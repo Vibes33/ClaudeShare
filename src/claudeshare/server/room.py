@@ -404,6 +404,15 @@ class RoomManager:
     def get(self, room_id: str) -> Room | None:
         return self._rooms.get(room_id)
 
+    def forget(self, room_id: str) -> None:
+        """Retire un salon des salons vivants.
+
+        Appelé après un archivage : le laisser monté garderait son journal et
+        son jeton de parole en mémoire pour une conversation que plus personne
+        ne peut ouvrir.
+        """
+        self._rooms.pop(room_id, None)
+
     def list(self) -> list[Room]:
         return list(self._rooms.values())
 
