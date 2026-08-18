@@ -39,10 +39,12 @@ uv run claudeshare serve --state-dir ./state --port 8765
 ```
 
 Le client web est servi par le même processus : ouvrez
-<http://127.0.0.1:8765/>, connectez-vous, créez un salon.
+<http://127.0.0.1:8765/>, connectez-vous, créez un salon. Il s'ouvre en
+annonçant qu'aucun agent ne l'héberge, et affiche la commande exacte à lancer —
+l'identifiant du salon est la seule chose qu'on ne peut pas deviner.
 
-Puis l'agent, qui est ce qui rend le salon exécutable. Sur **votre** machine,
-dans le dossier que Claude doit voir :
+C'est cet agent qui rend le salon exécutable. Sur **votre** machine, dans le
+dossier que Claude doit voir :
 
 ```bash
 uv run claudeshare login --server http://127.0.0.1:8765

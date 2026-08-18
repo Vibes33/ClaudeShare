@@ -91,6 +91,33 @@ async function json(url, options) {
   return res.ok ? res.json() : null;
 }
 
+/**
+ * POST JSON. Renvoie `{ok, data}` plutôt que `null` en cas d'échec : à la
+ * création d'un salon, savoir *pourquoi* ça a raté est tout l'intérêt.
+ */
+async function post(url, corps) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(corps),
+  });
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    data = null;
+  }
+  return { ok: res.ok, status: res.status, data };
+}
+
+/** Message lisible depuis une erreur FastAPI, dont les 422 sont verbeux. */
+function motif(reponse) {
+  const detail = reponse.data && reponse.data.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail) && detail.length) return detail[0].msg || "requête refusée";
+  return `échec (HTTP ${reponse.status})`;
+}
+
 async function afficherConnexion() {
   dom.app.hidden = true;
   dom.login.hidden = false;
@@ -122,21 +149,84 @@ function afficherSalons() {
   fermer();
   dom.room.hidden = true;
   dom.rooms.hidden = false;
-  replace(
-    dom.rooms,
-    elem("h2", "", "Vos salons"),
-    ...state.rooms.map((r) => {
-      const a = elem("a", "salon");
-      a.href = `#/rooms/${r.id}`;
-      a.appendChild(elem("strong", "", r.title));
-      a.appendChild(elem("span", "chemin", r.workspace));
-      if (r.live) a.appendChild(elem("span", "puce", `${r.present.length} en ligne`));
-      return a;
-    }),
-  );
+  replace(dom.rooms, elem("h2", "", "Vos salons"), ...state.rooms.map(carteSalon));
+
   if (!state.rooms.length) {
     dom.rooms.appendChild(elem("p", "vide", "Vous n'êtes membre d'aucun salon."));
   }
+  dom.rooms.appendChild(formulaireCreation());
+}
+
+function carteSalon(r) {
+  const a = elem("a", "salon");
+  a.href = `#/rooms/${r.id}`;
+  a.appendChild(elem("strong", "", r.title));
+  // L'état qui décide si le salon sert à quelque chose passe avant le reste :
+  // un salon sans hôte se lit, mais n'exécute rien.
+  a.appendChild(
+    r.hosted
+      ? elem("span", "puce hote", `hébergé par ${r.host || "?"}`)
+      : elem("span", "puce absent", "aucun agent"),
+  );
+  if (r.live && r.present.length) {
+    a.appendChild(elem("span", "puce", `${r.present.length} en ligne`));
+  }
+  return a;
+}
+
+/**
+ * Création d'un salon. Un seul champ : le titre.
+ *
+ * Le dossier de travail n'en fait volontairement pas partie. Il est choisi par
+ * l'agent qui héberge, sur sa propre machine (`claudeshare agent --workspace`) ;
+ * le demander ici laisserait croire que le relais réserve un dossier, ce qu'il
+ * ne fait plus.
+ */
+function formulaireCreation() {
+  const bloc = elem("div", "creation");
+  bloc.appendChild(elem("h2", "", "Nouveau salon"));
+
+  const champ = elem("input", "titre");
+  champ.type = "text";
+  champ.placeholder = "Titre du salon";
+  champ.maxLength = 128;
+
+  const bouton = elem("button", "bouton", "Créer");
+  const lancer = () => creer(champ, bouton);
+  bouton.addEventListener("click", lancer);
+  champ.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      lancer();
+    }
+  });
+
+  const ligne = elem("div", "ligne");
+  ligne.append(champ, bouton);
+  bloc.appendChild(ligne);
+  bloc.appendChild(
+    elem("p", "vide",
+      "Vous en serez propriétaire. Il faudra ensuite l'héberger depuis votre "
+      + "machine pour qu'il puisse exécuter quoi que ce soit."),
+  );
+  return bloc;
+}
+
+async function creer(champ, bouton) {
+  const titre = champ.value.trim();
+  if (!titre) return champ.focus();
+
+  // Désarmé pendant l'aller-retour : un double clic créerait deux salons, et
+  // rien dans l'API ne les distinguerait ensuite.
+  bouton.disabled = true;
+  const reponse = await post("/api/rooms", { title: titre });
+  bouton.disabled = false;
+
+  if (!reponse.ok) return toast(`Création refusée : ${motif(reponse)}`);
+
+  champ.value = "";
+  state.rooms = (await json("/api/rooms")) || state.rooms;
+  location.hash = `#/rooms/${reponse.data.id}`;
 }
 
 function ouvrir(roomId) {
@@ -512,13 +602,37 @@ function dessinerHote() {
       elem("span", "etat", `hébergé par ${a.host || "?"}`),
       ...(a.workspace ? [elem("span", "chemin", a.workspace)] : []),
     );
-  } else {
-    replace(
-      dom.host,
-      elem("span", "etat absent", "aucun agent"),
-      elem("span", "vide", "Le propriétaire doit lancer « claudeshare agent »."),
-    );
+    return;
   }
+
+  replace(dom.host, elem("span", "etat absent", "aucun agent"));
+  if (!peut(Capability.SETTINGS)) {
+    dom.host.appendChild(
+      elem("span", "vide", "Le propriétaire doit lancer son agent pour que ce salon exécute."),
+    );
+    return;
+  }
+
+  // À qui peut héberger, on donne la commande exacte plutôt qu'une consigne :
+  // l'identifiant du salon est la seule chose qu'on ne peut pas deviner, et
+  // c'est précisément ce qui envoyait les gens chercher dans une URL.
+  const commande = `claudeshare agent ${state.roomId} --workspace .`;
+  dom.host.appendChild(elem("span", "vide", "À lancer sur votre machine :"));
+  dom.host.appendChild(elem("code", "commande", commande));
+
+  const copier = elem("button", "bouton", "Copier");
+  copier.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(commande);
+      copier.textContent = "Copié";
+      setTimeout(() => { copier.textContent = "Copier"; }, 2000);
+    } catch {
+      // Presse-papier refusé (contexte non sécurisé, permission) : la commande
+      // reste lisible à l'écran, ce qui suffit.
+      toast("Copie refusée par le navigateur — sélectionnez la commande à la main.");
+    }
+  });
+  dom.host.appendChild(copier);
 }
 
 function dessinerJeton() {

@@ -83,7 +83,26 @@ h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; colo
 .salon:hover { border-color: var(--accent); }
 .chemin { color: var(--doux); font-family: var(--mono); font-size: 0.8rem; }
 .puce { margin-left: auto; color: var(--ok); font-size: 0.8rem; }
+.puce.hote { color: var(--ok); }
+.puce.absent { color: var(--alerte); }
+/* Deux puces sur la même ligne : seule la première pousse vers la droite. */
+.puce + .puce { margin-left: 0.8rem; }
 .vide { color: var(--doux); font-style: italic; }
+
+/* ------------------------------------------------------- création */
+
+.creation {
+  margin-top: 1.5rem; padding: 1rem;
+  border: 1px dashed var(--bord); border-radius: 8px;
+}
+.creation h2 { margin-top: 0; }
+.creation .ligne { display: flex; gap: 0.5rem; }
+.creation .vide { display: block; margin: 0.6rem 0 0; font-size: 0.85rem; }
+.titre {
+  flex: 1; padding: 0.45rem 0.6rem;
+  font: inherit; color: var(--texte);
+  background: var(--fond); border: 1px solid var(--bord); border-radius: 6px;
+}
 
 /* ----------------------------------------------------------------- salon */
 
@@ -157,6 +176,13 @@ h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; colo
 #host .etat { font-weight: 600; color: var(--ok); }
 #host .etat.absent { color: var(--alerte); }
 #host .chemin { word-break: break-all; }
+#host .commande {
+  display: block; margin: 0.3rem 0; padding: 0.4rem 0.5rem;
+  font-family: var(--mono); font-size: 0.78rem; word-break: break-all;
+  background: var(--fond); border: 1px solid var(--bord); border-radius: 6px;
+  user-select: all;
+}
+#host .bouton { align-self: flex-start; }
 
 .bouton {
   padding: 0.4rem 0.75rem; font: inherit; font-size: 0.85rem;
