@@ -131,6 +131,12 @@ def build_credentials_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContex
         deux chemins vers le même processus finiraient par diverger sur un
         détail — la révocation de l'ancien jeton, par exemple.
         """
+        # Un agent mort laisse son jeton derrière lui. Relancer sans le couper
+        # en accumulerait un par tentative, tous valides : un démarrage raté
+        # n'a aucune raison de laisser un porteur d'accès dans la nature.
+        if (ancien := ctx.managed.get(user_id)) is not None and not ancien.running:
+            await _arreter(user_id)
+
         with ctx.db.session() as session:
             record = _current(session, user_id)
             if record is None:

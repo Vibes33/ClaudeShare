@@ -14,12 +14,14 @@ tenir, et ce fichier les tient.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from claudeshare.agent.hooks import outside, paths_outside
 from claudeshare.core.secretbox import SecretBox, SecretsUnavailable, Undecipherable, fingerprint
 from claudeshare.db.models import CREDENTIAL_ENV, CredentialKind
+from claudeshare.__main__ import _url_interne
 from claudeshare.server.managed import PASSTHROUGH, ManagedAgents, ManagedError
 
 from .conftest import Harness
@@ -311,3 +313,77 @@ async def test_le_hook_refuse_vraiment_une_lecture_hors_borne(tmp_path):
     assert refus["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert "hors de votre dossier" in refus["hookSpecificOutput"]["permissionDecisionReason"]
     assert passe.get("hookSpecificOutput", {}).get("permissionDecision") != "deny"
+
+
+# ------------------------------------------- le rendez-vous entre les deux
+
+
+def test_le_port_d_ecoute_suit_jusqu_a_l_agent():
+    """`--port 2020` doit mener l'agent au 2020, pas au port par défaut.
+
+    Le symptôme quand ça manque ne dit rien de la cause : l'agent naît, ne
+    trouve personne, meurt, et l'interface affiche « aucun agent ».
+    """
+    assert _url_interne("127.0.0.1", 2020) == "http://127.0.0.1:2020"
+
+
+def test_une_ecoute_sur_toutes_les_interfaces_repasse_par_la_boucle_locale():
+    """`0.0.0.0` n'est pas une adresse à composer."""
+    assert _url_interne("0.0.0.0", 4141) == "http://127.0.0.1:4141"
+    assert _url_interne("::", 4141) == "http://127.0.0.1:4141"
+
+
+def test_une_adresse_ipv6_est_entre_crochets():
+    """Sans crochets, le port se colle à l'adresse et l'URL ne veut plus rien dire."""
+    assert _url_interne("::1", 8765) == "http://[::1]:8765"
+
+
+def test_serve_transmet_le_port_reel_au_lanceur(tmp_path, monkeypatch):
+    """Le test qui compte : l'ajustement doit atteindre `create_app`.
+
+    Un `_url_interne` juste mais câblé nulle part corrigerait exactement rien —
+    et c'était l'état du bug.
+    """
+    import claudeshare.server as serveur
+    import uvicorn
+
+    from claudeshare import __main__ as principal
+
+    monkeypatch.delenv("CLAUDESHARE_INTERNAL_URL", raising=False)
+    vues: list[str] = []
+
+    def faux_create_app(**kwargs):
+        vues.append(kwargs["settings"].internal_url)
+        return object()
+
+    monkeypatch.setattr(serveur, "create_app", faux_create_app)
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+
+    args = SimpleNamespace(
+        workspace_root=tmp_path, workers=1, host="127.0.0.1", port=2020,
+        public_https=False, behind_proxy=False,
+    )
+    assert principal._serve(args) == 0
+    assert vues == ["http://127.0.0.1:2020"]
+
+
+def test_une_url_interne_posee_a_la_main_l_emporte(tmp_path, monkeypatch):
+    """Un conteneur sait mieux que nous par où on le joint."""
+    import claudeshare.server as serveur
+    import uvicorn
+
+    from claudeshare import __main__ as principal
+
+    monkeypatch.setenv("CLAUDESHARE_INTERNAL_URL", "http://relais.interne:9000")
+    vues: list[str] = []
+    monkeypatch.setattr(
+        serveur, "create_app",
+        lambda **kw: vues.append(kw["settings"].internal_url) or object(),
+    )
+    monkeypatch.setattr(uvicorn, "run", lambda *a, **k: None)
+
+    principal._serve(SimpleNamespace(
+        workspace_root=tmp_path, workers=1, host="127.0.0.1", port=2020,
+        public_https=False, behind_proxy=False,
+    ))
+    assert vues == ["http://relais.interne:9000"]

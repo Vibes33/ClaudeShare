@@ -389,12 +389,34 @@ def _migrate(args) -> int:
     return 0
 
 
+def _url_interne(host: str, port: int) -> str:
+    """Par où un agent lancé sur cette machine joint ce relais.
+
+    Une écoute sur toutes les interfaces ne donne aucune adresse à composer :
+    on repasse par la boucle locale, la seule certaine de mener ici.
+    """
+    hote = "127.0.0.1" if host in ("", "0.0.0.0", "::") else host
+    if ":" in hote:  # littéral IPv6
+        hote = f"[{hote}]"
+    return f"http://{hote}:{port}"
+
+
 def _serve(args) -> int:
     import uvicorn
 
     from .server import create_app
 
     settings = Settings()
+    # Le port d'écoute doit suivre jusqu'à l'agent que le relais lance lui-même.
+    # Sans ça, `--port 2020` fait naître l'agent en visant 8765, où rien
+    # n'écoute : il meurt à la seconde, et l'interface se contente d'annoncer
+    # « aucun agent » sans jamais dire que le rendez-vous était ailleurs.
+    # Une valeur posée explicitement l'emporte : elle vient de quelqu'un qui
+    # sait par où passer — un conteneur, un réseau interne.
+    if "internal_url" not in settings.model_fields_set:
+        settings = settings.model_copy(
+            update={"internal_url": _url_interne(args.host, args.port)}
+        )
     if args.workers > 1:
         # Un salon *est* une session Claude Code, c'est-à-dire un processus CLI
         # vivant dans un worker précis. Avec plusieurs workers, une connexion
