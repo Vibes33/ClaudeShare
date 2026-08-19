@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 import secrets
 from contextlib import asynccontextmanager
@@ -23,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -60,21 +61,45 @@ logger = logging.getLogger(__name__)
 #: Client web servi tel quel — pas de build, pas d'étape de compilation.
 STATIC_DIR = Path(__file__).parent / "static"
 
-#: Ce que le client doit faire de ces fichiers : les garder, mais **demander
-#: avant de s'en servir**. L'ETag rend la question bon marché — une réponse 304
-#: ne transporte rien — et la réponse est toujours juste.
-#:
-#: Sans en-tête, un intermédiaire applique le sien. Cloudflare met les `.js` en
-#: cache quatre heures par défaut : après un déploiement, le navigateur reçoit
-#: l'`index.html` neuf — les documents HTML, eux, ne sont pas mis en cache — et
-#: un `app.js` de la version précédente. Les deux moitiés ne se connaissent
-#: plus, et la panne ne ressemble pas à sa cause : un identifiant renommé fait
-#: lever le rendu, la moitié de l'interface disparaît sans un mot dans la page.
-#:
-#: Empreinter les noms de fichiers serait plus efficace, mais demanderait une
-#: étape de construction que ce projet n'a pas — et l'économie porterait sur
-#: quelques dizaines de kilooctets révalidés par chargement.
+#: Les documents : à revalider avant chaque usage. L'ETag rend la question bon
+#: marché — une réponse 304 ne transporte rien.
 REVALIDATE = {"Cache-Control": "no-cache"}
+
+#: Les fichiers servis sous `/assets/<version>/` : gardables un an, sans jamais
+#: redemander. C'est sans risque parce que l'URL **change** quand le contenu
+#: change ; personne ne peut donc servir une version périmée sous cette adresse.
+IMMUTABLE = {"Cache-Control": "public, max-age=31536000, immutable"}
+
+
+def _static_version() -> str:
+    """Empreinte du dossier statique, recalculée au démarrage du process.
+
+    Pourquoi une version dans l'URL plutôt qu'un simple `no-cache` : parce que
+    la durée de vie d'une réponse **ne nous appartient pas**. Un intermédiaire
+    peut réécrire l'en-tête — Cloudflare impose quatre heures aux `.js` selon le
+    réglage « Browser Cache TTL » de la zone, quoi que demande l'origine. Le
+    navigateur garde alors un `app.js` d'avant le déploiement tandis qu'il
+    reçoit un `index.html` d'après : les deux moitiés ne se connaissent plus, un
+    identifiant renommé fait lever le rendu, et la moitié de l'interface
+    disparaît sans un mot dans la page. C'est arrivé, et le diagnostic a coûté
+    plus cher que le défaut.
+
+    Une adresse qui change à chaque déploiement rend la question sans objet : il
+    n'existe aucune copie périmée à servir, chez personne. C'est le seul
+    mécanisme de cette chaîne qui ne dépende de la configuration de personne.
+
+    Empreinte du contenu et non de l'horloge : deux déploiements du même code
+    gardent la même adresse, donc les caches restent chauds pour rien.
+    """
+    empreinte = hashlib.blake2b(digest_size=8)
+    for chemin in sorted(STATIC_DIR.rglob("*")):
+        if chemin.is_file():
+            empreinte.update(chemin.name.encode())
+            empreinte.update(chemin.read_bytes())
+    return empreinte.hexdigest()
+
+
+STATIC_VERSION = _static_version()
 
 
 class RevalidatedStatics(StaticFiles):
@@ -84,6 +109,43 @@ class RevalidatedStatics(StaticFiles):
         reponse = super().file_response(*args, **kwargs)
         reponse.headers.update(REVALIDATE)
         return reponse
+
+
+class VersionedStatics(StaticFiles):
+    """Sert `/assets/<version>/<fichier>` en ignorant le segment de version.
+
+    Le segment est dans le **chemin** et non dans une query, et c'est ce qui
+    fait tout marcher : `app.js` importe `./protocol.js`, qui se résout
+    relativement à l'adresse du module. Les dépendances héritent donc de la
+    version sans qu'on ait à les énumérer — là où un `?v=` ne versionnerait que
+    le fichier d'entrée et laisserait ses imports périmés.
+    """
+
+    def get_path(self, scope: dict[str, Any]) -> str:
+        # Le chemin vu par le montage, moins le segment de version. Reconstruit
+        # dans `path` plutôt que calculé à part : c'est `root_path` que
+        # `StaticFiles` retire ensuite, et le contourner casserait un déploiement
+        # sous sous-chemin.
+        racine = scope.get("root_path", "")
+        interne = scope["path"][len(racine) :]
+        _, _, reste = interne.lstrip("/").partition("/")
+        return super().get_path({**scope, "path": f"{racine}/{reste}"})
+
+    def file_response(self, *args: Any, **kwargs: Any) -> Response:
+        reponse = super().file_response(*args, **kwargs)
+        reponse.headers.update(IMMUTABLE)
+        return reponse
+
+
+def page(nom: str) -> HTMLResponse:
+    """Un document du dossier statique, ses adresses d'assets résolues.
+
+    `{{v}}` y est remplacé par la version courante. Le document lui-même n'est
+    jamais mis en cache : c'est lui qui porte les adresses versionnées, et le
+    garder ferait pointer vers des fichiers d'avant le déploiement.
+    """
+    contenu = (STATIC_DIR / nom).read_text(encoding="utf-8")
+    return HTMLResponse(contenu.replace("{{v}}", STATIC_VERSION), headers=REVALIDATE)
 
 #: Limites de débit, du plus serré au plus large. L'ordre compte : le premier
 #: préfixe qui correspond gagne.
@@ -371,11 +433,15 @@ def create_app(
 
         # Montés en dernier : `/static` ne doit pas pouvoir masquer une route d'API,
     # et `/` est la page qui sert de porte d'entrée à tout le reste.
+    # Deux montages du même dossier, deux politiques de cache. `/assets` porte
+    # la version dans le chemin et se garde un an ; `/static` reste pour ce qui
+    # est demandé par une adresse fixe, et se révalide.
+    app.mount("/assets", VersionedStatics(directory=STATIC_DIR), name="assets")
     app.mount("/static", RevalidatedStatics(directory=STATIC_DIR), name="static")
 
     @app.get("/", include_in_schema=False)
-    async def index() -> FileResponse:
-        return FileResponse(STATIC_DIR / "index.html", headers=REVALIDATE)
+    async def index() -> HTMLResponse:
+        return page("index.html")
 
     return app
 

@@ -126,6 +126,49 @@ def test_la_creation_exige_une_identite(client):
     assert client.post("/api/rooms", json={"title": "x", "workspace": "x"}).status_code == 401
 
 
+def test_les_assets_sont_versionnes_et_immuables(client):
+    """La seule protection de cette chaîne qui ne dépende de personne d'autre.
+
+    La durée de vie d'une réponse ne nous appartient pas : un intermédiaire peut
+    réécrire l'en-tête — Cloudflare impose quatre heures aux `.js` selon un
+    réglage de zone, quoi que demande l'origine. Le navigateur garde alors un
+    `app.js` d'avant le déploiement tandis qu'il reçoit un `index.html` d'après,
+    et la moitié de l'interface disparaît sans un mot dans la page. Une adresse
+    qui change avec le contenu rend la question sans objet.
+    """
+    from claudeshare.server.app import STATIC_VERSION
+
+    accueil = client.get("/")
+    assert accueil.status_code == 200
+    assert "{{v}}" not in accueil.text, "le gabarit n'a pas été résolu"
+    assert f"/assets/{STATIC_VERSION}/app.js" in accueil.text
+    # Le document, lui, ne se met pas en cache : c'est lui qui porte les
+    # adresses versionnées, et le garder pointerait vers l'ancienne version.
+    assert accueil.headers["cache-control"] == "no-cache"
+
+    asset = client.get(f"/assets/{STATIC_VERSION}/app.js")
+    assert asset.status_code == 200
+    assert "immutable" in asset.headers["cache-control"]
+
+    # Les imports relatifs du module héritent du préfixe versionné : c'est ce
+    # qui versionne `protocol.js` sans qu'on ait à l'énumérer nulle part.
+    assert client.get(f"/assets/{STATIC_VERSION}/protocol.js").status_code == 200
+
+
+def test_la_version_suit_le_contenu(tmp_path, monkeypatch):
+    """Empreinte du contenu et non de l'horloge : deux déploiements du même code
+    gardent la même adresse, donc les caches restent chauds pour rien."""
+    from claudeshare.server import app as module
+
+    monkeypatch.setattr(module, "STATIC_DIR", tmp_path)
+    (tmp_path / "a.js").write_text("un")
+    premiere = module._static_version()
+    assert module._static_version() == premiere, "instable à contenu égal"
+
+    (tmp_path / "a.js").write_text("deux")
+    assert module._static_version() != premiere, "un changement doit changer l'adresse"
+
+
 def test_les_fichiers_statiques_se_revalident(client):
     """Sans cet en-tête, un intermédiaire applique le sien.
 
@@ -136,10 +179,9 @@ def test_les_fichiers_statiques_se_revalident(client):
     lever le rendu de l'autre, et la moitié de l'interface disparaît sans un mot
     dans la page. C'est arrivé, et rien dans le code ne le disait.
     """
-    for chemin in ("/", "/static/app.js"):
-        reponse = client.get(chemin)
-        assert reponse.status_code == 200, chemin
-        assert reponse.headers["cache-control"] == "no-cache", chemin
-        # L'ETag est ce qui rend la révalidation bon marché : sans lui, « demander
-        # avant de servir » voudrait dire tout retélécharger à chaque page.
-        assert reponse.headers.get("etag"), chemin
+    reponse = client.get("/static/app.js")
+    assert reponse.status_code == 200
+    assert reponse.headers["cache-control"] == "no-cache"
+    # L'ETag est ce qui rend la révalidation bon marché : sans lui, « demander
+    # avant de servir » voudrait dire tout retélécharger à chaque page.
+    assert reponse.headers.get("etag")

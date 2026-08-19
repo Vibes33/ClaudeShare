@@ -532,18 +532,32 @@ Il n'y a **pas d'expiration** : le jeton reste tant qu'on ne le retire pas. Une
 personne ne l'ait demandé. Une déconnexion, elle, libère le jeton — mais
 **n'interrompt pas** un tour déjà lancé : d'autres personnes le regardent.
 
-### Les fichiers statiques se révalident
+### Les assets portent leur version dans leur adresse
 
-`/static` et la page d'entrée partent avec `Cache-Control: no-cache` : gardez-les,
-mais **demandez avant de vous en servir**. L'ETag rend la question bon marché —
-une réponse 304 ne transporte rien.
+Les documents (`/`, la page d'appairage) référencent `/assets/<version>/app.js`,
+où la version est l'empreinte du dossier statique, calculée au démarrage. Le
+document ne se met jamais en cache ; les fichiers qu'il désigne se gardent un an
+sans jamais redemander. C'est sans risque : leur adresse **change avec leur
+contenu**, donc aucune copie périmée ne peut être servie sous cette adresse.
 
-Sans cet en-tête, un intermédiaire applique le sien. Cloudflare met les `.js` en
-cache quatre heures par défaut ; après un déploiement, le navigateur reçoit un
-`index.html` neuf — les documents HTML, eux, ne sont pas mis en cache — et un
-`app.js` de la version précédente. Les deux moitiés ne se connaissent plus, et la
-panne ne ressemble pas à sa cause : un identifiant renommé fait lever le rendu, et
-la moitié de l'interface disparaît sans un mot dans la page.
+La version est dans le chemin et non dans une query, et c'est ce qui fait tout
+marcher : `app.js` importe `./protocol.js`, résolu relativement à l'adresse du
+module. Les dépendances héritent donc de la version sans qu'on ait à les
+énumérer — là où un `?v=` ne versionnerait que le fichier d'entrée.
+
+Pourquoi ne pas se contenter d'un `Cache-Control` : **la durée de vie d'une
+réponse ne nous appartient pas.** Un intermédiaire peut réécrire l'en-tête —
+Cloudflare impose quatre heures aux `.js` selon le réglage « Browser Cache TTL »
+de la zone, quoi que demande l'origine. Le navigateur garde alors un `app.js`
+d'avant le déploiement tandis qu'il reçoit un document d'après ; les deux moitiés
+ne se connaissent plus, un identifiant renommé fait lever le rendu, et la moitié
+de l'interface disparaît sans un mot dans la page. C'est arrivé, et le diagnostic
+a coûté plus cher que le défaut. Une adresse qui change rend la question sans
+objet, et c'est le seul maillon de cette chaîne qui ne dépende de la
+configuration de personne.
+
+`/static` reste monté, en `no-cache`, pour ce qui est demandé par une adresse
+fixe.
 
 ## Approbation d'outil
 

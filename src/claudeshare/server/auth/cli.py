@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 
 from ...db.models import User
 from .identity import hash_token, issue_token
@@ -178,9 +178,15 @@ def build_cli_router(ctx, static_dir) -> APIRouter:  # noqa: ANN001 — ServerCo
         return {"status": "ready", "token": pairing.secret, "handle": pairing.handle}
 
     @router.get("")
-    async def page() -> FileResponse:
-        """Page d'approbation. L'identification se fait côté navigateur."""
-        return FileResponse(static_dir / "pair.html")
+    async def page_appairage() -> HTMLResponse:
+        """Page d'approbation. L'identification se fait côté navigateur.
+
+        Servie par le même chemin que l'accueil : elle porte elle aussi des
+        adresses d'assets versionnées, qu'il faut résoudre avant de l'envoyer.
+        """
+        from ..app import page
+
+        return page("pair.html")
 
     @router.get("/pending")
     async def pending(code: str, request: Request) -> dict:
