@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -59,6 +59,31 @@ logger = logging.getLogger(__name__)
 
 #: Client web servi tel quel — pas de build, pas d'étape de compilation.
 STATIC_DIR = Path(__file__).parent / "static"
+
+#: Ce que le client doit faire de ces fichiers : les garder, mais **demander
+#: avant de s'en servir**. L'ETag rend la question bon marché — une réponse 304
+#: ne transporte rien — et la réponse est toujours juste.
+#:
+#: Sans en-tête, un intermédiaire applique le sien. Cloudflare met les `.js` en
+#: cache quatre heures par défaut : après un déploiement, le navigateur reçoit
+#: l'`index.html` neuf — les documents HTML, eux, ne sont pas mis en cache — et
+#: un `app.js` de la version précédente. Les deux moitiés ne se connaissent
+#: plus, et la panne ne ressemble pas à sa cause : un identifiant renommé fait
+#: lever le rendu, la moitié de l'interface disparaît sans un mot dans la page.
+#:
+#: Empreinter les noms de fichiers serait plus efficace, mais demanderait une
+#: étape de construction que ce projet n'a pas — et l'économie porterait sur
+#: quelques dizaines de kilooctets révalidés par chargement.
+REVALIDATE = {"Cache-Control": "no-cache"}
+
+
+class RevalidatedStatics(StaticFiles):
+    """`StaticFiles`, plus l'en-tête qui interdit de servir sans demander."""
+
+    def file_response(self, *args: Any, **kwargs: Any) -> Response:
+        reponse = super().file_response(*args, **kwargs)
+        reponse.headers.update(REVALIDATE)
+        return reponse
 
 #: Limites de débit, du plus serré au plus large. L'ordre compte : le premier
 #: préfixe qui correspond gagne.
@@ -358,11 +383,11 @@ def create_app(
 
         # Montés en dernier : `/static` ne doit pas pouvoir masquer une route d'API,
     # et `/` est la page qui sert de porte d'entrée à tout le reste.
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    app.mount("/static", RevalidatedStatics(directory=STATIC_DIR), name="static")
 
     @app.get("/", include_in_schema=False)
     async def index() -> FileResponse:
-        return FileResponse(STATIC_DIR / "index.html")
+        return FileResponse(STATIC_DIR / "index.html", headers=REVALIDATE)
 
     return app
 

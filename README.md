@@ -522,6 +522,19 @@ Il n'y a **pas d'expiration** : le jeton reste tant qu'on ne le retire pas. Une
 personne ne l'ait demandé. Une déconnexion, elle, libère le jeton — mais
 **n'interrompt pas** un tour déjà lancé : d'autres personnes le regardent.
 
+### Les fichiers statiques se révalident
+
+`/static` et la page d'entrée partent avec `Cache-Control: no-cache` : gardez-les,
+mais **demandez avant de vous en servir**. L'ETag rend la question bon marché —
+une réponse 304 ne transporte rien.
+
+Sans cet en-tête, un intermédiaire applique le sien. Cloudflare met les `.js` en
+cache quatre heures par défaut ; après un déploiement, le navigateur reçoit un
+`index.html` neuf — les documents HTML, eux, ne sont pas mis en cache — et un
+`app.js` de la version précédente. Les deux moitiés ne se connaissent plus, et la
+panne ne ressemble pas à sa cause : un identifiant renommé fait lever le rendu, et
+la moitié de l'interface disparaît sans un mot dans la page.
+
 ## Approbation d'outil
 
 `can_use_tool` est une coroutine : elle peut donc attendre la décision de

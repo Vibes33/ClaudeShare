@@ -124,3 +124,22 @@ def test_la_session_claude_est_retenue_pour_la_reprise(harness: Harness, client)
 
 def test_la_creation_exige_une_identite(client):
     assert client.post("/api/rooms", json={"title": "x", "workspace": "x"}).status_code == 401
+
+
+def test_les_fichiers_statiques_se_revalident(client):
+    """Sans cet en-tête, un intermédiaire applique le sien.
+
+    Cloudflare met les `.js` en cache quatre heures par défaut. Après un
+    déploiement, le navigateur reçoit alors un `index.html` neuf — les documents
+    HTML ne sont pas mis en cache — et un `app.js` de la version précédente. Les
+    deux moitiés ne se connaissent plus : un identifiant renommé d'un côté fait
+    lever le rendu de l'autre, et la moitié de l'interface disparaît sans un mot
+    dans la page. C'est arrivé, et rien dans le code ne le disait.
+    """
+    for chemin in ("/", "/static/app.js"):
+        reponse = client.get(chemin)
+        assert reponse.status_code == 200, chemin
+        assert reponse.headers["cache-control"] == "no-cache", chemin
+        # L'ETag est ce qui rend la révalidation bon marché : sans lui, « demander
+        # avant de servir » voudrait dire tout retélécharger à chaque page.
+        assert reponse.headers.get("etag"), chemin
