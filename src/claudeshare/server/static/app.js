@@ -1035,11 +1035,13 @@ function dessinerActions() {
   const accorde = peut(Capability.FLOOR_GRANT);
 
   const boutons = [
+    // Disponible à tous ceux qui peuvent écrire, y compris à qui peut accorder :
+    // le priver de demander l'obligerait à se servir lui-même là où il voulait
+    // seulement signaler qu'il souhaite la main.
     ["Demander la parole", ClientMessage.FLOOR_REQUEST, {},
-      peut(Capability.SPEAK) && !mien && !jAttends && !accorde],
+      peut(Capability.SPEAK) && !mien && !jAttends],
     ["Retirer ma demande", ClientMessage.FLOOR_WITHDRAW, {}, jAttends],
-    // Qui décide ne demande pas : il se sert. C'est le geste d'ouverture d'un
-    // salon neuf, où personne n'a encore la parole.
+    // Qui décide peut aussi se servir directement, sans passer par la demande.
     ["Prendre la parole", ClientMessage.FLOOR_GRANT, { who: state.me.label },
       accorde && !mien],
     ["Rendre la parole", ClientMessage.FLOOR_RELEASE, {}, mien && f.state === "held"],

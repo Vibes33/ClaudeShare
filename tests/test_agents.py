@@ -102,7 +102,14 @@ def test_un_salon_sans_agent_reste_lisible(harness: Harness, client):
         instantane = greet(ws)
 
     assert instantane["data"]["present"] == ["alice"]
-    assert instantane["data"]["floor"]["state"] == "open"
+    # La créatrice a la parole dès le montage : un salon neuf où son
+    # propriétaire devrait d'abord se la donner serait un salon muet.
+    assert instantane["data"]["floor"] == {
+        "state": "held",
+        "holder": "alice",
+        "deferred": None,
+        "requests": [],
+    }
 
 
 def test_l_arrivee_d_un_hote_est_annoncee(harness: Harness, client):

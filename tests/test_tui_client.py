@@ -336,7 +336,7 @@ def test_l_instantane_du_vrai_serveur_se_reduit(harness, client):
     les deux clients afficheraient un salon vide. On prend donc un instantané
     produit par le vrai serveur et on le fait passer par la vraie réduction.
     """
-    from .test_ws_flow import collect, greet, send, take_floor
+    from .test_ws_flow import collect, greet, send
 
     alice = harness.user("alice")
     room = harness.room(alice, workspace="a")
@@ -349,10 +349,9 @@ def test_l_instantane_du_vrai_serveur_se_reduit(harness, client):
 
         assert view.can(Capability.SPEAK)
         assert view.present == ["alice"]
-        assert view.floor["state"] == "open"
-
-        view.apply(take_floor(ws, "alice"))
+        # Créatrice du salon, donc porteuse dès le montage.
         assert view.floor["holder"] == "alice"
+        assert view.floor["state"] == "held"
 
         ws.send_json(send("bonjour"))
         for frame in collect(ws, str(EventType.TURN_ENDED)):

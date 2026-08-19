@@ -490,6 +490,12 @@ La version précédente servait le premier arrivé : `request` accordait le jeto
 dès qu'il était libre, et comme envoyer le libérait, la main repartait à qui
 soumettait le plus vite. Le salon n'avait pas d'animateur, il avait un réflexe.
 
+**Le créateur du salon a la parole au montage.** La désignation initiale
+n'ajoute aucun droit — elle se rend, se retire et se réattribue comme toute
+autre. Sans elle, un salon neuf naîtrait sans porteur et son propriétaire devrait
+se donner la parole avant d'écrire la première ligne, dans un salon où il est
+encore seul.
+
 **Le porteur garde la main entre deux tours.** La parole est une désignation,
 pas un ticket à usage unique : il enchaîne ses prompts jusqu'à ce qu'on la lui
 retire. Sans ça, le propriétaire réapprouverait la même personne après chaque

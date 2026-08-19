@@ -73,6 +73,42 @@ def salon(harness: Harness, room: str):
 # --------------------------------------------------------------- le jeton
 
 
+def test_le_createur_parle_dans_son_salon_sans_rien_reclamer(harness: Harness, client):
+    """Un salon neuf où son propriétaire doit d'abord se donner la parole est un
+    salon muet — et c'est le premier écran que voit qui vient de créer."""
+    alice = harness.user("alice")
+    room = harness.room(alice, workspace="a")
+
+    with connect(client, harness, room, alice) as a:
+        jeton = greet(a)["data"]["floor"]
+        assert jeton["holder"] == "alice"
+        assert jeton["state"] == "held"
+
+        a.send_json(send("bonjour"))
+        assert expect(a, "turn.started")
+
+
+def test_demander_la_parole_reste_possible_a_qui_peut_l_accorder(harness: Harness, client):
+    """Un modérateur qui souhaite la main sans l'arracher au porteur.
+
+    L'interface lui proposait de se servir mais pas de demander : c'est ce qui
+    reste quand on confond « peut décider » et « n'a rien à demander ».
+    """
+    alice, vip = harness.user("alice"), harness.user("vip")
+    room = harness.room(alice, workspace="a")
+    harness.join(room, vip, role="moderateur")
+
+    with connect(client, harness, room, alice) as a, connect(client, harness, room, vip) as v:
+        greet(a)
+        greet(v)
+
+        v.send_json(trame(ClientMessage.FLOOR_REQUEST))
+        vue = floor_where(a, lambda d: d["requests"])["data"]
+        assert [r["who"] for r in vue["requests"]] == ["vip"]
+        # Rien n'a été pris : la demande attend une décision comme une autre.
+        assert vue["holder"] == "alice"
+
+
 def test_envoyer_sans_la_parole_est_refuse(harness: Harness, client):
     """Le défaut corrigé : n'importe qui pouvait parler à n'importe quel moment."""
     alice, bob = harness.user("alice"), harness.user("bob")
@@ -84,7 +120,8 @@ def test_envoyer_sans_la_parole_est_refuse(harness: Harness, client):
         b.send_json(send("et moi ?"))
         refus = expect(b, "error")
         assert refus["data"]["code"] == "not_holder"
-        assert salon(harness, room).floor.holder is None
+        # La parole n'a pas changé de mains pour autant.
+        assert salon(harness, room).floor.holder == "alice"
 
 
 def test_une_demande_n_accorde_rien_et_se_voit(harness: Harness, client):
@@ -98,10 +135,11 @@ def test_une_demande_n_accorde_rien_et_se_voit(harness: Harness, client):
         greet(b)
 
         b.send_json(trame(ClientMessage.FLOOR_REQUEST))
-        # Le propriétaire l'apprend sans avoir rien demandé.
+        # Le propriétaire l'apprend sans avoir rien demandé, et garde la main
+        # tant qu'il n'a rien décidé.
         vue = expect(a, "floor.changed")["data"]
         assert [r["who"] for r in vue["requests"]] == ["bob"]
-        assert vue["holder"] is None
+        assert vue["holder"] == "alice"
 
 
 def test_accorder_la_parole_permet_d_envoyer(harness: Harness, client):
@@ -135,7 +173,7 @@ def test_refuser_une_demande(harness: Harness, client):
 
         a.send_json(trame(ClientMessage.FLOOR_DENY, who="bob"))
         vue = floor_where(b, lambda d: not d["requests"])["data"]
-        assert vue["holder"] is None
+        assert vue["holder"] == "alice"
 
 
 def test_un_ecrivain_ne_peut_pas_accorder_la_parole(harness: Harness, client):
@@ -148,7 +186,7 @@ def test_un_ecrivain_ne_peut_pas_accorder_la_parole(harness: Harness, client):
         greet(b)
         b.send_json(trame(ClientMessage.FLOOR_GRANT, who="bob"))
         assert expect(b, "error")["data"]["code"] == "forbidden"
-        assert salon(harness, room).floor.holder is None
+        assert salon(harness, room).floor.holder == "alice"
 
 
 def test_retirer_la_parole(harness: Harness, client):

@@ -44,10 +44,10 @@ def greet(ws, last_seq: int = 0) -> dict:
 def take_floor(ws, label: str) -> dict:
     """Se donner la parole à soi-même.
 
-    Nécessaire avant tout envoi depuis que la parole s'accorde : personne ne
-    parle sans qu'on l'ait décidé, propriétaire compris. Celui-ci a
-    `room.floor.grant`, donc il se l'accorde — c'est le bouton « Prendre la
-    parole » de l'interface.
+    Le créateur d'un salon l'a déjà au montage ; la demander alors se solde par
+    un `own_floor`, qui est la bonne réponse et pas un échec. On accepte donc
+    les deux issues — sans quoi ce raccourci attendrait indéfiniment un
+    changement qui n'a aucune raison de venir.
     """
     ws.send_json(
         {
@@ -56,7 +56,11 @@ def take_floor(ws, label: str) -> dict:
             "data": {"who": label},
         }
     )
-    return expect(ws, "floor.changed")
+    for _ in range(20):
+        frame = ws.receive_json()
+        if frame["type"] in ("floor.changed", "error"):
+            return frame
+    raise AssertionError("ni changement de jeton ni refus")
 
 
 # ------------------------------------------------------- authentification
