@@ -37,8 +37,6 @@ const state = {
   floor: { state: "open", holder: null, deferred: null, requests: [] },
   //: Photo de profil par étiquette présente, telle que la présence l'annonce.
   avatars: {},
-  //: Jetons consommés depuis l'ouverture de la page, cumulés sur les tours.
-  jetons: { entree: 0, sortie: 0 },
   //: Le modèle que l'agent a réellement ouvert, annoncé par `session.ready`.
   modele: "",
   //: Le modèle et l'intensité **demandés** depuis l'interface. Distincts de
@@ -808,10 +806,18 @@ function carteAgent() {
   }
 
   bloc.appendChild(blocIdentifiant());
-  bloc.appendChild(boutonsAgent());
-
-  const journal = (state.demon.managed || {}).log || [];
-  if (journal.length) bloc.appendChild(elem("pre", "sortie", journal.join("\n")));
+  // Sans identifiant déposé, la ligne ci-dessus est un formulaire et n'a pas
+  // d'actions à porter. Un processus peut pourtant tourner encore — on vient
+  // d'oublier son jeton — et il faut alors pouvoir l'arrêter.
+  if (!state.identifiant.present) {
+    const restes = boutonsAgent();
+    if (restes.length) bloc.appendChild(replace(elem("div", "ligne"), ...restes));
+  }
+  // Le journal du processus n'est plus recopié ici. Il tenait la moitié de la
+  // carte pour des lignes qu'on ne lit qu'en cas de panne — et l'avertissement
+  // du SDK qui s'y affichait en permanence donnait à une carte saine l'allure
+  // d'une carte en erreur. Ce qui compte s'y voit encore : le voyant, et le
+  // message d'erreur du démon s'il y en a un.
   return bloc;
 }
 
@@ -851,12 +857,18 @@ function blocIdentifiant() {
   }
 
   if (state.identifiant.present) {
+    // Une seule ligne : le voyant, le type d'identifiant, et les deux actions
+    // qui le concernent. L'empreinte n'y est plus — elle servait à distinguer
+    // deux jetons déposés, or on n'en dépose qu'un, et six caractères
+    // hexadécimaux à côté d'un voyant vert ne se lisent pas, ils encombrent.
     const ligne = elem("div", "agent-depose");
-    ligne.appendChild(elem("span", "voyant vive"));
-    ligne.appendChild(
-      elem("span", "", `${state.identifiant.kind} · ${state.identifiant.fingerprint}`),
+    ligne.append(
+      elem("span", "voyant vive"),
+      elem("span", "agent-genre", state.identifiant.kind),
     );
-    ligne.appendChild(
+
+    const actions = elem("div", "agent-actions");
+    actions.appendChild(
       boutonChargement("Oublier", {
         ton: "discret",
         onClick: async () => {
@@ -866,6 +878,12 @@ function blocIdentifiant() {
         },
       }),
     );
+    // Les deux actions du même objet, côte à côte : oublier l'identifiant et
+    // arrêter ce qui s'en sert. Les séparer de deux lignes faisait chercher la
+    // seconde ailleurs.
+    for (const bouton of boutonsAgent()) actions.appendChild(bouton);
+    ligne.appendChild(actions);
+
     bloc.appendChild(ligne);
     return bloc;
   }
@@ -920,19 +938,25 @@ async function deposer(choix, champ) {
   afficherSalons();
 }
 
+/**
+ * Démarrer ou arrêter le processus. Une liste, pas un bloc.
+ *
+ * L'appelant décide où ils vont : ils se rangent sur la ligne de
+ * l'identifiant, dont ils sont les actions.
+ */
 function boutonsAgent() {
-  const ligne = elem("div", "ligne");
   const gere = state.demon.managed || {};
+  const boutons = [];
 
   if (gere.running) {
-    ligne.appendChild(
-      boutonChargement("Arrêter mon agent", { ton: "discret", onClick: () => piloter("stop") }),
-    );
+    boutons.push(boutonChargement("Arrêter", { ton: "discret", onClick: () => piloter("stop") }));
   } else if (state.identifiant.present) {
-    ligne.appendChild(boutonChargement("Démarrer mon agent", { onClick: () => piloter("start") }));
+    boutons.push(boutonChargement("Démarrer", { onClick: () => piloter("start") }));
   }
-  if (gere.error) ligne.appendChild(elem("span", "vide", gere.error));
-  return ligne;
+  // Une erreur du processus, elle, reste dite : c'est la seule chose de ce
+  // bloc qu'on ne peut pas deviner en regardant les boutons.
+  if (gere.error) boutons.push(elem("span", "vide", gere.error));
+  return boutons;
 }
 
 async function piloter(action) {
@@ -1245,12 +1269,6 @@ function evenement(type, d) {
       t.ended = d;
       t.thinking = false;
       state.queued = null;
-      // Cumulé pour la page, pas pour le salon : la conversation peut avoir
-      // commencé avant qu'on arrive, et prétendre en connaître le total serait
-      // faux. Ce compteur dit ce qui a été consommé sous nos yeux.
-      const u = d.usage || {};
-      state.jetons.entree += (u.input_tokens || 0) + (u.cache_read_input_tokens || 0);
-      state.jetons.sortie += u.output_tokens || 0;
       // Ce qu'on vient de lire est vu par définition — sinon le salon ouvert
       // s'allumerait lui-même à chaque réponse.
       marquerVu(state.roomId, state.lastSeq);
@@ -1670,12 +1688,32 @@ function dessinerPied() {
 
   dessinerQuota();
 
-  const { entree, sortie } = state.jetons;
+  const { entree, sortie } = jetonsDuSalon();
   const total = entree + sortie;
   dom.jetons.textContent = total ? `${millers(total)} jetons` : "";
   dom.jetons.title = total
-    ? `${millers(entree)} en entrée, ${millers(sortie)} en sortie, depuis l'ouverture de cette page.`
+    ? `${millers(entree)} en entrée, ${millers(sortie)} en sortie, sur les tours affichés ici.`
     : "";
+}
+
+/**
+ * Ce que les tours affichés ont consommé.
+ *
+ * **Recalculé**, jamais cumulé au fil des événements. Un compteur qui
+ * s'incrémente additionne tout ce qui passe : les tours rejoués à chaque reconnexion, et
+ * ceux du salon précédent quand on saute de l'un à l'autre. Le total montait
+ * donc sans que rien ne soit consommé. Une somme sur l'état courant ne peut pas
+ * mentir de cette façon — elle décrit exactement ce qui est à l'écran.
+ */
+function jetonsDuSalon() {
+  let entree = 0;
+  let sortie = 0;
+  for (const tour of state.turns.values()) {
+    const u = (tour.ended && tour.ended.usage) || {};
+    entree += (u.input_tokens || 0) + (u.cache_read_input_tokens || 0);
+    sortie += u.output_tokens || 0;
+  }
+  return { entree, sortie };
 }
 
 //: Ce que le CLI appelle chaque fenêtre de quota, en français.
@@ -1696,9 +1734,13 @@ const FENETRES = {
  * l'ignorance, et l'infobulle l'explique.
  */
 function dessinerQuota() {
-  if (!state.agent || !state.agent.connected) return replace(dom.quota);
-
   const q = state.quota;
+  // Sans agent **et** sans rien à montrer, l'anneau n'aurait rien à dire. Mais
+  // l'état du quota, lui, survit au départ de l'agent : il décrit un abonnement,
+  // pas une connexion. Le faire disparaître quand l'agent redémarre — et ne
+  // jamais le faire revenir, faute d'une nouvelle transition rapportée par le
+  // CLI — était le défaut à corriger.
+  if (!q && !(state.agent && state.agent.connected)) return replace(dom.quota);
   const part = q && typeof q.utilization === "number" ? q.utilization : null;
   const fenetre = q ? FENETRES[q.window] || q.window || "la session" : "la session de 5 h";
 

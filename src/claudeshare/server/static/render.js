@@ -24,6 +24,14 @@ const BULLET = /^\s*[-*+]\s+(.*)$/;
 const NUMBER = /^\s*\d{1,9}[.)]\s+(.*)$/;
 const RULE = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/;
 
+//: La ligne de tirets d'un tableau, qui suit son en-tête et fixe l'alignement.
+//: C'est **elle** qui décide qu'un tableau commence : une ligne pleine de
+//: barres verticales peut n'être qu'une phrase, la seconde ligne ne peut pas.
+const TABLE_SEP = /^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-*:?\s*\|?\s*$/;
+//: Une ligne qui pourrait appartenir à un tableau : elle contient au moins une
+//: barre non échappée.
+const TABLE_LIGNE = /(^|[^\\])\|/;
+
 /** Découpage en ligne. L'ordre des alternatives fixe la priorité. */
 const INLINE = /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\*[^*\n]+\*)|(_[^_\n]+_)|(\[[^\]\n]*\]\([^)\s]+\))/;
 
@@ -56,6 +64,20 @@ export function renderMarkdown(text) {
     if (RULE.test(line)) {
       out.appendChild(document.createElement("hr"));
       i += 1;
+      continue;
+    }
+
+    // Testé avant le paragraphe, et sur **deux** lignes : c'est le filet de
+    // tirets qui distingue un tableau d'une phrase contenant des barres.
+    if (
+      TABLE_LIGNE.test(line)
+      && i + 1 < lines.length
+      && TABLE_SEP.test(lines[i + 1])
+      && !RULE.test(lines[i + 1])
+    ) {
+      const [tableau, next] = table(lines, i);
+      out.appendChild(tableau);
+      i = next;
       continue;
     }
 
@@ -98,7 +120,7 @@ export function renderMarkdown(text) {
       lines,
       i,
       (l) => l.trim() && !FENCE.test(l) && !HEADING.test(l) && !QUOTE.test(l)
-        && !BULLET.test(l) && !NUMBER.test(l) && !RULE.test(l),
+        && !BULLET.test(l) && !NUMBER.test(l) && !RULE.test(l) && !TABLE_SEP.test(l),
       (l) => l,
     );
     const p = document.createElement("p");
@@ -111,6 +133,91 @@ export function renderMarkdown(text) {
   }
 
   return out;
+}
+
+/**
+ * Un tableau, de sa ligne d'en-tête jusqu'à la première ligne qui n'en est plus.
+ *
+ * Le nombre de colonnes est fixé par l'en-tête : une ligne plus courte est
+ * complétée, une plus longue est tronquée. Un modèle qui produit une cellule de
+ * trop ne doit pas décaler toute la suite du tableau — mieux vaut une case vide
+ * qu'une colonne fantôme.
+ */
+function table(lines, start) {
+  const entetes = cellules(lines[start]);
+  const alignements = cellules(lines[start + 1]).map(alignement);
+
+  const [corps, next] = takeWhile(
+    lines,
+    start + 2,
+    (l) => l.trim() !== "" && TABLE_LIGNE.test(l),
+    (l) => cellules(l),
+  );
+
+  const tableau = document.createElement("table");
+  tableau.className = "tableau";
+
+  const thead = tableau.appendChild(document.createElement("thead"));
+  const ligneEntete = thead.appendChild(document.createElement("tr"));
+  entetes.forEach((texte, n) => {
+    const th = document.createElement("th");
+    if (alignements[n]) th.style.setProperty("text-align", alignements[n]);
+    th.appendChild(renderInline(texte));
+    ligneEntete.appendChild(th);
+  });
+
+  const tbody = tableau.appendChild(document.createElement("tbody"));
+  for (const ligne of corps) {
+    const tr = tbody.appendChild(document.createElement("tr"));
+    for (let n = 0; n < entetes.length; n += 1) {
+      const td = document.createElement("td");
+      if (alignements[n]) td.style.setProperty("text-align", alignements[n]);
+      td.appendChild(renderInline(ligne[n] ?? ""));
+      tr.appendChild(td);
+    }
+  }
+
+  // Le tableau va dans une boîte qui défile : un tableau plus large que la
+  // colonne doit défiler chez lui, jamais pousser la conversation de côté.
+  const boite = document.createElement("div");
+  boite.className = "tableau-boite";
+  boite.appendChild(tableau);
+  return [boite, next];
+}
+
+/**
+ * Découpe une ligne de tableau en cellules.
+ *
+ * Les barres échappées (`\|`) restent du texte : c'est la seule façon d'écrire
+ * une barre verticale dans une cellule, et un modèle qui documente une
+ * expression régulière s'en sert.
+ */
+function cellules(ligne) {
+  const brut = String(ligne).trim().replace(/^\||\|$/g, "");
+  const parts = [];
+  let courant = "";
+  for (let n = 0; n < brut.length; n += 1) {
+    if (brut[n] === "\\" && brut[n + 1] === "|") {
+      courant += "|";
+      n += 1;
+    } else if (brut[n] === "|") {
+      parts.push(courant.trim());
+      courant = "";
+    } else {
+      courant += brut[n];
+    }
+  }
+  parts.push(courant.trim());
+  return parts;
+}
+
+/** `:---:` → centré, `---:` → à droite, le reste → défaut. */
+function alignement(marque) {
+  const gauche = marque.startsWith(":");
+  const droite = marque.endsWith(":");
+  if (gauche && droite) return "center";
+  if (droite) return "right";
+  return "";
 }
 
 /**

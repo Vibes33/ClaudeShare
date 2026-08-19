@@ -555,6 +555,10 @@ select.saisie { flex: 0 0 auto; }
 .agent-identifiant { margin-top: 1.2rem; }
 .agent-identifiant .saisie[type="password"] { width: 100%; margin-bottom: 0.5rem; }
 .agent-depose { display: flex; align-items: center; flex-wrap: wrap; gap: 0.6rem; font-size: 0.9rem; }
+.agent-genre { font-family: var(--mono); font-size: 0.85rem; }
+/* Les actions poussées à droite : la ligne se lit « ce qui est en place »,
+   puis « ce qu'on peut en faire ». */
+.agent-actions { margin-left: auto; display: flex; align-items: center; gap: 0.4rem; }
 .carte .sortie { margin-top: 1rem; max-height: 10rem; }
 
 /* ------------------------------------------------------------ bulle d'aide */
@@ -978,6 +982,45 @@ select.saisie { flex: 0 0 auto; }
 .bulle-texte p:last-child { margin-bottom: 0; }
 .reflexion { color: var(--doux); font-style: italic; padding: 0.4rem 0; }
 .fin { color: var(--doux); font-size: 0.78rem; margin: 0.2rem 0 0 2.8rem; }
+
+/* --- les tableaux ------------------------------------------------------- */
+
+/* La boîte défile, pas la page : un tableau plus large que la conversation doit
+   se parcourir chez lui. Sans ça, c'est tout le corps du document qui gagne une
+   barre horizontale — le symptôme classique d'un tableau lâché dans un fil. */
+.tableau-boite {
+  margin: 0.9rem 0; overflow-x: auto;
+  border: 1px solid var(--verre-bord); border-radius: 12px;
+  background: rgb(0 0 0 / 0.25);
+}
+
+/* `collapse` et non `separate` : les filets doivent se rejoindre aux
+   croisements, sinon chaque intersection montre un trou d'un pixel. */
+.tableau {
+  width: 100%; border-collapse: collapse;
+  font-size: 0.88rem; line-height: 1.5;
+}
+.tableau th,
+.tableau td {
+  padding: 0.5rem 0.85rem; text-align: left; vertical-align: top;
+  /* Les traits verticaux, qui font tout le dessin : ils rendent les colonnes
+     lisibles sans avoir à alterner les fonds de lignes. */
+  border-right: 1px solid var(--verre-bord);
+}
+.tableau th:last-child,
+.tableau td:last-child { border-right: none; }
+.tableau th {
+  font-weight: 600; color: var(--texte); white-space: nowrap;
+  background: rgb(255 255 255 / 0.04);
+  border-bottom: 1px solid var(--verre-bord);
+}
+.tableau tbody tr + tr td { border-top: 1px solid rgb(255 255 255 / 0.05); }
+.tableau td { color: var(--doux); }
+.tableau td code, .tableau th code { font-family: var(--mono); font-size: 0.9em; }
+
+/* Dans la colonne étroite de la discussion, les en-têtes doivent pouvoir se
+   couper : `nowrap` y forcerait un défilement dès deux colonnes. */
+.dit-corps .tableau th { white-space: normal; }
 
 /* Un bloc de code se lit, mais surtout se **copie**. D'où l'en-tête : le
    langage à gauche pour savoir ce qu'on lit, le bouton à droite, toujours à la
