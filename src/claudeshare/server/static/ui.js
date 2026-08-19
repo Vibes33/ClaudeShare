@@ -44,6 +44,73 @@ export function boutonMetal(libelle, { href = "", onClick = null, ton = "" } = {
   return el;
 }
 
+/**
+ * Le bouton ordinaire : une pilule de verre, au rayon de l'écran d'entrée.
+ *
+ * Le bouton « métal liquide » reste à la connexion, où il est seul à l'écran.
+ * Répété six fois sur une page de travail, son liseré en rotation attire l'œil
+ * partout et donc nulle part.
+ */
+export function bouton(libelle, { onClick = null, ton = "", href = "" } = {}) {
+  const el = href ? elem("a", `bouton ${ton}`, libelle) : elem("button", `bouton ${ton}`, libelle);
+  if (href) el.href = href;
+  else el.type = "button";
+  if (onClick) el.addEventListener("click", onClick);
+  return el;
+}
+
+/** Le cercle tournant, en SVG : un arc ouvert, mis en rotation par le CSS. */
+function rouet() {
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("class", "rouet");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("aria-hidden", "true");
+  const cercle = document.createElementNS(NS, "circle");
+  for (const [nom, valeur] of Object.entries({
+    cx: "8", cy: "8", r: "6.5", fill: "none",
+    "stroke-width": "2", "stroke-linecap": "round",
+    // Un quart de circonférence tracé, le reste ouvert : c'est ce qui rend la
+    // rotation visible. Un cercle plein tournerait sans qu'on le voie.
+    "stroke-dasharray": "10 31",
+  })) cercle.setAttribute(nom, valeur);
+  svg.appendChild(cercle);
+  return svg;
+}
+
+/**
+ * Un bouton qui montre qu'il travaille, repris de `loading-button` d'OriginUI.
+ *
+ * Le principe qui compte : **la taille ne change pas**. Le libellé devient
+ * transparent et le rouet se superpose au centre, plutôt que de remplacer le
+ * texte — sinon le bouton rétrécit au clic, et toute la ligne se réorganise
+ * sous le doigt de qui vient d'appuyer.
+ *
+ * `onClick` peut rendre une promesse : l'état d'attente dure jusqu'à ce qu'elle
+ * se règle. Sinon il est levé au retour de la fonction.
+ */
+export function boutonChargement(libelle, { onClick, ton = "" } = {}) {
+  const el = bouton(libelle, { ton: `charge ${ton}` });
+  el.appendChild(rouet());
+
+  el.addEventListener("click", async () => {
+    if (el.dataset.charge === "oui") return;
+    el.dataset.charge = "oui";
+    el.disabled = true;
+    try {
+      await onClick(el);
+    } finally {
+      // Le bouton a pu disparaître entre-temps — un rendu complet suit souvent
+      // l'action. On ne remet en état que ce qui est encore là.
+      if (el.isConnected) {
+        el.dataset.charge = "non";
+        el.disabled = false;
+      }
+    }
+  });
+  return el;
+}
+
 /** Délai avant de refermer une bulle ouverte au toucher, faute de « sortie ». */
 const TOUCHER_MS = 2000;
 

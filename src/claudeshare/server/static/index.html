@@ -36,10 +36,19 @@
 </section>
 
 <div id="app">
+  <!-- Barre flottante : elle ne colle pas au bord, elle se pose au-dessus du
+       contenu qui défile dessous. C'est ce décollement qui la fait lire comme
+       un objet de verre plutôt que comme un bandeau. -->
   <header id="barre">
-    <a href="#/" id="marque">ClaudeShare</a>
+    <a href="#/" id="marque">
+      <span id="marque-point"></span>
+      <span>ClaudeShare</span>
+    </a>
     <span id="title"></span>
-    <span id="status">hors ligne</span>
+    <span id="etat-lien">
+      <span id="status-point"></span>
+      <span id="status">hors ligne</span>
+    </span>
     <span id="who"></span>
   </header>
 

@@ -280,17 +280,73 @@ h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; colo
    pli — ne se voit qu'à l'écran. */
 #app { display: flex; flex-direction: column; height: 100%; }
 
+/* Une pilule de verre posée sur le contenu, et non un bandeau collé en haut.
+   `sticky` plutôt que `fixed` : elle reste dans le flux, donc rien ne passe
+   dessous à la première ligne et aucune marge compensatoire n'est à deviner. */
 #barre {
+  position: sticky; top: 0; z-index: 40;
   flex: 0 0 auto;
   display: flex; align-items: center; gap: 1rem;
-  padding: 0.6rem 1rem;
-  border-bottom: 1px solid var(--bord);
-  background: var(--panneau);
+  width: calc(100% - 2rem); max-width: 82rem;
+  margin: 0.9rem auto 0;
+  padding: 0.55rem 0.6rem 0.55rem 1rem;
+  border: 1px solid var(--verre-bord); border-radius: 100px;
+  background: rgb(14 14 17 / 0.72);
+  backdrop-filter: blur(20px) saturate(140%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06), 0 10px 30px rgb(0 0 0 / 0.45);
 }
-#marque { font-weight: 700; color: var(--texte); text-decoration: none; }
-#title { font-weight: 600; }
-#status { color: var(--doux); font-size: 0.85rem; }
-#who { margin-left: auto; color: var(--doux); font-size: 0.85rem; }
+
+#marque {
+  display: inline-flex; align-items: center; gap: 0.55rem;
+  font-weight: 600; color: var(--texte); text-decoration: none;
+}
+/* Le point de la marque n'annonce rien : il tient lieu de logo, là où un mot
+   seul flotterait dans la pilule. */
+#marque-point {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: linear-gradient(180deg, #e8e8e8, #6f6f6f);
+  box-shadow: 0 0 10px rgb(255 255 255 / 0.25);
+}
+
+#title {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--doux); font-size: 0.9rem;
+}
+/* Un séparateur dessiné, pas écrit : il ne se lit pas à voix haute. */
+#title:not(:empty)::before { content: ""; display: inline-block; width: 1px; height: 0.9em;
+  margin-right: 0.9rem; vertical-align: -0.05em; background: var(--verre-bord); }
+
+/* L'état de la connexion, en pastille : c'est la couleur qu'on regarde, le mot
+   n'est là que pour qui ne la distingue pas. */
+#etat-lien {
+  margin-left: auto;
+  display: inline-flex; align-items: center; gap: 0.45rem;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--verre-bord); border-radius: 100px;
+  background: rgb(255 255 255 / 0.04);
+  color: var(--doux); font-size: 0.8rem; white-space: nowrap;
+}
+#status-point {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--doux); transition: background 0.3s, box-shadow 0.3s;
+}
+#barre.en-ligne #status-point { background: var(--ok); box-shadow: 0 0 8px rgb(110 196 140 / 0.7); }
+#barre.en-panne #status-point { background: var(--alerte); }
+
+#who {
+  padding: 0.3rem 0.85rem;
+  border: 1px solid var(--verre-bord); border-radius: 100px;
+  background: rgb(255 255 255 / 0.04);
+  font-size: 0.82rem; white-space: nowrap;
+}
+
+/* Sur un téléphone, le titre du salon saute avant le reste : c'est la seule
+   information qu'on retrouve ailleurs à l'écran. */
+@media (max-width: 34rem) {
+  #barre { gap: 0.5rem; padding-left: 0.8rem; }
+  #title { display: none; }
+  #who { display: none; }
+}
 
 /* ---------------------------------------------------------------- salons */
 
@@ -521,7 +577,7 @@ select.saisie { flex: 0 0 auto; }
 #requests { margin: 0.4rem 0; padding-left: 1.2rem; font-size: 0.88rem; }
 #requests li { margin-bottom: 0.35rem; }
 #requests .moi { font-weight: 600; }
-#requests .bouton { margin-left: 0.4rem; padding: 0.15rem 0.5rem; font-size: 0.82rem; }
+#requests .approbation .bouton { margin-left: 0.4rem; height: 32px; padding: 0 0.75rem; font-size: 0.82rem; }
 #actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.8rem; }
 #presence { color: var(--doux); font-size: 0.88rem; }
 #host { display: flex; flex-direction: column; gap: 0.15rem; font-size: 0.88rem; }
@@ -596,16 +652,50 @@ select.saisie { flex: 0 0 auto; }
   user-select: all;
 }
 
+/* Le bouton ordinaire : la pilule de l'écran d'entrée, sans son liseré animé.
+   Même rayon, même hauteur que les champs, pour que rien ne dépasse d'une
+   ligne à l'autre. */
 .bouton {
-  padding: 0.4rem 0.75rem; font: inherit; font-size: 0.85rem;
-  color: var(--texte); background: var(--fond);
-  border: 1px solid var(--bord); border-radius: 6px; cursor: pointer;
-  text-decoration: none; text-align: center;
+  display: inline-flex; align-items: center; justify-content: center;
+  position: relative;
+  height: 40px; padding: 0 1.1rem;
+  font: inherit; font-size: 0.88rem;
+  color: var(--texte);
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.09), rgb(255 255 255 / 0.04));
+  border: 1px solid var(--verre-bord); border-radius: 100px; cursor: pointer;
+  text-decoration: none; text-align: center; white-space: nowrap;
+  transition: background 0.18s, border-color 0.18s, transform 0.12s;
 }
-.bouton:hover:not(:disabled) { border-color: var(--accent); }
+.bouton:hover:not(:disabled) {
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.14), rgb(255 255 255 / 0.07));
+  border-color: rgb(255 255 255 / 0.2);
+}
+.bouton:active:not(:disabled) { transform: translateY(1px); }
+.bouton:focus-visible { outline: 2px solid rgb(255 255 255 / 0.5); outline-offset: 2px; }
 .bouton:disabled { opacity: 0.4; cursor: not-allowed; }
-.bouton.oui { border-color: var(--ok); color: var(--ok); }
-.bouton.non { border-color: var(--erreur); color: var(--erreur); }
+.bouton.discret { background: none; color: var(--doux); }
+.bouton.discret:hover:not(:disabled) { color: var(--texte); background: rgb(255 255 255 / 0.06); }
+.bouton.oui { border-color: rgb(110 196 140 / 0.5); color: var(--ok); }
+.bouton.non { border-color: rgb(240 113 120 / 0.5); color: var(--erreur); }
+
+/* --- le bouton qui travaille ---------------------------------------------
+   La taille ne change pas pendant l'attente : le libellé devient transparent
+   et le rouet se superpose. Remplacer le texte par le rouet ferait rétrécir le
+   bouton sous le doigt de qui vient d'appuyer, et toute la ligne bougerait. */
+.bouton.charge .rouet {
+  position: absolute; width: 16px; height: 16px;
+  opacity: 0; transition: opacity 0.15s;
+}
+.bouton.charge .rouet circle { stroke: currentColor; }
+.bouton.charge[data-charge="oui"] { color: transparent; opacity: 1; cursor: progress; }
+.bouton.charge[data-charge="oui"] .rouet {
+  opacity: 1; color: var(--texte);
+  animation: rouet 0.7s linear infinite;
+}
+
+@keyframes rouet {
+  to { transform: rotate(360deg); }
+}
 #send { align-self: flex-end; }
 
 /* ---------------------------------------------------------- approbations */

@@ -14,7 +14,7 @@
 import { ClientMessage, ServerMessage, EventType, Capability, frame } from "./protocol.js";
 import { renderMarkdown, elem, replace } from "./render.js";
 import { monterConnexion } from "./login.js";
-import { boutonMetal, aide } from "./ui.js";
+import { boutonChargement, aide } from "./ui.js";
 
 //: Repli de reconnexion. Croît jusqu'à ce plafond pour ne pas marteler un
 //: serveur qui redémarre, tout en restant assez court pour qu'un réveil de
@@ -63,7 +63,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   for (const id of [
     "app", "login", "providers", "rooms", "room", "title", "status", "who",
     "transcript", "composer", "prompt", "send", "floor", "requests", "presence", "host", "code",
-    "titre-connexion",
+    "titre-connexion", "barre",
     "approvals", "toasts", "actions",
   ]) {
     dom[id] = document.getElementById(id);
@@ -251,11 +251,11 @@ function champAction({ etiquette, placeholder, bouton, maxLength, numerique, act
   champ.maxLength = maxLength;
   if (numerique) champ.inputMode = "numeric";
 
-  const valider = boutonMetal(bouton, { onClick: () => action(champ, valider) });
+  const valider = boutonChargement(bouton, { onClick: () => action(champ) });
   champ.addEventListener("keydown", (e) => {
     if (e.key !== "Enter") return;
     e.preventDefault();
-    action(champ, valider);
+    valider.click();
   });
 
   const ligne = elem("div", "ligne");
@@ -315,16 +315,13 @@ async function archiver(r, bouton) {
   afficherSalons();
 }
 
-async function creer(champ, bouton) {
+async function creer(champ) {
   const titre = champ.value.trim();
   if (!titre) return champ.focus();
 
-  // Désarmé pendant l'aller-retour : un double clic créerait deux salons, et
-  // rien dans l'API ne les distinguerait ensuite.
-  bouton.disabled = true;
+  // Le désarmement pendant l'aller-retour appartient au bouton — sans lui, un
+  // double clic créerait deux salons que rien dans l'API ne distinguerait.
   const reponse = await post("/api/rooms", { title: titre });
-  bouton.disabled = false;
-
   if (!reponse.ok) return toast(`Création refusée : ${motif(reponse)}`);
 
   champ.value = "";
@@ -332,14 +329,11 @@ async function creer(champ, bouton) {
   location.hash = `#/rooms/${reponse.data.id}`;
 }
 
-async function rejoindre(champ, bouton) {
+async function rejoindre(champ) {
   const code = champ.value.trim();
   if (!code) return champ.focus();
 
-  bouton.disabled = true;
   const reponse = await post("/api/rooms/join", { code });
-  bouton.disabled = false;
-
   if (!reponse.ok) return toast(motif(reponse));
 
   champ.value = "";
@@ -433,10 +427,9 @@ function blocIdentifiant() {
       elem("span", "", `${state.identifiant.kind} · ${state.identifiant.fingerprint}`),
     );
     ligne.appendChild(
-      boutonMetal("Oublier", {
+      boutonChargement("Oublier", {
         ton: "discret",
-        onClick: async (e) => {
-          e.currentTarget.disabled = true;
+        onClick: async () => {
           await fetch("/api/credential", { method: "DELETE" });
           await rafraichir();
           afficherSalons();
@@ -462,9 +455,7 @@ function blocIdentifiant() {
   champ.placeholder = "collez votre jeton";
   champ.autocomplete = "off";
 
-  const poser = boutonMetal("Déposer", {
-    onClick: () => deposer(choix, champ, poser),
-  });
+  const poser = boutonChargement("Déposer", { onClick: () => deposer(choix, champ) });
 
   const etiquette = elem("label", "champ-etiquette");
   etiquette.appendChild(
@@ -487,14 +478,12 @@ function blocIdentifiant() {
   return bloc;
 }
 
-async function deposer(choix, champ, bouton) {
+async function deposer(choix, champ) {
   const secret = champ.value.trim();
   if (!secret) return champ.focus();
-  bouton.disabled = true;
   // `PUT` : déposer un identifiant remplace le précédent, ce n'est pas une
   // création répétable.
   const reponse = await post("/api/credential", { kind: choix.value, secret }, "PUT");
-  bouton.disabled = false;
   champ.value = "";
   if (!reponse.ok) return toast(motif(reponse));
   await rafraichir();
@@ -506,33 +495,25 @@ function boutonsAgent() {
   const gere = state.demon.managed || {};
 
   if (gere.running) {
-    const arreter = boutonMetal("Arrêter mon agent", {
-      ton: "discret",
-      onClick: () => piloter("stop", arreter),
-    });
-    ligne.appendChild(arreter);
+    ligne.appendChild(
+      boutonChargement("Arrêter mon agent", { ton: "discret", onClick: () => piloter("stop") }),
+    );
   } else if (state.identifiant.present) {
-    const lancer = boutonMetal("Démarrer mon agent", { onClick: () => piloter("start", lancer) });
-    ligne.appendChild(lancer);
+    ligne.appendChild(boutonChargement("Démarrer mon agent", { onClick: () => piloter("start") }));
   }
   if (gere.error) ligne.appendChild(elem("span", "vide", gere.error));
   return ligne;
 }
 
-async function piloter(action, bouton) {
-  bouton.disabled = true;
+async function piloter(action) {
   const reponse = await post(`/api/agent/${action}`, {});
-  if (!reponse.ok) {
-    bouton.disabled = false;
-    return toast(motif(reponse));
-  }
-  // Le processus met un instant à ouvrir sa socket : on laisse passer ce délai
-  // avant de redessiner, sinon on affiche « aucun agent » juste après l'avoir
-  // démarré.
-  setTimeout(async () => {
-    await rafraichir();
-    afficherSalons();
-  }, 1200);
+  if (!reponse.ok) return toast(motif(reponse));
+  // Le processus met un instant à ouvrir sa socket. On attend ce délai *dans*
+  // l'action, donc le bouton reste en attente pendant ce temps : redessiner
+  // tout de suite afficherait « aucun agent » juste après l'avoir démarré.
+  await new Promise((r) => setTimeout(r, 1200));
+  await rafraichir();
+  afficherSalons();
 }
 
 function ouvrir(roomId) {
@@ -1156,9 +1137,18 @@ function dessinerActions() {
             : "Demandez la parole pour écrire";
 }
 
+/**
+ * L'état de la connexion, écrit et coloré.
+ *
+ * La pastille porte l'information ; le mot est là pour qui ne distingue pas la
+ * couleur. Les deux viennent du même appel, donc ils ne peuvent pas se
+ * contredire.
+ */
 function statut(texte) {
   state.status = texte;
   dom.status.textContent = texte;
+  dom.barre.classList.toggle("en-ligne", texte === "connecté");
+  dom.barre.classList.toggle("en-panne", texte === "accès refusé" || texte === "reconnexion…");
 }
 
 function toast(texte) {
