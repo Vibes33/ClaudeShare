@@ -8,6 +8,8 @@ l'environnement hérité au lieu de le remplacer. Donc on refuse de démarrer.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from claudeshare.config import (
@@ -16,6 +18,7 @@ from claudeshare.config import (
     Settings,
     api_billing_vars_present,
     check_auth_mode,
+    check_managed_agents,
     describe_auth,
 )
 
@@ -47,3 +50,33 @@ def test_mode_libre_accepte_la_cle():
 def test_le_mode_actif_est_toujours_annonce():
     assert "abonnement" in describe_auth(Settings(auth_mode=AuthMode.PILOT))
     assert "usage" in describe_auth(Settings(auth_mode=AuthMode.FREE))
+
+
+# ------------------------------- agents gérés sans de quoi chiffrer
+
+
+def _reglages(tmp_path, monkeypatch, **kwargs):
+    """Réglages isolés du `.env` du poste et de l'environnement."""
+    for nom in [n for n in os.environ if n.startswith("CLAUDESHARE_")]:
+        monkeypatch.delenv(nom, raising=False)
+    return Settings(_env_file=None, workspace=tmp_path, **kwargs)
+
+
+def test_les_agents_geres_sans_cle_refusent_de_demarrer(tmp_path, monkeypatch):
+    """Découvrir l'empêchement après avoir collé son jeton est le pire ordre
+    possible : on le dit au démarrage, à qui peut le corriger."""
+    reglages = _reglages(tmp_path, monkeypatch, managed_agents=True, credential_key="")
+
+    with pytest.raises(AuthModeError, match="CLAUDESHARE_CREDENTIAL_KEY"):
+        check_managed_agents(reglages)
+
+
+def test_les_agents_geres_avec_cle_passent(tmp_path, monkeypatch):
+    check_managed_agents(
+        _reglages(tmp_path, monkeypatch, managed_agents=True, credential_key="phrase")
+    )
+
+
+def test_sans_agents_geres_la_cle_est_facultative(tmp_path, monkeypatch):
+    """Un relais pur ne conserve aucun identifiant : rien à chiffrer."""
+    check_managed_agents(_reglages(tmp_path, monkeypatch, managed_agents=False))

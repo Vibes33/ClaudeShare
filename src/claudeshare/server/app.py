@@ -27,7 +27,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from ..config import Settings, check_auth_mode, describe_auth
+from ..config import Settings, check_auth_mode, check_managed_agents, describe_auth
 from ..core.broker import build_broadcaster
 from sqlalchemy import select
 
@@ -110,6 +110,7 @@ def create_app(
     # cours de route : une clé API oubliée dans l'environnement basculerait la
     # facturation à l'usage sans le dire.
     check_auth_mode(settings)
+    check_managed_agents(settings)
 
     root = ensure_root(workspace_root)
     # Une clé éphémère invalide les sessions à chaque redémarrage. Acceptable en

@@ -143,6 +143,25 @@ def check_auth_mode(settings: Settings, env: dict[str, str] | None = None) -> No
         )
 
 
+def check_managed_agents(settings: Settings) -> None:
+    """Refuse d'ouvrir le dépôt d'identifiants sans de quoi les chiffrer.
+
+    Sans `credential_key`, le dépôt est refusé au coup par coup : l'interface
+    propose le champ, et le serveur répond « impossible » une fois le jeton
+    collé. C'est le pire ordre possible — on découvre l'empêchement après avoir
+    sorti son secret. Autant le dire au démarrage, à qui peut le corriger.
+    """
+    if settings.managed_agents and not settings.credential_key:
+        raise AuthModeError(
+            "Agents gérés demandés, mais CLAUDESHARE_CREDENTIAL_KEY est vide.\n"
+            "Le relais garderait alors des jetons d'abonnement sans pouvoir les "
+            "chiffrer : le dépôt est refusé, et le bouton « Démarrer mon agent » "
+            "resterait sans effet.\n\n"
+            "Corriger :  CLAUDESHARE_CREDENTIAL_KEY=$(openssl rand -base64 32)\n"
+            "Ou renoncer aux agents gérés : CLAUDESHARE_MANAGED_AGENTS=false"
+        )
+
+
 def describe_auth(settings: Settings) -> str:
     """Ligne affichée au démarrage, pour que le mode actif ne soit jamais implicite."""
     if settings.auth_mode is AuthMode.PILOT:

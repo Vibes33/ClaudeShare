@@ -164,6 +164,48 @@ joindre le port, n'importe qui peut se déclarer l'adresse qu'il veut. Les deux
 erreurs sont symétriques, d'où l'avertissement au démarrage quand on écoute hors
 de la boucle locale sans annoncer de TLS.
 
+### Déployer avec les agents gérés
+
+Le montage « tout sur un serveur » : personne n'installe rien, chacun dépose son
+jeton d'abonnement dans la page et clique sur **Démarrer mon agent**. Le relais
+lance alors un agent par profil, dans son propre conteneur.
+
+```bash
+CLAUDESHARE_MANAGED_AGENTS=true
+CLAUDESHARE_CREDENTIAL_KEY=$(openssl rand -base64 32)
+```
+
+Ces deux lignes vont dans `.env`. Sans la clé, **le serveur refuse de
+démarrer** : le dépôt serait proposé par l'interface puis rejeté une fois le
+jeton collé, ce qui fait découvrir l'empêchement après avoir sorti son secret.
+
+L'image contient déjà ce qu'il faut — le CLI Claude Code est embarqué dans la
+roue de `claude-agent-sdk`, et `bubblewrap` est installé pour son bac à sable.
+Les profils vivent dans `/state/agents`, sur le volume : la session Claude et le
+dossier de travail de chacun survivent au redéploiement.
+
+Rien à régler pour l'adresse interne : elle se déduit du port d'écoute.
+
+#### Ce que ce montage coûte, et qu'il faut savoir avant
+
+**Un conteneur, un seul utilisateur système.** Tous les profils y tournent sous
+le même uid. Ce qui les sépare n'est donc pas le système de fichiers mais la
+borne `CLAUDESHARE_AGENT_CONFINE`, posée par profil et vérifiée par le hook
+`PreToolUse`. C'est une barrière applicative : solide tant que le hook tient,
+là où des machines séparées ne dépendraient de rien.
+
+**Le relais exécute du shell pour ses utilisateurs.** C'était précisément ce
+qu'il avait cessé de faire à l'étape 10. L'activer est une décision, d'où le
+défaut à `false` et le refus de démarrer sans clé de chiffrement.
+
+**Les jetons d'abonnement sont chez vous.** Chiffrés au repos, jamais réaffichés,
+révoqués à l'arrêt de l'agent — mais présents. Qui administre la machine peut
+lire la mémoire des processus.
+
+Trois raisons de réserver ce montage à des gens dont vous répondez. Pour un
+cercle plus large, le relais seul — chacun lançant `claudeshare agent` chez lui —
+garde les identifiants et le shell sur les machines de leurs propriétaires.
+
 ### Migrations
 
 Le schéma s'obtient de deux façons : `create_all` en local et dans les tests —

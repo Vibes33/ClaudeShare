@@ -1,21 +1,36 @@
 # syntax=docker/dockerfile:1
 
-# Le **relais** ClaudeShare en conteneur.
+# Le relais ClaudeShare en conteneur, agents gérés compris.
 #
-# Ce qui n'est pas ici, et c'est le point : ni CLI Claude Code, ni bubblewrap, ni
-# identifiants d'abonnement. Le relais n'exécute rien — les sessions Claude
-# tournent chez les agents, sur les machines de leurs propriétaires
-# (`claudeshare agent`). L'image ne contient donc que du Python et le client web.
+# Le relais peut fonctionner en pur intermédiaire — les sessions Claude tournant
+# chez chacun via `claudeshare agent` — ou lancer lui-même l'agent de chaque
+# profil (`CLAUDESHARE_MANAGED_AGENTS=true`). Cette image sert les deux cas, et
+# les outille pour le second, qui est le plus exigeant.
 #
-# C'est ce qui a fait fondre l'image d'environ 1,5 Go à quelques centaines de Mo,
-# et disparaître l'arbitrage `seccomp:unconfined` : il n'y a plus de shell à
-# confiner de ce côté.
+# Le CLI Claude Code est de toute façon **déjà là** : il est embarqué dans la
+# roue de `claude-agent-sdk`, qui est une dépendance de base. L'ancienne version
+# de ce fichier affirmait le contraire ; c'était faux, et croire une image plus
+# petite qu'elle n'est mène à mal dimensionner l'hôte.
+#
+# Ce que les agents gérés ajoutent :
+#
+# - `bubblewrap`, dont le bac à sable Linux du CLI a besoin. Sans lui, le
+#   réglage `failIfUnavailable` fait **échouer le tour** au lieu de l'exécuter
+#   sans isolation — bruyant, donc réparable.
+# - `git` et `ripgrep`, que l'agent utilise constamment.
+#
+# ⚠ Un conteneur, un seul utilisateur système. Tous les profils y tournent sous
+# le même uid : ce qui les sépare est la borne `CLAUDESHARE_AGENT_CONFINE` posée
+# par profil et vérifiée par le hook, pas le système de fichiers. Voir le README.
 
 FROM python:3.12-slim-bookworm AS base
 
-# Rien d'autre que des certificats : le relais parle HTTP et SQL, point.
+# `bubblewrap` pour le bac à sable du CLI, `git` et `ripgrep` pour l'agent.
+# Aucun n'est utile au relais seul, mais les séparer en deux images ferait
+# diverger deux Dockerfile pour quelques mégaoctets.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates bubblewrap git ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.21 /uv /usr/local/bin/uv
@@ -41,10 +56,12 @@ COPY src ./src
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --extra server --extra postgres --extra redis
 
-# Utilisateur non privilégié. Le relais n'exécute pas de shell, mais un service
-# exposé sur Internet n'a aucune raison de tourner en root.
+# Utilisateur non privilégié. D'autant moins négociable avec les agents gérés :
+# le conteneur exécute alors du shell écrit par un modèle, pour des tiers.
+# `/state/agents` accueille les profils — dossier de travail et session Claude
+# de chacun — et doit donc vivre sur le volume, pas dans la couche image.
 RUN useradd --create-home --uid 10001 claudeshare \
-    && mkdir -p /state \
+    && mkdir -p /state/agents \
     && chown -R claudeshare:claudeshare /home/claudeshare /state /app
 
 USER claudeshare

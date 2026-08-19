@@ -33,6 +33,22 @@ services:
       CLAUDESHARE_REDIS_URL: "${CLAUDESHARE_REDIS_URL:-}"
       CLAUDESHARE_DB_SCHEMA: "${CLAUDESHARE_DB_SCHEMA:-create}"
 
+      # --- agents gérés ---
+      # Le relais lance lui-même l'agent de chaque profil, dans ce conteneur.
+      # Faux par défaut, et ce défaut compte : l'activer, c'est exécuter du
+      # shell pour ses utilisateurs, sur sa propre machine.
+      CLAUDESHARE_MANAGED_AGENTS: "${CLAUDESHARE_MANAGED_AGENTS:-false}"
+      # Sans cette clé, déposer un identifiant est **refusé** plutôt qu'écrit en
+      # clair. Elle est donc obligatoire dès que les agents gérés sont actifs.
+      CLAUDESHARE_CREDENTIAL_KEY: "${CLAUDESHARE_CREDENTIAL_KEY:-}"
+      # Sous le volume, pas dans la couche image : les profils portent la
+      # session Claude et le travail de chacun. Les perdre à chaque
+      # redéploiement viderait les conversations de leur contexte.
+      CLAUDESHARE_AGENT_ROOT: "/state/agents"
+      # Le bac à sable du CLI, qui contient Bash. `failIfUnavailable` fait
+      # échouer le tour s'il manque : on le voit, au lieu de tourner sans.
+      CLAUDESHARE_SANDBOX: "${CLAUDESHARE_SANDBOX:-true}"
+
     security_opt:
       - no-new-privileges:true
       # Plus de `seccomp:unconfined`. Il servait à laisser bubblewrap créer un
