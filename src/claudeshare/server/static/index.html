@@ -63,10 +63,57 @@
   <main id="rooms" hidden></main>
 
   <main id="room" hidden>
-    <section id="transcript" aria-live="polite"></section>
+    <!-- Vos autres salons, à portée de clic. Une pastille s'y allume quand
+         Claude a répondu ailleurs pendant qu'on lisait ici : sans elle, la
+         seule façon de le savoir serait d'y retourner voir. -->
+    <aside id="salons-lat" aria-label="Vos salons"></aside>
 
-    <!-- Le panneau ne sert qu'à qui héberge : caché derrière un bouton, il
-         rend au salon toute sa largeur pour le reste du monde. -->
+    <!-- La conversation et ce qu'on y écrit : une colonne, qui garde sa largeur
+         de lecture quel que soit ce qui l'entoure. -->
+    <div id="fil">
+      <section id="transcript" aria-live="polite"></section>
+
+      <!-- Une `div` et non un `form` : la CSP interdit les gestionnaires en
+           ligne, donc pas de `onsubmit="return false"`, et un vrai formulaire
+           rechargerait la page sur Entrée. Tout passe par app.js. -->
+      <div id="composer">
+        <div id="saisie">
+          <!-- Les présents : au-dessus de ce qu'on écrit, pas dans la barre. On
+               les regarde en écrivant — c'est à ce moment qu'on veut savoir qui
+               lira. -->
+          <div id="presents"></div>
+          <textarea id="prompt" rows="1" placeholder="Écrire à Claude…"></textarea>
+          <div id="saisie-pied">
+            <!-- L'avancement de la fenêtre de cinq heures, peint par app.js :
+                 l'anneau n'a de sens que quand l'agent a rapporté un quota, et
+                 c'est le code qui sait s'il l'a fait. -->
+            <span id="quota"></span>
+            <button id="joindre" type="button" aria-label="Joindre un fichier">+</button>
+            <!-- Deux réglages qui coûtent de l'argent : réservés à qui héberge,
+                 donc cachés par défaut et révélés par les droits. -->
+            <button id="choix-modele" class="reglage" type="button" hidden></button>
+            <button id="choix-effort" class="reglage" type="button" hidden></button>
+            <span id="modele"></span>
+            <span id="jetons"></span>
+            <!-- Deux tracés plutôt que des bordures pivotées : une flèche
+                 dessinée à coups de `border` et de `rotate` dépend de l'arrondi
+                 des sous-pixels, et se déforme à certaines échelles. -->
+            <button id="send" type="button" aria-label="Envoyer">
+              <svg class="icone envoi" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 20V5M5.5 11.5 12 5l6.5 6.5"/>
+              </svg>
+              <svg class="icone arret" viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="7" y="7" width="10" height="10" rx="2.5"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div id="actions"></div>
+      </div>
+    </div>
+
+    <!-- Le panneau ne sert qu'à qui héberge : caché derrière un bouton, il se
+         pose par-dessus plutôt que d'amputer la conversation en permanence. -->
     <aside id="cote" hidden>
       <h2>Hébergement</h2>
       <p id="host"></p>
@@ -80,36 +127,6 @@
       <h2>Approbations d'outil</h2>
       <div id="approvals"></div>
     </aside>
-
-    <!-- Une `div` et non un `form` : la CSP interdit les gestionnaires en
-         ligne, donc pas de `onsubmit="return false"`, et un vrai formulaire
-         rechargerait la page sur Entrée. Tout passe par app.js. -->
-    <div id="composer">
-      <div id="saisie">
-        <!-- Les présents : au-dessus de ce qu'on écrit, pas dans la barre. On
-             les regarde en écrivant — c'est à ce moment qu'on veut savoir qui
-             lira. -->
-        <div id="presents"></div>
-        <textarea id="prompt" rows="1" placeholder="Écrire à Claude…"></textarea>
-        <div id="saisie-pied">
-          <button id="joindre" type="button" aria-label="Joindre un fichier">+</button>
-          <span id="modele"></span>
-          <span id="jetons"></span>
-          <!-- Deux tracés plutôt que des bordures pivotées : une flèche
-               dessinée à coups de `border` et de `rotate` dépend de l'arrondi
-               des sous-pixels, et se déforme à certaines échelles. -->
-          <button id="send" type="button" aria-label="Envoyer">
-            <svg class="icone envoi" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 20V5M5.5 11.5 12 5l6.5 6.5"/>
-            </svg>
-            <svg class="icone arret" viewBox="0 0 24 24" aria-hidden="true">
-              <rect x="7" y="7" width="10" height="10" rx="2.5"/>
-            </svg>
-          </button>
-        </div>
-      </div>
-      <div id="actions"></div>
-    </div>
   </main>
 </div>
 

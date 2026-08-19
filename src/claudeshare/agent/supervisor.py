@@ -29,6 +29,7 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    RateLimitEvent,
     ResultMessage,
     StreamEvent,
     SystemMessage,
@@ -111,6 +112,16 @@ class SessionSupervisor:
         #: Un salon partagé impose les trois couches de défense. Un salon solo
         #: peut les relâcher, mais jamais implicitement.
         self._shared = shared
+        #: Modèle et intensité de réflexion choisis depuis l'interface. Vides =
+        #: on laisse le CLI décider, ce qui est le bon défaut : il connaît la
+        #: version courante des modèles mieux que ce programme.
+        self._model: str = ""
+        self._effort: str = ""
+        #: L'intensité de réflexion n'est qu'un drapeau de ligne de commande —
+        #: le SDK n'a pas de `set_effort`. La changer demande donc de rouvrir la
+        #: session, ce qui se fait au tour suivant plutôt qu'en plein milieu
+        #: d'une réponse. `resume` conserve la conversation.
+        self._reopen = False
         self._workspace = workspace
         self._sink = sink
         self._session_id = session_id
@@ -164,6 +175,10 @@ class SessionSupervisor:
             base.cli_path = str(self._cli_path)
         if self._session_id is not None:
             base.resume = self._session_id
+        if self._model:
+            base.model = self._model
+        if self._effort:
+            base.effort = self._effort
 
         policy = self.policy
         policy.validate()
@@ -222,6 +237,54 @@ class SessionSupervisor:
         client, self._client = self._client, None
         await client.disconnect()
 
+    @property
+    def config(self) -> dict[str, Any]:
+        """Ce que la session applique, ou appliquera au prochain tour."""
+        return {"model": self._model, "effort": self._effort, "reopen": self._reopen}
+
+    async def configure(self, *, model: str | None = None, effort: str | None = None) -> None:
+        """Change le modèle et/ou l'intensité de réflexion.
+
+        Les deux ne coûtent pas la même chose, et c'est visible ici : le modèle
+        se change **dans** la session, par une requête de contrôle, donc tout de
+        suite et sans rien perdre. L'intensité, elle, n'existe que comme drapeau
+        au lancement du CLI ; la changer veut dire rouvrir la session. On ne le
+        fait donc pas maintenant — un tour peut être en cours — mais au début du
+        tour suivant, avec `resume` pour retrouver la conversation.
+        """
+        if model is not None and model != self._model:
+            self._model = model
+            if self._client is not None:
+                # `None` et non `""` : la chaîne vide serait transmise telle
+                # quelle au CLI, qui y verrait un nom de modèle.
+                await self._client.set_model(model or None)
+
+        if effort is not None and effort != self._effort:
+            self._effort = effort
+            self._reopen = self._client is not None
+
+    async def _reopen_session(self) -> None:
+        """Rouvre la session pour appliquer un réglage de lancement.
+
+        Sur échec on garde la session en place : perdre la conversation parce
+        qu'une intensité de réflexion n'a pas pris serait un très mauvais
+        marché.
+        """
+        self._reopen = False
+        ancien = self._client
+        if ancien is None:
+            return
+        self._client = None
+        try:
+            await ancien.disconnect()
+            await self.start()
+        except Exception:
+            logger.exception("réouverture de session impossible")
+            self._client = self._client or ancien
+            await self._emit(
+                EventType.SESSION_ERROR, None, None, {"reason": "reopen_failed"}
+            )
+
     async def __aenter__(self) -> SessionSupervisor:
         await self.start()
         return self
@@ -244,6 +307,10 @@ class SessionSupervisor:
             raise TurnBusyError(f"Tour {self._current_turn} déjà en cours.")
 
         async with self._turn_lock:
+            # Entre deux tours, jamais pendant : c'est le seul moment où couper
+            # le CLI ne coupe la réponse de personne.
+            if self._reopen:
+                await self._reopen_session()
             turn_id = turn_id or uuid.uuid4().hex[:12]
             self._current_turn = turn_id
             self._current_author = author
@@ -360,6 +427,8 @@ class SessionSupervisor:
                 return self._translate_stream(message, turn_id, author)
             case AssistantMessage():
                 return self._translate_assistant(message, turn_id, author)
+            case RateLimitEvent():
+                return self._translate_rate_limit(message)
             case UserMessage():
                 # Les UserMessage entrants portent les résultats d'outils que le
                 # CLI renvoie à Claude ; le prompt de l'humain, lui, est déjà
@@ -383,6 +452,26 @@ class SessionSupervisor:
                     "model": data.get("model"),
                     "tools": data.get("tools", []),
                     "cwd": data.get("cwd"),
+                },
+            )
+        ]
+
+    def _translate_rate_limit(self, message: RateLimitEvent) -> list[Event]:
+        """L'état du quota, tel que le CLI le rapporte.
+
+        Émis par le CLI **aux transitions** seulement — pas à chaque tour. Une
+        interface qui l'affiche doit donc dire quand elle ne sait pas, plutôt
+        que de montrer une jauge à zéro qui se lirait comme « rien consommé ».
+        """
+        info = message.rate_limit_info
+        return [
+            Event(
+                type=EventType.RATE_LIMIT,
+                data={
+                    "status": info.status,
+                    "utilization": info.utilization,
+                    "resets_at": info.resets_at,
+                    "window": info.rate_limit_type,
                 },
             )
         ]

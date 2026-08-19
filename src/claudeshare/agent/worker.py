@@ -174,6 +174,17 @@ class Hosted:
         await self.agent.stop()
 
 
+def _texte(valeur: Any) -> str | None:
+    """Une chaîne, ou `None` si le champ était absent.
+
+    La distinction porte du sens jusqu'au superviseur : `""` veut dire « laisse
+    le CLI choisir », `None` veut dire « ne touche pas à ce réglage ». Les
+    confondre ferait remettre le modèle par défaut à chaque changement
+    d'intensité.
+    """
+    return None if valeur is None else str(valeur)
+
+
 class Worker:
     """Le démon d'une personne : une socket, plusieurs salons."""
 
@@ -237,6 +248,12 @@ class Worker:
             case AgentMessage.RUN_TURN:
                 if salon := self.hosted.get(room_id):
                     await salon.run(data)
+            case AgentMessage.RUN_CONFIGURE:
+                if salon := self.hosted.get(room_id):
+                    await salon.agent.configure(
+                        model=_texte(data.get("model")),
+                        effort=_texte(data.get("effort")),
+                    )
             case AgentMessage.RUN_INTERRUPT:
                 if salon := self.hosted.get(room_id):
                     await salon.agent.interrupt()

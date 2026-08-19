@@ -25,7 +25,7 @@ from ..core.broker import Broadcaster, InProcessBroadcaster
 from ..core.eventlog import EventLog, LogStore
 from ..core.floor import Denial, Floor, Outcome
 from ..events import Event, EventType
-from ..protocol import ServerMessage, envelope
+from ..protocol import EFFORTS, MODELS, ServerMessage, envelope
 from .agentlink import AbsentAgent, AgentLink, NoAgentError
 from .approvals import ApprovalDesk
 
@@ -82,10 +82,43 @@ class Room:
         self._avatars: dict[str, str] = {}
         self._audit: list[AuditRecord] = []
         self._turn: asyncio.Task[Any] | None = None
+        #: Modèle et intensité de réflexion demandés depuis l'interface. Ce que
+        #: le salon a *demandé*, pas ce que la session applique : seule la
+        #: machine de l'hôte le sait, et elle l'annonce par `session.ready`.
+        self.config: dict[str, str] = {"model": "", "effort": ""}
+        #: Dernier état de quota rapporté par l'agent, ou `None` tant qu'il n'a
+        #: rien dit. Le `None` compte : une jauge à zéro se lirait « rien
+        #: consommé », ce qui est un mensonge quand on ne sait pas.
+        self.quota: dict[str, Any] | None = None
+        #: `seq` de la dernière réponse terminée. Sert aux interfaces à savoir
+        #: qu'il s'est passé quelque chose *ici* pendant qu'on regardait
+        #: ailleurs — d'où `turn.ended` et non `last_seq`, qu'une simple demande
+        #: de parole ferait avancer.
+        self._last_reply = self._derniere_reponse()
         #: L'agent qui héberge, ou son absence. Un objet plutôt qu'un `None` :
         #: `busy` et `session_id` sont lus par les routes, l'instantané et le
         #: WebSocket, et un test de présence oublié se verrait à l'exécution.
         self.agent: AgentLink | AbsentAgent = AbsentAgent()
+
+    def _derniere_reponse(self) -> int:
+        """Retrouve dans le journal le `seq` de la dernière réponse rendue.
+
+        Relu au montage plutôt que reparti de zéro : sans ça, un relais qui
+        redémarre effacerait les pastilles de tout le monde — ou pire, les
+        allumerait toutes.
+        """
+        return max(
+            (
+                int(e.get("seq") or 0)
+                for e in self.log.since(0).events
+                if e.get("type") == str(EventType.TURN_ENDED)
+            ),
+            default=0,
+        )
+
+    @property
+    def last_reply(self) -> int:
+        return self._last_reply
 
     # ------------------------------------------------------------ hébergement
 
@@ -131,6 +164,10 @@ class Room:
     async def _on_event(self, event: Event) -> None:
         """Journalise puis diffuse. L'ordre compte : le `seq` vient du journal."""
         logged = self.log.append(event)
+        if event.type is EventType.RATE_LIMIT:
+            self.quota = dict(event.data)
+        elif event.type is EventType.TURN_ENDED and logged is not None:
+            self._last_reply = logged.seq
         await self.broker.publish(
             self.id,
             envelope(
@@ -255,6 +292,13 @@ class Room:
                 # pas soumettre. Le dire est plus utile qu'un envoi qui échoue.
                 "agent": self.agent.view(),
                 "floor": self.floor.view(),
+                # Ce qui a été demandé, et ce qui est proposable. Les listes
+                # viennent du serveur : les redire dans le JavaScript ferait
+                # deux vocabulaires à tenir d'accord pour un menu déroulant.
+                "config": dict(self.config),
+                "options": {"models": list(MODELS), "efforts": list(EFFORTS)},
+                # `None` tant que l'agent n'a rien rapporté — voir `quota`.
+                "quota": self.quota,
                 # Sans ça, arriver pendant une demande d'approbation montrerait
                 # un tour figé sans dire pourquoi.
                 "approvals": self.approvals.pending(),
@@ -312,6 +356,32 @@ class Room:
 
         self._turn = asyncio.create_task(run())
         return Submission(started=True)
+
+    async def configure(
+        self, *, who: str, model: str | None = None, effort: str | None = None
+    ) -> None:
+        """Change le modèle ou l'intensité de réflexion de la session.
+
+        Le relais valide contre ses propres listes avant de transmettre : ce qui
+        part d'ici finit en drapeau de ligne de commande sur la machine de
+        quelqu'un, et une valeur libre venue d'un navigateur n'a rien à y faire.
+
+        L'événement est émis même sans agent connecté : le réglage est une
+        propriété du salon, et il s'appliquera à la prochaine session.
+        """
+        if model is not None:
+            if model not in MODELS:
+                raise ValueError(f"modèle inconnu : {model!r}")
+            self.config["model"] = model
+        if effort is not None:
+            if effort not in EFFORTS:
+                raise ValueError(f"intensité inconnue : {effort!r}")
+            self.config["effort"] = effort
+
+        await self.agent.configure(model=model, effort=effort)
+        await self._on_event(
+            Event(type=EventType.SESSION_CONFIG, author=who, data=dict(self.config))
+        )
 
     # ------------------------------------------------------- jeton de parole
 

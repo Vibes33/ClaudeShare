@@ -185,3 +185,37 @@ def test_les_fichiers_statiques_se_revalident(client):
     # L'ETag est ce qui rend la révalidation bon marché : sans lui, « demander
     # avant de servir » voudrait dire tout retélécharger à chaque page.
     assert reponse.headers.get("etag")
+
+
+def test_la_derniere_reponse_est_publiee_pour_les_pastilles(harness: Harness, client):
+    """Une interface doit pouvoir dire « ça a répondu ailleurs » sans y aller.
+
+    « Dernière réponse » et non « dernier événement » : une demande de parole,
+    une arrivée, un changement de réglage font avancer le `seq` du salon sans
+    qu'il se soit rien passé qu'on ait envie de lire.
+    """
+    from .test_ws_flow import expect, greet, send
+
+    alice = harness.user("alice")
+    room = harness.room(alice, workspace="a")
+    entete = harness.auth(harness.token(alice))
+
+    def vue() -> dict:
+        return next(r for r in client.get("/api/rooms", headers=entete).json() if r["id"] == room)
+
+    with client.websocket_connect(f"/ws/rooms/{room}", headers=entete) as ws:
+        greet(ws)
+        # Le salon est monté, personne n'a encore répondu.
+        assert vue()["last_reply"] == 0
+
+        ws.send_json(send("bonjour"))
+        expect(ws, "turn.ended")
+        avant = vue()
+        assert avant["last_reply"] > 0
+
+        # Une demande de parole avance le journal, pas la dernière réponse.
+        ws.send_json({"v": 1, "type": "floor.release", "data": {}})
+        expect(ws, "floor.changed")
+        apres = vue()
+        assert apres["last_seq"] > avant["last_seq"]
+        assert apres["last_reply"] == avant["last_reply"]

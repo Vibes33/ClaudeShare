@@ -15,18 +15,8 @@
  * la règle du client, et `tests/test_protocol.py` la vérifie.
  */
 
-import { replace } from "./render.js";
+import { replace, svg } from "./render.js";
 import { boutonMetal } from "./ui.js";
-
-const SVG_NS = "http://www.w3.org/2000/svg";
-
-/** Création d'un nœud SVG. `document.createElement` ne convient pas ici : il
- *  produirait un élément HTML du même nom, invisible dans un `<svg>`. */
-function svg(nom, attributs = {}) {
-  const el = document.createElementNS(SVG_NS, nom);
-  for (const [cle, valeur] of Object.entries(attributs)) el.setAttribute(cle, valeur);
-  return el;
-}
 
 /** Les cinq couleurs du dégradé révélé, dans l'ordre de l'original. */
 const COULEURS = ["#eab308", "#ef4444", "#3b82f6", "#06b6d4", "#8b5cf6"];

@@ -9,7 +9,7 @@
  * Tout est construit par le DOM, jamais depuis une chaîne de balisage.
  */
 
-import { elem } from "./render.js";
+import { elem, svg } from "./render.js";
 
 /**
  * Le bouton « métal liquide », repris de jolyui et porté en CSS.
@@ -231,8 +231,18 @@ export function menu(declencheur, contenu) {
       ancre.right - panneau.offsetWidth,
       window.innerWidth - panneau.offsetWidth - 8,
     ));
+    // Vers le haut quand le bas manque de place. Les déclencheurs de la zone de
+    // saisie sont à quelques pixels du pli : un menu systématiquement ouvert
+    // vers le bas y sortirait de l'écran, et ses entrées seraient inatteignables.
+    const dessous = window.innerHeight - ancre.bottom - 8;
+    const versLeHaut = dessous < panneau.offsetHeight && ancre.top > dessous;
     panneau.style.setProperty("left", `${gauche}px`);
-    panneau.style.setProperty("top", `${ancre.bottom + 8}px`);
+    panneau.style.setProperty(
+      "top",
+      versLeHaut
+        ? `${Math.max(8, ancre.top - panneau.offsetHeight - 8)}px`
+        : `${ancre.bottom + 8}px`,
+    );
     requestAnimationFrame(() => panneau && panneau.classList.add("ouvert"));
 
     // En capture : un clic sur un autre bouton doit fermer ce menu avant que ce
@@ -269,4 +279,51 @@ export function aide(texte, titre, explication) {
   avecBulle(marque, titre, explication);
   ligne.append(elem("span", "", texte), marque);
   return ligne;
+}
+
+/**
+ * Un anneau de progression, petit et muet.
+ *
+ * Deux cercles superposés : la piste complète, et l'arc qui la recouvre sur la
+ * fraction consommée. L'arc est obtenu par `stroke-dasharray` — un tiret long
+ * de la fraction voulue, suivi d'un vide qui fait le tour — plutôt qu'en
+ * calculant des points : un arc décrit par ses extrémités bascule de sens à
+ * mi-course, et il faut alors s'occuper du drapeau `large-arc`.
+ *
+ * `fraction` vaut `null` quand on ne sait pas. C'est un état à part entière, et
+ * il se dessine autrement : un anneau vide se lit « rien consommé », ce qui est
+ * un mensonge quand la réponse est « aucune idée ».
+ */
+export function anneau(fraction, { titre = "", taille = 20 } = {}) {
+  const rayon = 8;
+  const tour = 2 * Math.PI * rayon;
+  const part = fraction === null ? 0 : Math.max(0, Math.min(1, fraction));
+
+  const racine = svg("svg", {
+    class: `anneau${fraction === null ? " inconnu" : ""}`,
+    viewBox: "0 0 20 20",
+    width: taille,
+    height: taille,
+    "aria-hidden": "true",
+  });
+  const commun = { cx: 10, cy: 10, r: rayon, fill: "none", "stroke-width": 2.5 };
+  racine.appendChild(svg("circle", { ...commun, class: "anneau-piste" }));
+  if (fraction !== null) {
+    racine.appendChild(
+      svg("circle", {
+        ...commun,
+        class: "anneau-arc",
+        "stroke-linecap": "round",
+        "stroke-dasharray": `${(part * tour).toFixed(2)} ${tour.toFixed(2)}`,
+        // Le tracé d'un cercle SVG démarre à droite : sans cette rotation,
+        // la jauge se remplirait depuis trois heures et non depuis midi.
+        transform: "rotate(-90 10 10)",
+      }),
+    );
+  }
+
+  const boite = elem("span", "anneau-boite");
+  if (titre) boite.title = titre;
+  boite.appendChild(racine);
+  return boite;
 }

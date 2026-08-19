@@ -57,6 +57,10 @@ class FakeClient:
         self.options = options
         self.scripts: list[list[Any]] = scripts or []
         self.prompts: list[str] = []
+        #: Modèles reçus par `set_model`, dans l'ordre. C'est la seule trace
+        #: qu'un changement de modèle laisse : il ne repasse pas par les
+        #: options, il part en requête de contrôle.
+        self.models: list[str | None] = []
         self.interrupts = 0
         self.connected = False
         #: Quand il est posé, `receive_response` s'y bloque avant de produire le
@@ -76,6 +80,9 @@ class FakeClient:
 
     async def query(self, prompt: str, session_id: str = "default") -> None:
         self.prompts.append(prompt)
+
+    async def set_model(self, model: str | None = None) -> None:
+        self.models.append(model)
 
     async def interrupt(self) -> None:
         self.interrupts += 1

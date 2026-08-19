@@ -256,6 +256,17 @@ async def _pump_up(
                     cible = who
                 await _report(websocket, room, await room.grant_floor(cible, immediate=True))
 
+            case ClientMessage.SESSION_CONFIGURE:
+                # `room.settings` et rien d'autre : le modèle et l'intensité
+                # décident de ce que coûte chaque tour, et c'est l'abonnement de
+                # qui héberge qui est consommé.
+                if str(Capability.SETTINGS) not in capabilities():
+                    await websocket.send_json(
+                        error(room.id, "forbidden", "vous ne réglez pas cette session")
+                    )
+                    continue
+                await _handle_configure(websocket, room, who, data)
+
             case ClientMessage.TOOL_APPROVE:
                 await _handle_approval(websocket, room, who, data, capabilities())
 
@@ -318,6 +329,29 @@ async def _handle_prompt(
         refus = error(room.id, issue.reason, _EXPLICATIONS.get(issue.reason, ""))
         refus["data"].update(room.floor.view())
         await websocket.send_json(refus)
+
+
+async def _handle_configure(
+    websocket: WebSocket, room: Room, who: str, data: dict[str, Any]
+) -> None:
+    """Applique un réglage de session, ou dit pourquoi il est refusé."""
+    champs: dict[str, str | None] = {}
+    for nom in ("model", "effort"):
+        valeur = data.get(nom)
+        if valeur is None:
+            continue
+        if not isinstance(valeur, str):
+            await websocket.send_json(error(room.id, "bad_message", f"`{nom}` doit être une chaîne"))
+            return
+        champs[nom] = valeur
+    if not champs:
+        await websocket.send_json(error(room.id, "bad_message", "aucun réglage fourni"))
+        return
+
+    try:
+        await room.configure(who=who, **champs)
+    except ValueError as exc:
+        await websocket.send_json(error(room.id, "bad_message", str(exc)))
 
 
 async def _handle_approval(

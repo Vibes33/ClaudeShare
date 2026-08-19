@@ -61,6 +61,11 @@ def _room_view(
             "present": live.present,
             "busy": live.agent.busy,
             "last_seq": live.log.last_seq,
+            # `seq` de la dernière réponse rendue. Une interface s'en sert pour
+            # allumer une pastille sur un salon où Claude a répondu pendant
+            # qu'on lisait ailleurs — d'où « dernière réponse » et non
+            # « dernier événement », qu'une demande de parole ferait avancer.
+            "last_reply": live.last_reply,
             # Un salon monté mais sans agent est lisible, pas exécutable. La
             # distinction est la première chose qu'une interface doit montrer.
             "hosted": live.hosted,

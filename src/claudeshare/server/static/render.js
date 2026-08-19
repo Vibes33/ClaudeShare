@@ -146,6 +146,19 @@ export function renderInline(text) {
  * sélection ramasserait les frontières. Le lire depuis une variable plutôt que
  * depuis le DOM met cette différence hors de portée.
  */
+//: Le bouton de copie est-il proposé ? Posé par l'application selon les droits
+//: qu'a la personne dans le salon ouvert.
+//:
+//: **Ce n'est pas une protection.** Le texte reste sélectionnable, et le code
+//: qui décide vit dans le navigateur de qui regarde. Ce que ce drapeau enlève,
+//: c'est le geste à un clic — pas l'accès au contenu, qui est déjà affiché.
+let copiable = true;
+
+/** Propose, ou non, le bouton de copie des blocs de code. */
+export function autoriserCopie(oui) {
+  copiable = !!oui;
+}
+
 function codeBlock(lines, language) {
   const source = lines.join("\n");
 
@@ -158,7 +171,7 @@ function codeBlock(lines, language) {
   nom.className = "bloc-code-langue";
   nom.textContent = language || "texte";
   tete.appendChild(nom);
-  tete.appendChild(boutonCopier(source));
+  if (copiable) tete.appendChild(boutonCopier(source));
 
   const pre = document.createElement("pre");
   const code = document.createElement("code");
@@ -295,6 +308,21 @@ function takeWhile(lines, start, garde, extrait) {
 /** Remplace le contenu d'un élément. Le seul endroit qui vide un nœud. */
 export function replace(el, ...enfants) {
   el.replaceChildren(...enfants);
+  return el;
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/**
+ * Création d'un nœud SVG.
+ *
+ * `document.createElement` ne convient pas : il produirait un élément HTML du
+ * même nom, qui n'affiche rien dans un `<svg>` et ne signale rien non plus —
+ * exactement le genre de panne muette qu'on passe une soirée à chercher.
+ */
+export function svg(nom, attributs = {}) {
+  const el = document.createElementNS(SVG_NS, nom);
+  for (const [cle, valeur] of Object.entries(attributs)) el.setAttribute(cle, String(valeur));
   return el;
 }
 

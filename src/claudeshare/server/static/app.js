@@ -12,9 +12,9 @@
 // 3. **Afficher sans jamais interpréter.** Voir `render.js` : aucun `innerHTML`.
 
 import { ClientMessage, ServerMessage, EventType, Capability, frame } from "./protocol.js";
-import { renderMarkdown, elem, replace } from "./render.js";
+import { renderMarkdown, elem, replace, autoriserCopie } from "./render.js";
 import { monterConnexion } from "./login.js";
-import { bouton, boutonChargement, aide, menu, entreeMenu } from "./ui.js";
+import { anneau, bouton, boutonChargement, aide, menu, entreeMenu } from "./ui.js";
 
 //: Repli de reconnexion. Croît jusqu'à ce plafond pour ne pas marteler un
 //: serveur qui redémarre, tout en restant assez court pour qu'un réveil de
@@ -41,6 +41,17 @@ const state = {
   jetons: { entree: 0, sortie: 0 },
   //: Le modèle que l'agent a réellement ouvert, annoncé par `session.ready`.
   modele: "",
+  //: Le modèle et l'intensité **demandés** depuis l'interface. Distincts de
+  //: `modele` ci-dessus : celui-là est ce que la session a ouvert, ceux-ci sont
+  //: ce qu'on lui a demandé. Ils diffèrent le temps qu'un réglage prenne effet,
+  //: et confondre les deux ferait afficher un changement qui n'a pas eu lieu.
+  config: { model: "", effort: "" },
+  //: Ce que le serveur accepte comme valeurs. Reçu, jamais deviné : redire ces
+  //: listes ici ferait deux vocabulaires à tenir d'accord.
+  options: { models: [], efforts: [] },
+  //: Dernier état de quota rapporté par l'agent, ou `null` tant qu'il n'a rien
+  //: dit. Le `null` compte — voir `dessinerQuota`.
+  quota: null,
   //: Qui héberge le salon. Sans agent, on lit mais on n'exécute pas.
   agent: { connected: false, host: null, workspace: "" },
   //: Mon propre démon, tel que `/api/agent` le décrit. Distinct de `agent`
@@ -56,6 +67,10 @@ const state = {
   signalees: new Set(),
   //: Dernier prompt envoyé, rendu à son auteur si la parole lui manque.
   brouillon: "",
+  //: Vrai pendant le rejeu d'un instantané. Ce qui s'est passé avant qu'on
+  //: arrive n'est pas une nouvelle : sans ce drapeau, revenir dans un salon
+  //: rejouerait en fanfare les demandes de parole de la séance d'avant.
+  rejeu: false,
   title: "",
 };
 
@@ -70,7 +85,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     "app", "login", "providers", "rooms", "room", "title", "status", "who",
     "transcript", "composer", "prompt", "send", "requests", "host", "code",
     "titre-connexion", "barre", "porteur", "presents", "ouvrir-cote", "cote",
-    "saisie", "joindre", "modele", "jetons",
+    "saisie", "joindre", "modele", "jetons", "quota", "fil", "salons-lat",
+    "choix-modele", "choix-effort",
     "approvals", "toasts", "actions",
   ]) {
     dom[id] = document.getElementById(id);
@@ -78,6 +94,11 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   dom.send.addEventListener("click", envoyer);
   dom.prompt.addEventListener("input", ajusterHauteur);
+  menu(dom["choix-modele"], panneauModele);
+  menu(dom["choix-effort"], panneauEffort);
+  // `passive: false` : sans lui le navigateur refuse le `preventDefault`, et la
+  // page défilerait *en plus* de la conversation.
+  window.addEventListener("wheel", molette, { passive: false });
   // Le panneau du salon s'ouvre et se ferme par le même bouton, dont la croix
   // dit l'état courant.
   dom["ouvrir-cote"].addEventListener("click", () => {
@@ -101,7 +122,35 @@ document.addEventListener("DOMContentLoaded", async () => {
   menu(dom.who, panneauProfil);
   await rafraichir();
   router();
+  // Ce qui se passe dans les autres salons n'arrive par aucune socket : on n'en
+  // ouvre qu'une, celle du salon regardé. D'où ce sondage — modeste, et suspendu
+  // dès que l'onglet passe à l'arrière-plan par le navigateur lui-même.
+  setInterval(majSalons, SONDAGE_MS);
+  window.addEventListener("focus", majSalons);
 });
+
+//: Intervalle du sondage des autres salons. Assez lent pour ne rien coûter,
+//: assez court pour qu'une pastille apparaisse pendant qu'on lit.
+const SONDAGE_MS = 20000;
+
+/**
+ * Fait défiler la conversation depuis n'importe où.
+ *
+ * Le fil de discussion n'occupe qu'une colonne au milieu de l'écran : la molette
+ * dans les marges ne tombait sur rien, et donnait une page morte. On la redirige
+ * donc — sauf au-dessus de ce qui n'a délibérément pas à bouger (la barre, la
+ * zone de saisie, les panneaux), où l'inertie est le comportement voulu.
+ */
+function molette(e) {
+  if (dom.room.hidden || !(e.target instanceof Element)) return;
+  // Déjà dans le fil, ou dans un bloc qui défile chez lui : le navigateur fait
+  // ça mieux que nous, avec l'inertie et le rebond.
+  if (e.target.closest("#transcript")) return;
+  if (e.target.closest("#barre, #composer, #cote, #salons-lat, .menu, .bulle")) return;
+  // `deltaMode` vaut 1 quand la molette compte en lignes plutôt qu'en pixels.
+  dom.transcript.scrollTop += e.deltaY * (e.deltaMode === 1 ? 16 : 1);
+  e.preventDefault();
+}
 
 /** L'avatar, ou ses initiales à défaut. Jamais un trou dans la barre. */
 function vignette(me, classe = "vignette") {
@@ -275,6 +324,65 @@ async function afficherConnexion() {
       elem("p", "vide", "Aucun fournisseur OAuth n'est configuré sur ce serveur."),
     );
   }
+}
+
+//: Où l'on retient, par salon, le `seq` atteint la dernière fois qu'on y était.
+//: Dans le navigateur et non sur le serveur : c'est une propriété de *cet
+//: écran-ci*, pas du compte — deux onglets sur deux salons différents ont
+//: chacun raison de leur côté.
+const VUS = "claudeshare.vus";
+
+function vus() {
+  // `localStorage` lève dans un contexte cloisonné, et un salon inaccessible
+  // parce qu'un navigateur refuse un stockage serait une belle panne.
+  try {
+    return JSON.parse(localStorage.getItem(VUS) || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+
+function ecrireVus(table) {
+  try {
+    localStorage.setItem(VUS, JSON.stringify(table));
+  } catch {
+    /* rien à faire : la pastille sera juste moins fidèle. */
+  }
+}
+
+/** Note qu'on a vu ce salon jusque-là. */
+function marquerVu(roomId, seq) {
+  if (!roomId) return;
+  const table = vus();
+  table[roomId] = Math.max(table[roomId] || 0, seq || 0);
+  ecrireVus(table);
+}
+
+/**
+ * Relit la liste des salons, et redessine la colonne de gauche.
+ *
+ * Ne touche pas à l'accueil : on peut être en train d'y taper un titre de
+ * salon, et le repeindre effacerait le champ sous les doigts.
+ */
+async function majSalons() {
+  if (!state.me) return;
+  const salons = await json("/api/rooms");
+  if (!salons) return;
+  state.rooms = salons;
+
+  // Un salon qu'on découvre part sans pastille : sur un navigateur neuf, tout
+  // serait « nouveau », et une colonne entièrement allumée ne signale rien.
+  const table = vus();
+  let neuf = false;
+  for (const r of salons) {
+    if (!(r.id in table)) {
+      table[r.id] = r.last_reply || 0;
+      neuf = true;
+    }
+  }
+  if (neuf) ecrireVus(table);
+
+  if (!dom.room.hidden) dessinerSalonsLat();
 }
 
 async function rafraichir() {
@@ -736,6 +844,11 @@ function fermer() {
   // à l'écran, à décrire un salon qu'on venait de quitter.
   replace(dom.porteur);
   replace(dom.presents);
+  replace(dom["salons-lat"]);
+  replace(dom.quota);
+  // Les blocs de code redeviennent copiables : le refus appartenait au salon
+  // qu'on vient de quitter, et l'oublier ici le ferait suivre dans le suivant.
+  autoriserCopie(true);
   dom.cote.hidden = true;
   dom["ouvrir-cote"].hidden = true;
   dom["ouvrir-cote"].classList.remove("ouvert");
@@ -810,6 +923,12 @@ function instantane(d) {
   state.lastSeq = d.last_seq || 0;
   // Des états, pas un historique : l'instantané fait autorité dessus.
   state.caps = new Set(d.capabilities || []);
+  // Posé avant tout rendu : la copie des blocs de code dépend des droits, et
+  // les événements rejoués juste en dessous produisent déjà des blocs.
+  autoriserCopie(peut(Capability.SETTINGS));
+  state.config = d.config || state.config;
+  state.options = d.options || state.options;
+  state.quota = d.quota ?? state.quota;
   state.present = d.present || [];
   state.avatars = d.avatars || {};
   state.floor = d.floor || state.floor;
@@ -825,7 +944,14 @@ function instantane(d) {
     replace(dom.transcript);
   }
 
-  for (const e of d.events || []) evenement(e.type, e);
+  // Le rejeu n'est pas l'actualité : pendant ce temps, rien ne notifie. Sans
+  // ce drapeau, rouvrir un salon ferait resurgir les alertes de la veille.
+  state.rejeu = true;
+  try {
+    for (const e of d.events || []) evenement(e.type, e);
+  } finally {
+    state.rejeu = false;
+  }
   // **Remplacer**, jamais concaténer : se reconnecter en plein tour dupliquerait
   // sinon tout le texte déjà reçu.
   for (const [turnId, texte] of Object.entries(d.partials || {})) {
@@ -833,7 +959,14 @@ function instantane(d) {
     dirty.add(turnId);
   }
 
+  // Ce qui attendait déjà à notre arrivée est connu, pas nouveau : le panneau
+  // le montre, et le signaler à nouveau ferait de chaque reconnexion une volée
+  // d'alertes pour des demandes qu'on a sous les yeux.
+  state.signalees = new Set((state.floor.requests || []).map((r) => r.who));
+
   statut("connecté");
+  // Arriver, c'est avoir vu : la pastille de ce salon-ci s'éteint.
+  marquerVu(state.roomId, state.lastSeq);
   // Un trou annoncé vaut infiniment mieux qu'un trou silencieux : sans ça, la
   // conversation commencerait au milieu sans que personne ne le sache.
   if (d.truncated) toast("Le début de l'historique a été tronqué par le serveur.");
@@ -900,6 +1033,9 @@ function evenement(type, d) {
       const u = d.usage || {};
       state.jetons.entree += (u.input_tokens || 0) + (u.cache_read_input_tokens || 0);
       state.jetons.sortie += u.output_tokens || 0;
+      // Ce qu'on vient de lire est vu par définition — sinon le salon ouvert
+      // s'allumerait lui-même à chaque réponse.
+      marquerVu(state.roomId, state.lastSeq);
       break;
     }
     case EventType.TOOL_APPROVAL_REQUESTED:
@@ -909,6 +1045,11 @@ function evenement(type, d) {
       state.approvals.delete(d.approval_id);
       break;
     case EventType.FLOOR_CHANGED:
+      // Pendant un rejeu : rien. L'instantané porte déjà l'état **courant** du
+      // jeton, et rejouer l'historique par-dessus le remplacerait par celui
+      // d'il y a dix minutes — un panneau qui affiche des demandes tranchées
+      // depuis longtemps, et des alertes avec.
+      if (state.rejeu) break;
       signalerDemandes(d);
       state.floor = d;
       if (d.holder === state.me.label) state.queued = null;
@@ -916,11 +1057,26 @@ function evenement(type, d) {
     case EventType.SESSION_READY:
       state.modele = d.model || state.modele;
       break;
+    case EventType.SESSION_CONFIG:
+      state.config = { model: d.model || "", effort: d.effort || "" };
+      // Signalé à tout le salon : le réglage décide de ce que coûte le tour
+      // suivant, et le subir sans le savoir serait désagréable.
+      if (!state.rejeu && d.author && d.author !== state.me.label) {
+        toast(`${d.author} a réglé la session : ${etiquetteReglages()}.`);
+      }
+      break;
     case EventType.SESSION_ERROR:
       toast(`Session en erreur : ${d.reason || "inconnue"}`);
       break;
     case EventType.RATE_LIMIT:
-      toast("Quota d'abonnement atteint côté hôte.");
+      state.quota = d;
+      // L'agent rapporte aussi les états sains : ne parler que du refus et de
+      // l'avertissement, l'anneau se charge du reste sans interrompre personne.
+      if (!state.rejeu && d.status === "rejected") {
+        toast("Quota d'abonnement atteint côté hôte.");
+      } else if (!state.rejeu && d.status === "allowed_warning") {
+        toast("L'abonnement de l'hôte approche de sa limite.");
+      }
       break;
     default:
       return;
@@ -962,7 +1118,7 @@ function envoyer() {
  */
 function ajusterHauteur() {
   dom.prompt.style.setProperty("height", "auto");
-  dom.prompt.style.setProperty("height", `${Math.min(dom.prompt.scrollHeight, 200)}px`);
+  dom.prompt.style.setProperty("height", `${Math.min(dom.prompt.scrollHeight, 320)}px`);
 }
 
 function decider(approvalId, allow) {
@@ -989,6 +1145,7 @@ function peindre(complet = false) {
 
 function dessiner() {
   dom.title.textContent = state.title;
+  dessinerSalonsLat();
   dessinerPorteur();
   dessinerPresents();
   dessinerHote();
@@ -1066,15 +1223,182 @@ function dessinerPresents() {
   }
 }
 
-/** Le pied du composeur : le modèle en cours et ce qu'on a consommé. */
+//: Les intensités de réflexion, dites en français. La valeur vide laisse le
+//: choix au CLI, qui connaît le défaut du modèle mieux que cette page.
+const INTENSITES = {
+  "": "auto",
+  low: "minimale",
+  medium: "moyenne",
+  high: "élevée",
+  xhigh: "très élevée",
+  max: "maximale",
+};
+
+/** Le réglage courant, en une ligne — pour un message, pas pour un bouton. */
+function etiquetteReglages() {
+  const { model, effort } = state.config;
+  return `${model || "modèle par défaut"}, réflexion ${INTENSITES[effort] ?? effort}`;
+}
+
+/**
+ * Le nom du modèle, raccourci pour tenir dans une barre d'outils.
+ *
+ * `claude-opus-4-6-20260514` ne dit rien de plus qu'`opus` à qui regarde en
+ * écrivant, et prend cinq fois la place.
+ */
+function courtModele(nom) {
+  const m = String(nom || "").match(/(opus|sonnet|haiku)/i);
+  return m ? m[1].toLowerCase() : nom || "";
+}
+
+/**
+ * Le pied du composeur : le quota, les réglages, ce qu'on a consommé.
+ *
+ * Les deux réglages sont des **boutons** pour qui héberge, et un simple libellé
+ * pour les autres : le modèle décide de ce que coûte chaque tour, et c'est
+ * l'abonnement de l'hôte qui est consommé.
+ */
 function dessinerPied() {
-  dom.modele.textContent = state.modele || "";
+  const regle = peut(Capability.SETTINGS);
+
+  dom["choix-modele"].hidden = !regle;
+  dom["choix-effort"].hidden = !regle;
+  dom.modele.hidden = regle;
+  dom.modele.textContent = regle ? "" : courtModele(state.modele);
+
+  if (regle) {
+    const modele = state.config.model || courtModele(state.modele) || "auto";
+    dom["choix-modele"].textContent = modele;
+    dom["choix-modele"].title = state.config.model
+      ? `Modèle demandé : ${state.config.model}. En cours : ${state.modele || "—"}.`
+      : "Le modèle est laissé au choix de l'agent. Cliquez pour en imposer un.";
+
+    const effort = state.config.effort;
+    dom["choix-effort"].textContent = `réflexion ${INTENSITES[effort] ?? effort}`;
+    // Dit une fois ici plutôt que découvert après coup : changer l'intensité
+    // rouvre la session Claude, ce qui ne peut pas se faire en pleine réponse.
+    dom["choix-effort"].title =
+      "L'intensité de réflexion n'existe qu'au lancement de la session : "
+      + "elle prend effet au tour suivant, sans perdre la conversation.";
+  }
+
+  dessinerQuota();
+
   const { entree, sortie } = state.jetons;
   const total = entree + sortie;
   dom.jetons.textContent = total ? `${millers(total)} jetons` : "";
   dom.jetons.title = total
     ? `${millers(entree)} en entrée, ${millers(sortie)} en sortie, depuis l'ouverture de cette page.`
     : "";
+}
+
+//: Ce que le CLI appelle chaque fenêtre de quota, en français.
+const FENETRES = {
+  five_hour: "la session de 5 h",
+  seven_day: "la semaine",
+  seven_day_opus: "la semaine (Opus)",
+  seven_day_sonnet: "la semaine (Sonnet)",
+  overage: "le dépassement",
+};
+
+/**
+ * L'anneau de quota.
+ *
+ * Trois états, et non deux. L'agent ne rapporte son quota **qu'aux
+ * transitions** : tant qu'il n'a rien dit, on ne sait pas — et un anneau vide
+ * se lirait « rien consommé », ce qui serait faux. L'anneau creux dit
+ * l'ignorance, et l'infobulle l'explique.
+ */
+function dessinerQuota() {
+  if (!state.agent || !state.agent.connected) return replace(dom.quota);
+
+  const q = state.quota;
+  const part = q && typeof q.utilization === "number" ? q.utilization : null;
+  const fenetre = q ? FENETRES[q.window] || q.window || "la session" : "la session de 5 h";
+
+  const explication = part === null
+    ? `Consommation de ${fenetre} : inconnue. L'agent ne la rapporte qu'en `
+      + "approchant de la limite ; l'anneau se remplira à ce moment-là."
+    : `${fenetre} : ${Math.round(part * 100)} % consommés`
+      + (q.resets_at ? `, remise à zéro à ${heure(q.resets_at)}` : "");
+
+  replace(dom.quota, anneau(part, { titre: explication }));
+  if (part !== null) {
+    dom.quota.appendChild(elem("span", "quota-part", `${Math.round(part * 100)} %`));
+  }
+}
+
+/** Un horodatage Unix en heure locale, sans la date : c'est aujourd'hui. */
+function heure(secondes) {
+  return new Date(secondes * 1000).toLocaleTimeString("fr-FR", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+/** Le menu des modèles. Une entrée cochée : celle qui s'applique. */
+function panneauModele(panneau, fermerMenu) {
+  panneau.appendChild(elem("div", "menu-titre", "Modèle"));
+  for (const nom of state.options.models || []) {
+    panneau.appendChild(
+      entreeMenu(`${nom === state.config.model ? "✓ " : ""}${nom || "au choix de l'agent"}`, {
+        onClick: () => {
+          fermerMenu();
+          emettre(ClientMessage.SESSION_CONFIGURE, { model: nom });
+        },
+      }),
+    );
+  }
+}
+
+/** Le menu des intensités de réflexion. */
+function panneauEffort(panneau, fermerMenu) {
+  panneau.appendChild(elem("div", "menu-titre", "Intensité de réflexion"));
+  for (const niveau of state.options.efforts || []) {
+    panneau.appendChild(
+      entreeMenu(
+        `${niveau === state.config.effort ? "✓ " : ""}${INTENSITES[niveau] ?? niveau}`,
+        {
+          onClick: () => {
+            fermerMenu();
+            emettre(ClientMessage.SESSION_CONFIGURE, { effort: niveau });
+          },
+        },
+      ),
+    );
+  }
+  panneau.appendChild(
+    elem("p", "menu-note", "S'applique au tour suivant : la session est rouverte."),
+  );
+}
+
+/**
+ * Vos salons, dans la colonne de gauche.
+ *
+ * Une pastille sur ceux où Claude a répondu depuis votre dernier passage. Le
+ * salon ouvert n'en porte jamais : on est en train de le lire.
+ */
+function dessinerSalonsLat() {
+  const vu = vus();
+  const entrees = state.rooms.map((r) => {
+    const ouvert = r.id === state.roomId;
+    const lien = elem("a", `salon-lat${ouvert ? " actif" : ""}`);
+    lien.href = `#/rooms/${r.id}`;
+    lien.appendChild(elem("span", "salon-lat-nom", r.title));
+    if (!ouvert && (r.last_reply || 0) > (vu[r.id] || 0)) {
+      lien.appendChild(elem("span", "salon-lat-neuf"));
+      lien.title = `${r.title} — Claude a répondu depuis votre dernier passage`;
+    } else {
+      lien.title = r.title;
+    }
+    return lien;
+  });
+
+  replace(
+    dom["salons-lat"],
+    elem("h2", "", "Vos salons"),
+    ...(entrees.length ? entrees : [elem("p", "vide", "Aucun salon.")]),
+  );
 }
 
 /** 12345 → « 12,3 k ». Un compteur qui compte les unités ne se lit pas. */
@@ -1248,7 +1572,10 @@ async function commander(action, bouton, workspace = "") {
  */
 function signalerDemandes(f) {
   const demandeurs = (f.requests || []).map((r) => r.who);
-  if (peut(Capability.FLOOR_GRANT)) {
+  // Pendant un rejeu on enregistre sans annoncer : les demandes de l'historique
+  // sont peut-être tranchées depuis longtemps, et les rejouer à chaque retour
+  // dans le salon transformait la reprise en volée d'alertes rouges.
+  if (!state.rejeu && peut(Capability.FLOOR_GRANT)) {
     for (const qui of demandeurs) {
       if (qui === state.me.label || state.signalees.has(qui)) continue;
       toast(`${qui} demande la parole.`);

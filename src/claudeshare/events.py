@@ -21,6 +21,10 @@ class EventType(StrEnum):
     # --- cycle de vie de la session ---
     SESSION_READY = "session.ready"
     SESSION_ERROR = "session.error"
+    #: Le modèle ou l'intensité de réflexion ont changé. Durable, et porteur de
+    #: son auteur : savoir *qui* a fait passer le salon en « max » vaut mieux
+    #: que de le déduire du montant à la fin du tour.
+    SESSION_CONFIG = "session.config"
 
     # --- déroulement d'un tour ---
     TURN_STARTED = "turn.started"

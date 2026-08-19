@@ -54,6 +54,11 @@ class ClientMessage(StrEnum):
     #: Tranche une demande d'approbation d'outil (`room.tools.approve`).
     TOOL_APPROVE = "tool.approve"
 
+    #: Change le modèle ou l'intensité de réflexion de la session
+    #: (`room.settings`). Une intention comme les autres : c'est l'agent, chez
+    #: lui, qui l'applique — ou pas.
+    SESSION_CONFIGURE = "session.configure"
+
     PING = "ping"
 
 
@@ -106,6 +111,20 @@ class AgentMessage(StrEnum):
     RUN_INTERRUPT = "run.interrupt"
     #: Réponse à une demande d'approbation.
     RUN_APPROVAL = "run.approval"
+    #: Modèle et intensité de réflexion à utiliser désormais.
+    RUN_CONFIGURE = "run.configure"
+
+
+#: Modèles proposés dans l'interface. Des **alias**, pas des identifiants
+#: complets : c'est le CLI qui les résout, sur la machine de l'hôte, donc il
+#: connaît la version courante mieux que ce relais ne le pourrait. `""` laisse
+#: le choix à l'agent.
+MODELS: tuple[str, ...] = ("", "opus", "sonnet", "haiku")
+
+#: Intensités de réflexion, dans l'ordre croissant. Reprises telles quelles du
+#: SDK (`EffortLevel`) : les renommer obligerait à traduire dans les deux sens
+#: pour ne rien gagner.
+EFFORTS: tuple[str, ...] = ("", "low", "medium", "high", "xhigh", "max")
 
 
 class ServerMessage(StrEnum):

@@ -25,6 +25,7 @@ export const ClientMessage = Object.freeze({
   FLOOR_REVOKE: "floor.revoke",
   FLOOR_PREEMPT: "floor.preempt",
   TOOL_APPROVE: "tool.approve",
+  SESSION_CONFIGURE: "session.configure",
   PING: "ping",
 });
 
@@ -42,6 +43,7 @@ export const ServerMessage = Object.freeze({
 export const EventType = Object.freeze({
   SESSION_READY: "session.ready",
   SESSION_ERROR: "session.error",
+  SESSION_CONFIG: "session.config",
   TURN_STARTED: "turn.started",
   TURN_ENDED: "turn.ended",
   ASSISTANT_DELTA: "assistant.delta",

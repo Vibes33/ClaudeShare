@@ -160,6 +160,24 @@ class AgentLink:
         )
         return True
 
+    async def configure(self, *, model: str | None = None, effort: str | None = None) -> None:
+        """Transmet un réglage de session à l'agent.
+
+        On n'attend pas de confirmation : le relais ne détient pas la session,
+        et le seul état qui fasse foi est celui de la machine qui l'exécute. Ce
+        que l'interface affiche est donc ce qui a été *demandé* — l'agent, lui,
+        annonce ce qu'il applique par ses propres événements.
+        """
+        if not self.connected:
+            return
+        await self._send(
+            {
+                "type": str(AgentMessage.RUN_CONFIGURE),
+                "model": model,
+                "effort": effort,
+            }
+        )
+
     async def answer(
         self, approval_id: str, *, allow: bool, by: str = "", reason: str = ""
     ) -> None:
@@ -239,6 +257,9 @@ class AbsentAgent:
 
     async def interrupt(self) -> bool:
         return False
+
+    async def configure(self, *, model: str | None = None, effort: str | None = None) -> None:
+        return None
 
     async def answer(
         self, approval_id: str, *, allow: bool, by: str = "", reason: str = ""
