@@ -1,4 +1,4 @@
-"""Intermédiaires ASGI : limitation de débit et en-têtes de sécurité.
+"""Intermédiaires ASGI : limitation de débit, schéma public, en-têtes de sécurité.
 
 Écrits en ASGI brut plutôt qu'avec `BaseHTTPMiddleware` de Starlette. Ce dernier
 enveloppe chaque requête dans une tâche et un flux intermédiaires, ce qui gêne
@@ -72,6 +72,40 @@ class RateLimitMiddleware:
             headers={"Retry-After": str(max(1, int(verdict.retry_after)))},
         )
         await reponse(scope, receive, send)
+
+
+class PublicSchemeMiddleware:
+    """Rétablit `https` dans le schéma vu par l'application.
+
+    Les URL que l'application fabrique — au premier chef le `redirect_uri`
+    envoyé au fournisseur OAuth — viennent de `request.url_for`, qui lit
+    `scope["scheme"]`. Ce schéma vaut `http` sur le port d'écoute, et c'est
+    `X-Forwarded-Proto` qui le corrige, via les en-têtes de proxy d'uvicorn.
+
+    Sauf que tous les intermédiaires n'envoient pas cet en-tête avec la valeur
+    attendue : un tunnel Cloudflare, notamment, le pose au schéma par lequel il
+    joint l'origine — `http://localhost:8765` — et non à celui qu'a vu le
+    navigateur. L'application fabrique alors un `redirect_uri` en `http://`, que
+    GitHub rejette (« The redirect_uri is not associated with this
+    application ») parce que l'URL déclarée est en `https://`. L'échec arrive au
+    premier clic sur « Se connecter », et son message ne désigne pas sa cause.
+
+    `--public-https` affirme que l'origine publique est en HTTPS. Cette
+    affirmation vaut pour les URL produites autant que pour le `Secure` des
+    cookies : la poser ici évite de dépendre de la bonne volonté de
+    l'intermédiaire.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        # `ws` aussi : le client se connecte en `wss` derrière le même TLS, et
+        # une URL de WebSocket fabriquée en `ws://` serait refusée par la page.
+        remplacement = {"http": "https", "ws": "wss"}.get(scope.get("scheme", ""))
+        if remplacement is not None:
+            scope = {**scope, "scheme": remplacement}
+        await self.app(scope, receive, send)
 
 
 class SecurityHeadersMiddleware:

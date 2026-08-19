@@ -173,6 +173,16 @@ son certificat par une requête ACME sur le port 80, qui échoue sinon.
 | Cookies | ordinaires | `Secure`, plus HSTS |
 | Adresse du client | directe | `X-Forwarded-For`, via Caddy |
 
+**`--public-https` vaut aussi pour les URL fabriquées.** Le `redirect_uri`
+envoyé au fournisseur OAuth est construit à partir du schéma que le serveur
+croit servir. Ce schéma vient normalement de `X-Forwarded-Proto` — mais tous les
+intermédiaires ne le posent pas correctement : un tunnel Cloudflare l'aligne sur
+le schéma par lequel il joint l'origine, `http://localhost:8765`, et non sur
+celui qu'a vu le navigateur. L'option force donc `https` dans les URL produites,
+plutôt que de dépendre de la bonne volonté de l'intermédiaire. Sans ça, GitHub
+répond « The redirect_uri is not associated with this application » au premier
+clic sur « Se connecter », et ce message ne désigne pas sa cause.
+
 **`X-Forwarded-For` n'est cru que derrière `--behind-proxy`.** Sans cette
 option, le serveur voit l'adresse de Caddy pour tout le monde : la limitation de
 débit devient un seau unique et partagé, et un seul client abusif prive alors

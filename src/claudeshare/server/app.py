@@ -47,7 +47,7 @@ from .auth.identity import SessionSigner
 from .auth.oauth import ProviderConfig, build_oauth
 from .auth.routes import build_auth_router
 from .context import ServerContext
-from .middleware import RateLimitMiddleware, SecurityHeadersMiddleware
+from .middleware import PublicSchemeMiddleware, RateLimitMiddleware, SecurityHeadersMiddleware
 from .ratelimit import Rule
 from .daemons import AgentDaemon
 from .managed import ManagedAgents
@@ -177,6 +177,11 @@ def create_app(
     # sans ce middleware, le rappel échoue à la vérification anti-CSRF.
     app.add_middleware(SessionMiddleware, secret_key=secret_key, same_site="lax")
     app.add_middleware(SecurityHeadersMiddleware, https=ctx.public_https)
+    # Avant tout ce qui fabrique une URL — donc avant le routeur OAuth, dont le
+    # `redirect_uri` part chez le fournisseur et doit correspondre au caractère
+    # près à l'URL déclarée chez lui.
+    if ctx.public_https:
+        app.add_middleware(PublicSchemeMiddleware)
     # Ajouté en dernier, donc exécuté en premier : une requête au-delà du débit
     # doit être refusée avant qu'on ouvre une session de base pour l'identifier.
     if settings.rate_limit:
