@@ -99,7 +99,19 @@ h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; colo
    rien ne signale pourquoi. */
 .revele .survol,
 .revele .trace { stroke: #4d4d4d; }
-.revele .peint { stroke: url(#degradeTitre); }
+/* Le calque coloré n'existe qu'au survol. Sans ça, le disque de révélation —
+   centré tant que le curseur n'a rien dit — laisse voir la couleur au milieu du
+   mot dès le chargement, alors que personne ne pointe rien. L'original obtient
+   le même résultat en ne posant les arrêts du dégradé qu'au survol ; ici c'est
+   l'opacité qui s'en charge, ce qui donne en prime un fondu au lieu d'une
+   apparition sèche. */
+.revele .peint {
+  stroke: url(#degradeTitre);
+  opacity: 0;
+  transition: opacity 0.25s ease-out;
+}
+
+.revele.survole .peint { opacity: 1; }
 
 /* Le contour de survol : présent en permanence, révélé par l'opacité. Le
    monter et le démonter ferait clignoter le texte à chaque entrée du curseur. */
