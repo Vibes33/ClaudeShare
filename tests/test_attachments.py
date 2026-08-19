@@ -180,6 +180,72 @@ def test_le_prompt_porte_le_chemin_de_la_piece(harness: Harness, client):
     assert depots[0].read_bytes() == b"bonjour"
 
 
+def test_le_chemin_va_au_modele_et_pas_au_journal(harness: Harness, client):
+    """Deux publics, deux messages.
+
+    Le modèle a besoin du chemin pour ouvrir le fichier. Qui lit la conversation
+    n'en a rien à faire : il veut voir l'image et la question. L'événement porte
+    donc le prompt tel qu'il a été écrit, et la liste des pièces à côté.
+    """
+    alice = harness.user("alice")
+    room = harness.room(alice, workspace="a")
+    piece = deposer(client, harness, room, alice, "photo.png", b"\x89PNG\r\n\x1a\nx").json()
+
+    with client.websocket_connect(
+        f"/ws/rooms/{room}", headers=harness.auth(harness.token(alice))
+    ) as ws:
+        greet(ws)
+        ws.send_json(
+            {
+                "v": PROTOCOL_VERSION,
+                "type": ClientMessage.PROMPT_SEND,
+                "data": {"prompt": "décris-moi l'image", "attachments": [piece["id"]]},
+            }
+        )
+        debut = expect(ws, "turn.started")["data"]
+        expect(ws, "turn.ended")
+
+    # Ce que le salon journalise : la question, et de quoi fabriquer une vignette.
+    assert debut["prompt"] == "décris-moi l'image"
+    assert debut["attachments"] == [{"id": piece["id"], "name": "photo.png"}]
+    assert ".claudeshare" not in debut["prompt"]
+
+    # Ce que le modèle a reçu : le chemin en plus, sans quoi il ne pourrait pas
+    # ouvrir le fichier.
+    envoye = harness.fake.prompts[-1]
+    assert envoye.endswith("décris-moi l'image")
+    assert ".claudeshare/pieces-jointes/" in envoye
+
+
+def test_une_image_se_rend_les_autres_fichiers_se_telechargent(harness: Harness, client):
+    """Une vignette vaut mieux qu'un chemin — mais on ne rend que ce qu'on a
+    reconnu aux octets, et jamais un SVG, qui peut porter du script."""
+    alice = harness.user("alice")
+    room = harness.room(alice, workspace="a")
+    entete = harness.auth(harness.token(alice))
+
+    def servi(nom: str, octets: bytes) -> tuple[str, str]:
+        piece = deposer(client, harness, room, alice, nom, octets).json()
+        r = client.get(f"/api/rooms/{room}/attachments/{piece['id']}", headers=entete)
+        return r.headers["content-type"], r.headers.get("content-disposition", "")
+
+    type_png, pose_png = servi("a.png", b"\x89PNG\r\n\x1a\ncontenu")
+    assert type_png == "image/png"
+    # Rendue en ligne : sans ça, aucune vignette n'est possible.
+    assert pose_png == ""
+
+    # Le type vient des octets, pas du nom : un exécutable déguisé en PNG ne se
+    # rend pas pour autant.
+    type_faux, pose_faux = servi("piege.png", b"#!/bin/sh\nrm -rf /")
+    assert type_faux == "application/octet-stream"
+    assert pose_faux.startswith("attachment")
+
+    # Un SVG est une image pour tout le monde, sauf pour nous.
+    type_svg, pose_svg = servi("vecteur.svg", b"<svg xmlns=\'http://www.w3.org/2000/svg\'/>")
+    assert type_svg == "application/octet-stream"
+    assert pose_svg.startswith("attachment")
+
+
 def test_une_piece_inconnue_arrete_l_envoi(harness: Harness, client):
     """Échouer ici, où le message est utile, plutôt que chez l'agent où il ne
     dirait plus rien — et sans avoir pris la parole pour rien."""

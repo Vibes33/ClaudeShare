@@ -219,10 +219,13 @@ secret pour vous le refuser ensuite.
 - **Blocs de code copiables** — langage à gauche, bouton à droite, toujours à la
   même place. Le bouton copie la *source*, pas ce qui est affiché.
 - **Tableaux** avec filets verticaux et alignement (`:---`, `---:`, `:---:`).
-- **Pièces jointes** : le `+` ouvre un menu, l'image jointe montre sa miniature.
-  Le fichier voyage jusqu'à la machine de l'hôte, atterrit dans
+- **Pièces jointes** : le `+` ouvre un menu, et l'image jointe se voit — dans
+  la vignette avant l'envoi, puis dans la conversation. Le fichier voyage
+  jusqu'à la machine de l'hôte, atterrit dans
   `.claudeshare/pieces-jointes/<tour>/` de son dossier de travail, et son chemin
-  est donné à Claude — c'est la seule façon qu'a la session de le lire.
+  est donné à Claude — c'est la seule façon qu'a la session de le lire. Ce
+  chemin va au modèle, **pas au journal** : la conversation montre l'image et la
+  question, pas l'endroit où le fichier a été déposé.
 - **Interruption** : le bouton d'envoi devient bouton d'arrêt pendant une
   génération.
 

@@ -994,6 +994,36 @@ select.saisie { flex: 0 0 auto; }
 .reflexion { color: var(--doux); font-style: italic; padding: 0.4rem 0; }
 .fin { color: var(--doux); font-size: 0.78rem; margin: 0.2rem 0 0 2.8rem; }
 
+/* --- les pièces jointes d'un message ------------------------------------ */
+
+/* `flex-start` : sans lui, une pastille de fichier posée à côté d'une image
+   s'étire sur toute la hauteur de celle-ci — le comportement par défaut d'une
+   rangée flex est d'aligner les enfants sur la plus grande. */
+.jointes {
+  display: flex; flex-wrap: wrap; align-items: flex-start;
+  gap: 0.5rem; margin-bottom: 0.6rem;
+}
+.jointes:last-child { margin-bottom: 0; }
+
+/* Bornée en hauteur plutôt qu'en largeur : une capture d'écran très large doit
+   rester lisible, une image très haute ne doit pas pousser la réponse hors de
+   l'écran. */
+.jointe-image {
+  max-width: 100%; max-height: 15rem;
+  border-radius: 10px; border: 1px solid var(--verre-bord);
+  background: rgb(0 0 0 / 0.3);
+}
+
+.jointe-fichier {
+  display: inline-flex; align-items: center; gap: 0.45rem;
+  padding: 0.3rem 0.7rem; font-size: 0.82rem;
+  color: var(--doux); text-decoration: none;
+  background: rgb(255 255 255 / 0.04);
+  border: 1px solid var(--verre-bord); border-radius: 100px;
+}
+.jointe-fichier:hover { color: var(--texte); background: rgb(255 255 255 / 0.08); }
+.jointe-icone { opacity: 0.7; }
+
 /* --- les tableaux ------------------------------------------------------- */
 
 /* La boîte défile, pas la page : un tableau plus large que la conversation doit

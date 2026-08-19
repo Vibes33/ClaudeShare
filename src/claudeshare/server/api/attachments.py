@@ -15,11 +15,13 @@ Trois conséquences qu'il vaut mieux avoir écrites :
 2. **Le dépôt est éphémère.** Une pièce jointe sert à un tour. Les garder ferait
    du relais un espace de stockage que personne n'a demandé et que personne ne
    surveille — d'où le balayage à chaque dépôt.
-3. **Le type n'est pas déduit.** Contrairement aux avatars, un fichier joint
-   n'est pas servi au navigateur : il n'est jamais rendu comme un document sur
-   notre origine, donc rien n'oblige à en restreindre le format. Il est renvoyé
-   en `application/octet-stream` avec `Content-Disposition: attachment`, ce qui
-   ferme la question.
+3. **Seules les images se rendent, et le type vient des octets.** Une vignette
+   dans la conversation vaut mieux qu'une ligne de chemin, mais rendre du
+   contenu d'autrui sur notre origine est exactement ce qu'une CSP sert à
+   empêcher. On ne se rend donc que ce qu'on a reconnu aux octets — PNG, JPEG,
+   GIF, WebP — et jamais le SVG, qui est un document capable de porter du
+   script. Tout le reste part en `application/octet-stream` avec
+   `Content-Disposition: attachment`, ce qui ferme la question.
 """
 
 from __future__ import annotations
@@ -54,6 +56,32 @@ DUREE_S = 6 * 3600
 
 #: Identifiant fabriqué ici : seize caractères hexadécimaux, rien d'autre.
 IDENTIFIANT = re.compile(r"^[0-9a-f]{16}$")
+
+#: Images qu'on accepte de rendre, et le type qu'on leur donne. Reconnues aux
+#: octets, jamais à ce que le client annonce : un `Content-Type` est une
+#: affirmation de l'appelant, les octets ne mentent pas.
+#:
+#: Le SVG est absent, et c'est délibéré : c'est un document capable de porter du
+#: script, et servi depuis notre origine il contournerait la CSP par la porte
+#: que nous aurions nous-mêmes ouverte.
+SIGNATURES: tuple[tuple[bytes, str], ...] = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
+
+
+def type_image(octets: bytes) -> str | None:
+    """Le type MIME si ces octets sont une image qu'on sait rendre, sinon None."""
+    for signature, mime in SIGNATURES:
+        if octets.startswith(signature):
+            return mime
+    # WebP : « RIFF », quatre octets de taille, puis « WEBP ».
+    if octets[:4] == b"RIFF" and octets[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
 
 #: Nom de fichier acceptable.
 #:
@@ -191,11 +219,12 @@ def build_attachments_router(ctx: Any, racine: Path) -> APIRouter:
     @router.get("/{aid}")
     @requires(Capability.READ)
     async def recuperer(room_id: str, aid: str, request: Request) -> Response:
-        """Rend les octets à l'agent qui va exécuter le tour.
+        """Rend les octets — à l'agent qui exécute, ou au salon qui affiche.
 
-        Servi en flux d'octets et en pièce jointe : ce fichier vient d'un
-        participant, et rien ne doit pouvoir le faire rendre comme un document
-        sur notre origine.
+        Une image reconnue est servie avec son type, pour qu'une vignette
+        puisse la montrer dans la conversation. Tout le reste part en flux
+        d'octets et en pièce jointe : ce fichier vient d'un participant, et rien
+        d'autre ne doit pouvoir se rendre comme un document sur notre origine.
         """
         with ctx.db.session() as session:
             principal = require_principal(ctx.principal(request, session))
@@ -204,13 +233,22 @@ def build_attachments_router(ctx: Any, racine: Path) -> APIRouter:
         chemin = _fichier(racine, room_id, aid)
         if chemin is None:
             raise HTTPException(404, "pièce jointe inconnue")
-        return Response(
-            chemin.read_bytes(),
-            media_type="application/octet-stream",
-            headers={
-                "Content-Disposition": f'attachment; filename="{_nom_de(chemin)}"',
-                "Cache-Control": "no-store",
-            },
-        )
+
+        octets = chemin.read_bytes()
+        mime = type_image(octets)
+        entetes = {
+            # `no-store` : le dépôt est éphémère, et une image gardée en cache
+            # survivrait au balayage qui devait l'effacer.
+            "Cache-Control": "no-store",
+            # Ceinture : le type est déduit des octets, `nosniff` interdit au
+            # navigateur d'en deviner un autre.
+            "X-Content-Type-Options": "nosniff",
+            # Bretelles : même si une image se révélait être autre chose, elle
+            # n'aurait droit à rien.
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+        }
+        if mime is None:
+            entetes["Content-Disposition"] = f'attachment; filename="{_nom_de(chemin)}"'
+        return Response(octets, media_type=mime or "application/octet-stream", headers=entetes)
 
     return router

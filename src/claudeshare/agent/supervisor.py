@@ -294,8 +294,23 @@ class SessionSupervisor:
 
     # ------------------------------------------------------------------ tours
 
-    async def run_turn(self, prompt: str, *, author: str, turn_id: str | None = None) -> TurnOutcome:
+    async def run_turn(
+        self,
+        prompt: str,
+        *,
+        author: str,
+        turn_id: str | None = None,
+        preamble: str = "",
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> TurnOutcome:
         """Envoie un prompt et diffuse les événements jusqu'à la fin du tour.
+
+        `preamble` part au modèle mais **n'est pas journalisé** : c'est le cas
+        des chemins de pièces jointes, que la session doit connaître pour les
+        ouvrir et que personne n'a envie de relire dans la conversation. Ce que
+        l'événement porte, c'est ce qu'on a écrit, et la liste des fichiers à
+        côté — une interface en fait alors une vignette plutôt qu'une ligne de
+        chemin.
 
         Lève `TurnBusyError` si un tour est déjà en cours : c'est au jeton de
         parole (étape 7) de sérialiser les demandes, pas à cette couche de les
@@ -317,9 +332,14 @@ class SessionSupervisor:
             self._interrupt_requested = False
             done = asyncio.Event()
             self._turn_done = done
-            await self._emit(EventType.TURN_STARTED, turn_id, author, {"prompt": prompt})
+            await self._emit(
+                EventType.TURN_STARTED,
+                turn_id,
+                author,
+                {"prompt": prompt, "attachments": attachments or []},
+            )
             try:
-                return await self._consume_turn(turn_id, author, prompt)
+                return await self._consume_turn(turn_id, author, preamble + prompt)
             finally:
                 self._current_turn = None
                 self._current_author = None

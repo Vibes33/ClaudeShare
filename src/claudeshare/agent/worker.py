@@ -152,11 +152,17 @@ class Hosted:
 
         async def jouer() -> None:
             try:
-                prompt = await self._deposer(turn_id, data.get("attachments") or [])
+                pieces = data.get("attachments") or []
+                preambule, deposees = await self._deposer(turn_id, pieces)
                 await self.agent.run_turn(
-                    prompt + str(data.get("prompt") or ""),
+                    str(data.get("prompt") or ""),
                     author=str(data.get("author") or "?"),
                     turn_id=turn_id,
+                    # Les chemins vont au modèle, pas au journal : ils lui
+                    # servent à ouvrir les fichiers, ils n'apprennent rien à qui
+                    # lit la conversation.
+                    preamble=preambule,
+                    attachments=deposees,
                 )
             except Exception:
                 logger.exception("le tour %s a échoué", turn_id)
@@ -174,8 +180,15 @@ class Hosted:
 
         self._turn = asyncio.create_task(jouer())
 
-    async def _deposer(self, turn_id: str, pieces: list[dict[str, Any]]) -> str:
-        """Écrit les pièces jointes du tour, et renvoie le préambule du prompt.
+    async def _deposer(
+        self, turn_id: str, pieces: list[dict[str, Any]]
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Écrit les pièces jointes du tour.
+
+        Renvoie le préambule destiné au modèle — les chemins, qu'il lui faut
+        pour ouvrir les fichiers — et la liste de ce qui a réellement été
+        déposé, destinée au journal. Les deux ne disent pas la même chose au
+        même public, d'où la séparation.
 
         Elles atterrissent **dans le dossier de travail**, sous
         `.claudeshare/pieces-jointes/<tour>/`. C'est la seule place où la session
@@ -190,10 +203,11 @@ class Hosted:
         dans le prompt, jamais passé sous silence.
         """
         if not pieces or self._fetch is None:
-            return ""
+            return "", []
 
         dossier = self.workspace / ".claudeshare" / "pieces-jointes" / turn_id
         lignes: list[str] = []
+        deposees: list[dict[str, Any]] = []
         for piece in pieces[:MAX_PIECES]:
             aid, nom = str(piece.get("id") or ""), str(piece.get("name") or "")
             # Revalidé ici, alors que le relais l'a déjà fait. C'est cette
@@ -211,12 +225,14 @@ class Hosted:
                 lignes.append(f"- (pièce jointe « {nom} » non récupérée)")
                 continue
             lignes.append(f"- .claudeshare/pieces-jointes/{turn_id}/{nom}")
+            deposees.append({"id": aid, "name": nom})
 
         _balayer_pieces(self.workspace)
         entete = "\n".join(lignes)
         return (
             "Pièces jointes de ce message, déposées dans le dossier de travail :\n"
-            f"{entete}\n\n"
+            f"{entete}\n\n",
+            deposees,
         )
 
     async def aclose(self) -> None:

@@ -1220,7 +1220,7 @@ function tour(turnId, author = null) {
   if (!t) {
     t = {
       id: turnId, author, prompt: "", text: "", partial: "",
-      tools: new Map(), ended: null, thinking: false,
+      attachments: [], tools: new Map(), ended: null, thinking: false,
     };
     state.turns.set(turnId, t);
     state.order.push(turnId);
@@ -1235,6 +1235,7 @@ function evenement(type, d) {
     case EventType.TURN_STARTED: {
       const t = tour(turnId, d.author);
       t.prompt = d.prompt || "";
+      t.attachments = d.attachments || [];
       break;
     }
     case EventType.ASSISTANT_DELTA:
@@ -2011,10 +2012,11 @@ function dessinerTour(t) {
   const bloc = elem("article", "tour");
   bloc.id = `tour-${t.id}`;
 
-  if (t.prompt) {
-    bloc.appendChild(
-      message(vignetteDe(t.author || "?"), replace(elem("div", "bulle-texte"), renderMarkdown(t.prompt))),
-    );
+  if (t.prompt || t.attachments.length) {
+    const bulle = elem("div", "bulle-texte");
+    if (t.attachments.length) bulle.appendChild(jointes(t.attachments));
+    if (t.prompt) bulle.appendChild(renderMarkdown(t.prompt));
+    bloc.appendChild(message(vignetteDe(t.author || "?"), bulle));
   }
 
   const reponse = elem("div", "message-corps");
@@ -2046,6 +2048,46 @@ function dessinerTour(t) {
     }
   }
   return bloc;
+}
+
+/**
+ * Les pièces jointes d'un message, dans la conversation.
+ *
+ * Une image se montre ; le reste se nomme. Ce qui n'apparaît nulle part, c'est
+ * le chemin où le fichier a été déposé sur la machine de l'hôte : il sert au
+ * modèle pour l'ouvrir, il n'apprend rien à qui lit — et il occupait deux
+ * lignes au-dessus de chaque question.
+ *
+ * Le dépôt est éphémère : passé le délai de conservation, l'image n'est plus
+ * là. On ne laisse pas alors une icône cassée, on retombe sur le nom.
+ */
+function jointes(pieces) {
+  const bande = elem("div", "jointes");
+  for (const piece of pieces) {
+    const adresse = `/api/rooms/${state.roomId}/attachments/${encodeURIComponent(piece.id)}`;
+    const nom = piece.name || "pièce jointe";
+
+    const vue = elem("img", "jointe-image");
+    vue.src = adresse;
+    vue.alt = nom;
+    vue.title = nom;
+    vue.loading = "lazy";
+    // Le serveur ne rend avec un type d'image que ce qu'il a reconnu aux
+    // octets : un fichier qui n'en est pas un arrive en flux d'octets, et
+    // l'image échoue. C'est ce même chemin qui rattrape une pièce expirée.
+    vue.addEventListener("error", () => vue.replaceWith(jointeNommee(adresse, nom)));
+    bande.appendChild(vue);
+  }
+  return bande;
+}
+
+/** Une pièce jointe qui ne se montre pas : son nom, et de quoi la récupérer. */
+function jointeNommee(adresse, nom) {
+  const lien = elem("a", "jointe-fichier");
+  lien.href = adresse;
+  lien.download = nom;
+  lien.append(elem("span", "jointe-icone", "↓"), elem("span", "", nom));
+  return lien;
 }
 
 /** Une ligne de conversation : la photo à gauche, le contenu à droite. */
