@@ -110,11 +110,12 @@ uv run pytest -q
 
 ## Docker
 
-L'image ne contient **que le relais** : ni CLI Claude Code, ni bubblewrap, ni
-identifiants d'abonnement. Il n'y a plus de session à ouvrir dans le conteneur,
-plus d'arbitrage `seccomp:unconfined` à assumer, et l'image est passée d'environ
-1,5 Go à quelques centaines de mégaoctets — les 290 Mo de CLI embarqué vivent
-maintenant chez les agents, qui tournent hors conteneur.
+L'image ne contient **aucun identifiant d'abonnement** : ceux des agents gérés
+sont chiffrés dans la base, ceux des agents lancés chez chacun ne quittent pas
+leur machine. Elle contient en revanche le CLI Claude Code — il est embarqué
+dans la roue de `claude-agent-sdk`, qui est une dépendance de base — ainsi que
+`bubblewrap` et `socat`, les deux dépendances de son bac à sable Linux. Compter
+donc environ 1,5 Go, pas quelques centaines de mégaoctets.
 
 ```bash
 docker compose up --build
@@ -125,7 +126,23 @@ Le port est lié à `127.0.0.1` : `docker-compose.yml` seul est le mode « essay
 chez soi ». Pour exposer, voir la section suivante.
 
 La configuration passe par l'environnement — copiez `.env.example` en `.env`.
-Le seul volume est `/state`, où le relais range sa base.
+Le seul volume est `/state`, où le relais range sa base et, si les agents gérés
+sont actifs, les profils.
+
+C'est un **volume nommé**, pas un `./state` monté depuis l'hôte, et la raison
+mérite d'être dite parce que l'erreur est déroutante : un bind mount écrase les
+droits posés dans l'image. Le conteneur tourne en uid 10001 ; un dossier de
+l'hôte appartient à qui l'a créé — vous, ou `root` quand c'est Docker qui le
+crée au premier lancement. Le relais s'arrête alors net sur un `Permission
+denied` en créant sa base, alors même que le dossier existe et est bien monté.
+Un volume nommé est initialisé depuis l'image, donc déjà au bon propriétaire.
+
+Pour voir l'état sur son disque malgré tout, `CLAUDESHARE_STATE=./state` le
+remplace par un bind mount — à condition de le donner d'abord au bon uid :
+
+```bash
+mkdir -p ./state && sudo chown -R 10001:10001 ./state
+```
 
 Les agents, eux, ne se conteneurisent pas ici : ils tournent sur la machine de
 chaque participant, avec ses identifiants et ses fichiers.
@@ -212,6 +229,34 @@ L'application reste réglée comme derrière n'importe quel proxy : `--behind-pr
 et `CLAUDESHARE_PUBLIC_HTTPS=true`, que la surcouche de déploiement pose déjà.
 Sans eux, elle verrait l'adresse du tunnel pour tout le monde et la limitation de
 débit deviendrait un seau unique et partagé.
+
+#### Quand `cloudflared` tourne déjà sur la machine
+
+Beaucoup de serveurs ont un `cloudflared` installé pour d'autres services, en
+réseau `host`. Il ne faut alors **pas** monter celui de `docker-compose.tunnel.yml`
+— deux tunnels pour un même service ne s'additionnent pas — et il est de toute
+façon impossible d'attacher l'existant au réseau Compose :
+
+```
+Error response from daemon: container sharing network namespace with another
+container or host cannot be connected to any other network
+```
+
+Ce n'est pas un défaut de configuration à contourner : un conteneur en réseau
+`host` *est* la pile réseau de l'hôte, il n'a pas d'interface propre à brancher
+ailleurs. Mais il n'en a pas besoin, parce qu'être sur l'hôte lui donne déjà
+`127.0.0.1`. Le bon montage est donc la surcouche « derrière une entrée déjà en
+place », qui republie justement le port là :
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.deploy.yml \
+               -f docker-compose.proxied.yml up -d --build
+```
+
+Et côté Cloudflare, le nom d'hôte public pointe sur `http://localhost:8765`, non
+sur `http://claudeshare:8765` — ce dernier n'a de sens que pour un `cloudflared`
+membre du réseau Compose, qui résout les services par leur nom.
+
 
 ### Déployer avec les agents gérés
 

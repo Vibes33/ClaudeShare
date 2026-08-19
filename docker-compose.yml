@@ -12,9 +12,23 @@ services:
 
     volumes:
       # Le seul état du relais : sa base (identités, salons, appartenances,
-      # journal). Aucun dossier de travail à monter, aucun identifiant
-      # d'abonnement — les sessions Claude tournent chez les agents.
-      - "${CLAUDESHARE_STATE:-./state}:/state"
+      # journal) et, si les agents gérés sont actifs, les profils sous
+      # `/state/agents`. Aucun identifiant d'abonnement en clair.
+      #
+      # Volume nommé et non `./state`, parce qu'un bind mount **écrase les
+      # droits posés dans l'image**. Le conteneur tourne en uid 10001 ; un
+      # dossier hôte appartient à qui l'a créé — l'utilisateur courant, ou
+      # `root` quand c'est Docker qui le crée au premier lancement. Le
+      # `mkdir` de la base échoue alors par « Permission denied », et cette
+      # erreur-là est trompeuse : le dossier existe, il est monté, il est
+      # simplement à quelqu'un d'autre. Un volume nommé est initialisé depuis
+      # l'image, donc avec le propriétaire que le Dockerfile a posé.
+      #
+      # `CLAUDESHARE_STATE` reste là pour qui veut voir l'état sur son disque.
+      # C'est alors à lui de donner le dossier au bon uid, avant de démarrer :
+      #
+      #     mkdir -p ./state && sudo chown -R 10001:10001 ./state
+      - "${CLAUDESHARE_STATE:-claudeshare-state}:/state"
 
     environment:
       CLAUDESHARE_AUTH_MODE: "${CLAUDESHARE_AUTH_MODE:-pilot}"
@@ -57,3 +71,7 @@ services:
 
     restart: unless-stopped
 
+volumes:
+  # Déclaré ici pour que le défaut ci-dessus soit un volume nommé. Un chemin
+  # passé dans `CLAUDESHARE_STATE` court-circuite simplement cette déclaration.
+  claudeshare-state:

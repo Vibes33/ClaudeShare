@@ -9,6 +9,12 @@
 # hébergeur — ce Caddy serait un second terminateur pour rien, et sa demande de
 # certificat échouerait faute de recevoir le trafic.
 #
+# C'est aussi le montage à prendre quand `cloudflared` tourne déjà sur la machine
+# en réseau `host` : un tel conteneur ne peut pas être attaché au réseau Compose
+# — il n'a pas d'interface propre, il *est* la pile de l'hôte — mais il n'en a
+# pas besoin, puisqu'il joint `127.0.0.1:8765` directement. Le nom d'hôte public
+# pointe alors sur `http://localhost:8765`, pas sur `http://claudeshare:8765`.
+#
 # Ce fichier garde donc tout le reste du déploiement — Postgres, Redis,
 # migrations, cookies `Secure`, `X-Forwarded-*` — et se contente de republier le
 # port sur la boucle locale, là où l'entrée existante ira le chercher.
