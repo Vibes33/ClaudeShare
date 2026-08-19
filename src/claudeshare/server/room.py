@@ -416,10 +416,6 @@ class RoomManager:
     def list(self) -> list[Room]:
         return list(self._rooms.values())
 
-    async def start_all(self) -> None:
-        for room in self._rooms.values():
-            await room.start()
-
     async def aclose(self) -> None:
         for room in self._rooms.values():
             await room.aclose()
