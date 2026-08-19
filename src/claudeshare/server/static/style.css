@@ -80,7 +80,11 @@ h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; colo
 .revele .trait {
   fill: transparent;
   font-family: Helvetica, Arial, sans-serif;
-  font-size: 4.5rem;
+  /* Ajustée au mot, pas reprise telle quelle : le `viewBox` fait 300 unités de
+     large et « ClaudeShare » y occupe environ 6,1 cadratins. À la taille de
+     l'original (4,5 rem), il déborderait de moitié — et un SVG racine rogne ce
+     qui dépasse, donc le mot serait tronqué sans qu'aucune erreur ne le dise. */
+  font-size: 2.75rem;
   font-weight: 700;
   stroke-width: 0.3;
 }

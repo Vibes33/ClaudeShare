@@ -129,7 +129,7 @@ async function afficherConnexion() {
   dom.app.hidden = true;
   dom.login.hidden = false;
   const { providers } = (await json("/auth/providers")) || { providers: [] };
-  monterConnexion({ titre: dom["titre-connexion"], providers: dom.providers }, providers, "Share");
+  monterConnexion({ titre: dom["titre-connexion"], providers: dom.providers }, providers, "ClaudeShare");
   if (!providers.length) {
     dom.providers.appendChild(
       elem("p", "vide", "Aucun fournisseur OAuth n'est configuré sur ce serveur."),
