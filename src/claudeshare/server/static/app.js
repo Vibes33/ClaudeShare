@@ -198,7 +198,7 @@ function carteSalons() {
 
 /** Créer un salon, ou en rejoindre un. Les deux façons d'entrer quelque part. */
 function carteEntrer() {
-  const bloc = carte("carte-entrer", "Entrer", "Créer le vôtre, ou rejoindre celui d'un autre");
+  const bloc = carte("carte-entrer", "Salons", "Créer le vôtre, ou rejoindre celui d'un autre");
 
   bloc.appendChild(
     champAction({
