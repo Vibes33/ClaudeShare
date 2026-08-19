@@ -559,6 +559,24 @@ configuration de personne.
 `/static` reste monté, en `no-cache`, pour ce qui est demandé par une adresse
 fixe.
 
+### Le profil : un nom, une image
+
+Le nom affiché se change depuis le menu de profil ; il n'est pas un identifiant
+— l'appartenance et les droits passent par l'identifiant de compte, que rien de
+tout cela ne touche. Dans un salon ouvert, un changement de nom **rouvre la
+connexion** : l'étiquette est fixée à l'entrée, et c'est elle que portent le
+jeton de parole et la liste des présents.
+
+L'image vit sous la racine d'état, à côté de la base, et se sert comme un
+fichier — servie des centaines de fois par session, elle n'a rien à faire dans
+le pool de connexions. Deux règles à son dépôt :
+
+- **le type vient des octets, jamais de l'en-tête annoncé.** Un `Content-Type`
+  est une affirmation de l'appelant ;
+- **le SVG est refusé.** C'est un document capable de porter du script : servi
+  depuis notre origine, il contournerait la CSP par une porte que nous aurions
+  nous-mêmes ouverte.
+
 ## Approbation d'outil
 
 `can_use_tool` est une coroutine : elle peut donc attendre la décision de

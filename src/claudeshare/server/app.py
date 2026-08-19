@@ -39,6 +39,7 @@ from ..db.eventstore import DatabaseLogStore
 from ..db.models import Room
 from ..db.session import Database, Schema, default_url
 from .api.invites import build_invites_router, build_redeem_router
+from .api.profile import build_avatar_router, build_profile_router
 from .api.members import build_members_router
 from .api.roles import build_roles_router
 from .api.credentials import build_credentials_router
@@ -280,6 +281,12 @@ def create_app(
     app.include_router(build_cli_router(ctx, STATIC_DIR))
     app.include_router(build_auth_router(ctx))
     app.include_router(build_credentials_router(ctx))
+    # Les images de profil vivent à côté de la base, sous la racine d'état :
+    # servies des centaines de fois par session, elles n'ont rien à faire dans
+    # le pool de connexions.
+    avatars = root / "avatars"
+    app.include_router(build_profile_router(ctx, avatars))
+    app.include_router(build_avatar_router(avatars))
     app.include_router(build_rooms_router(ctx))
     app.include_router(build_members_router(ctx))
     app.include_router(build_roles_router(ctx))

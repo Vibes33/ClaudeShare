@@ -14,7 +14,7 @@
 import { ClientMessage, ServerMessage, EventType, Capability, frame } from "./protocol.js";
 import { renderMarkdown, elem, replace } from "./render.js";
 import { monterConnexion } from "./login.js";
-import { boutonChargement, aide } from "./ui.js";
+import { bouton, boutonChargement, aide, menu, entreeMenu } from "./ui.js";
 
 //: Repli de reconnexion. Croît jusqu'à ce plafond pour ne pas marteler un
 //: serveur qui redémarre, tout en restant assez court pour qu'un réveil de
@@ -83,10 +83,135 @@ document.addEventListener("DOMContentLoaded", async () => {
   state.me = await moi();
   if (!state.me) return afficherConnexion();
 
-  dom.who.textContent = state.me.label;
+  peindreProfil();
+  menu(dom.who, panneauProfil);
   await rafraichir();
   router();
 });
+
+/** L'avatar, ou ses initiales à défaut. Jamais un trou dans la barre. */
+function vignette(me, classe = "vignette") {
+  if (me.avatar_url) {
+    const img = elem("img", classe);
+    img.src = me.avatar_url;
+    img.alt = "";
+    return img;
+  }
+  const initiales = (me.label || me.handle || "?")
+    .split(/\s+/).slice(0, 2).map((mot) => mot[0] || "").join("").toUpperCase();
+  return elem("span", `${classe} initiales`, initiales || "?");
+}
+
+/** Le déclencheur du menu : l'image et le nom. */
+function peindreProfil() {
+  replace(dom.who, vignette(state.me), elem("span", "", state.me.label));
+}
+
+/**
+ * Le contenu du menu de profil.
+ *
+ * Trois entrées, dans l'ordre où on les cherche : ce qui se voit d'abord
+ * (l'image), ce qui se lit ensuite (le nom), et la sortie.
+ */
+function panneauProfil(panneau, fermer) {
+  const tete = elem("div", "menu-tete");
+  tete.append(
+    vignette(state.me, "vignette grande"),
+    elem("span", "menu-nom", state.me.label),
+    elem("span", "menu-handle", `@${state.me.handle}`),
+  );
+  panneau.append(tete, elem("hr", "menu-trait"));
+
+  // Le sélecteur de fichier est déclenché par l'entrée de menu : un `<input
+  // type=file>` visible imposerait son propre style, que rien ne permet de
+  // reprendre.
+  const fichier = elem("input", "cache");
+  fichier.type = "file";
+  fichier.accept = "image/png,image/jpeg,image/gif,image/webp";
+  fichier.addEventListener("change", () => {
+    const image = fichier.files && fichier.files[0];
+    if (image) envoyerAvatar(image);
+    fermer();
+  });
+
+  panneau.append(
+    entreeMenu("Photo de profil…", { onClick: () => fichier.click() }),
+    entreeMenu("Changer de nom…", { onClick: () => { fermer(); demanderNom(); } }),
+    fichier,
+  );
+
+  if (state.me.avatar_url) {
+    panneau.appendChild(
+      entreeMenu("Retirer la photo", {
+        onClick: async () => {
+          fermer();
+          await majProfil(await fetch("/api/profile/avatar", { method: "DELETE" }));
+        },
+      }),
+    );
+  }
+
+  panneau.append(
+    elem("hr", "menu-trait"),
+    entreeMenu("Se déconnecter", { ton: "danger", onClick: () => { fermer(); sortir(); } }),
+  );
+}
+
+/**
+ * Dépose une image de profil.
+ *
+ * Le fichier part **tel quel** dans le corps de la requête : un seul fichier,
+ * aucun champ à côté, et le serveur déduit le format des octets — pas de
+ * `Content-Type` à négocier, donc rien à mentir.
+ */
+async function envoyerAvatar(image) {
+  const reponse = await fetch("/api/profile/avatar", { method: "PUT", body: image });
+  await majProfil(reponse);
+}
+
+async function majProfil(reponse) {
+  if (!reponse.ok) {
+    const data = await reponse.json().catch(() => ({}));
+    return toast(data.detail || "Image refusée.");
+  }
+  state.me = await reponse.json();
+  peindreProfil();
+  if (!state.roomId) return afficherSalons();
+
+  // Dans un salon, l'étiquette est fixée à la connexion : c'est elle que porte
+  // le jeton de parole et la liste des présents. Sans cette reprise, on se
+  // verrait sous son nouveau nom pendant que le salon continue d'annoncer
+  // l'ancien — et le jeton, accordé à une étiquette, ne serait plus le nôtre.
+  const salon = state.roomId;
+  fermer();
+  ouvrir(salon);
+}
+
+/**
+ * Change le nom affiché.
+ *
+ * `prompt` plutôt qu'un formulaire dans le menu : le menu se referme au clic
+ * dehors, donc un champ à l'intérieur disparaîtrait au premier clic à côté —
+ * avec ce qu'on venait d'y taper.
+ */
+async function demanderNom() {
+  const nom = prompt("Votre nom, tel que les autres le verront :", state.me.label);
+  if (nom === null) return;
+  const reponse = await fetch("/api/profile", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ display_name: nom }),
+  });
+  await majProfil(reponse);
+}
+
+/** Se déconnecter, et revenir à l'écran d'entrée. */
+async function sortir() {
+  await fetch("/auth/logout", { method: "POST" });
+  fermer();
+  location.hash = "#/";
+  await afficherConnexion();
+}
 
 async function moi() {
   const res = await fetch("/auth/me");

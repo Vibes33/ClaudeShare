@@ -56,6 +56,16 @@ PUBLIQUES = {
     # justement corriger. Sa barrière est le secret du code, plus la limitation
     # de débit qui le rend coûteux à deviner.
     "/api/rooms/join": "entrer dans un salon avec son code",
+    # Son propre profil : personnel, hors périmètre d'un salon. La barrière est
+    # l'identité, vérifiée dans le corps — chaque route n'agit que sur le compte
+    # de l'appelant, jamais sur un identifiant reçu en paramètre.
+    "/api/profile": "son nom affiché",
+    "/api/profile/avatar": "sa photo de profil",
+    # Une image, servie comme un fichier statique. Elle est déjà publique de
+    # fait : son adresse apparaît à côté de chaque message de son auteur, donc
+    # à tous les membres de ses salons. La protéger ici ne fermerait rien et
+    # obligerait à authentifier chaque `<img>` de la page.
+    "/avatars/{fichier}": "image de profil, publique par nature",
 }
 # `/docs`, `/openapi.json` et `/redoc` sont des `Route` et non des `APIRoute` :
 # le parcours ne les collecte pas, elles n'ont donc pas à figurer ici.

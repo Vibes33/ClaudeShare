@@ -49,15 +49,22 @@ def build_auth_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext, impo
         return response
 
     @router.get("/me")
-    async def me(request: Request) -> dict[str, str]:
+    async def me(request: Request) -> dict[str, str | None]:
         with ctx.db.session() as session:
             principal = ctx.principal(request, session)
             if principal is None:
                 raise HTTPException(401, "authentification requise")
+            # L'avatar vient de l'enregistrement et non du principal : celui-ci
+            # ne porte que ce qui sert à décider, et une image n'en fait pas
+            # partie.
+            from ...db.models import User
+
+            user = session.get(User, principal.user_id)
             return {
                 "user_id": principal.user_id,
                 "handle": principal.handle,
                 "label": principal.label,
+                "avatar_url": user.avatar_url if user else None,
             }
 
     @router.post("/tokens")

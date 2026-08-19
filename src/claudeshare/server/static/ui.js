@@ -187,6 +187,75 @@ export function avecBulle(cible, titre, contenu) {
 }
 
 /**
+ * Un menu déroulant ancré sous son déclencheur.
+ *
+ * Repris de `profile-dropdown` d'OriginUI : un en-tête qui rappelle sous quelle
+ * identité on est connecté, un trait, puis les entrées. Le panneau est borné en
+ * largeur, et l'ensemble se ferme au clic dehors comme à la touche Échap —
+ * deux gestes qu'on attend d'un menu et dont l'absence ne se remarque qu'au
+ * moment où l'on veut en sortir.
+ *
+ * `contenu` reçoit le panneau et le referme : c'est l'appelant qui décide de ce
+ * qu'on y met, ce module ne décide que du comportement.
+ */
+export function menu(declencheur, contenu) {
+  let panneau = null;
+
+  const fermer = () => {
+    if (!panneau) return;
+    panneau.remove();
+    panneau = null;
+    declencheur.setAttribute("aria-expanded", "false");
+    document.removeEventListener("pointerdown", dehors, true);
+    document.removeEventListener("keydown", echap, true);
+  };
+
+  const dehors = (e) => {
+    if (panneau && !panneau.contains(e.target) && !declencheur.contains(e.target)) fermer();
+  };
+  const echap = (e) => {
+    if (e.key !== "Escape") return;
+    fermer();
+    declencheur.focus();
+  };
+
+  const ouvrir = () => {
+    panneau = elem("div", "menu");
+    contenu(panneau, fermer);
+    document.body.appendChild(panneau);
+    declencheur.setAttribute("aria-expanded", "true");
+
+    // Ancré sous le déclencheur, aligné à droite, et rentré dans la fenêtre.
+    const ancre = declencheur.getBoundingClientRect();
+    const gauche = Math.max(8, Math.min(
+      ancre.right - panneau.offsetWidth,
+      window.innerWidth - panneau.offsetWidth - 8,
+    ));
+    panneau.style.setProperty("left", `${gauche}px`);
+    panneau.style.setProperty("top", `${ancre.bottom + 8}px`);
+    requestAnimationFrame(() => panneau && panneau.classList.add("ouvert"));
+
+    // En capture : un clic sur un autre bouton doit fermer ce menu avant que ce
+    // bouton n'agisse, sinon on agit depuis un menu qu'on croyait refermé.
+    document.addEventListener("pointerdown", dehors, true);
+    document.addEventListener("keydown", echap, true);
+  };
+
+  declencheur.setAttribute("aria-haspopup", "menu");
+  declencheur.setAttribute("aria-expanded", "false");
+  declencheur.addEventListener("click", () => (panneau ? fermer() : ouvrir()));
+  return declencheur;
+}
+
+/** Une entrée de menu. `ton` la colore — « danger » pour ce qui déconnecte. */
+export function entreeMenu(libelle, { onClick, ton = "" } = {}) {
+  const el = elem("button", `menu-entree ${ton}`, libelle);
+  el.type = "button";
+  if (onClick) el.addEventListener("click", onClick);
+  return el;
+}
+
+/**
  * Un libellé suivi du point d'interrogation qui porte l'explication.
  *
  * Un `<button>` et non un `<span>` : l'explication doit être atteignable au
