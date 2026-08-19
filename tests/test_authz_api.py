@@ -330,6 +330,7 @@ def test_un_ecrivain_peut_ecrire(harness: Harness, client):
         f"/ws/rooms/{room}", headers=harness.auth(harness.token(bob))
     ) as ws:
         greet(ws)
+        harness.give_floor(room, "bob")
         ws.send_json(send())
         assert until(ws, "turn.ended")["data"]["subtype"] == "success"
 
@@ -354,6 +355,7 @@ def test_la_promotion_prend_effet_sans_reconnexion(harness: Harness, client):
             headers=harness.auth(harness.token(alice)),
         )
 
+        harness.give_floor(room, "bob")
         ws.send_json(send("et maintenant ?"))
         assert until(ws, "turn.ended")["data"]["subtype"] == "success"
 
@@ -367,6 +369,7 @@ def test_la_retrogradation_prend_effet_sans_reconnexion(harness: Harness, client
         f"/ws/rooms/{room}", headers=harness.auth(harness.token(bob))
     ) as ws:
         greet(ws)
+        harness.give_floor(room, "bob")
         ws.send_json(send())
         until(ws, "turn.ended")
 

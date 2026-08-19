@@ -24,7 +24,12 @@ class Capability(StrEnum):
     SPEAK = "room.speak"
     #: Trancher une demande d'approbation d'outil.
     TOOLS_APPROVE = "room.tools.approve"
-    #: Réquisitionner le jeton, y compris en pleine génération.
+    #: Accorder, refuser ou retirer la parole. C'est la capacité qui fait
+    #: l'animateur du salon : sans elle, une demande de parole reste une
+    #: demande, et personne ne parle sans qu'on l'ait décidé.
+    FLOOR_GRANT = "room.floor.grant"
+    #: Réquisitionner le jeton en coupant le tour en cours. À distinguer de
+    #: `FLOOR_GRANT`, qui attend la fin du tour : ici on interrompt.
     PREEMPT = "room.preempt"
     #: Interrompre la génération d'un autre.
     STOP = "room.stop"
@@ -50,6 +55,7 @@ ROLE_TEMPLATES: dict[str, tuple[Capability, ...]] = {
         Capability.PROPOSE,
         Capability.SPEAK,
         Capability.TOOLS_APPROVE,
+        Capability.FLOOR_GRANT,
         Capability.PREEMPT,
         Capability.STOP,
         Capability.INVITE,

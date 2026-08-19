@@ -178,13 +178,17 @@ h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; colo
 
 /* ----------------------------------------------------------------- jeton */
 
-#floor .etat { font-weight: 600; }
-#floor .held { color: var(--alerte); }
-#floor .generating { color: var(--accent); }
-#floor .open { color: var(--doux); }
-.echeance { color: var(--doux); font-size: 0.85rem; }
-#queue { margin: 0.4rem 0; padding-left: 1.2rem; color: var(--doux); font-size: 0.88rem; }
-#queue .moi { color: var(--texte); font-weight: 600; }
+/* Le pseudo du porteur est l'information principale du panneau : il se lit
+   avant l'état, et sans avoir à le chercher. */
+#floor .porteur { font-size: 1.05rem; color: var(--texte); }
+#floor .porteur.vide { color: var(--doux); font-weight: 400; }
+#floor .etat { color: var(--doux); font-size: 0.88rem; }
+#floor .differe { display: block; margin-top: 0.2rem; color: var(--accent); font-size: 0.85rem; }
+
+#requests { margin: 0.4rem 0; padding-left: 1.2rem; font-size: 0.88rem; }
+#requests li { margin-bottom: 0.35rem; }
+#requests .moi { font-weight: 600; }
+#requests .bouton { margin-left: 0.4rem; padding: 0.15rem 0.5rem; font-size: 0.82rem; }
 #actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.8rem; }
 #presence { color: var(--doux); font-size: 0.88rem; }
 #host { display: flex; flex-direction: column; gap: 0.15rem; font-size: 0.88rem; }

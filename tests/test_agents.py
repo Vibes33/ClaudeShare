@@ -26,7 +26,7 @@ from claudeshare.server.agentlink import AbsentAgent, AgentLink, NoAgentError
 from claudeshare.server.room import Room
 
 from .conftest import Harness
-from .test_ws_flow import collect, expect, greet, send
+from .test_ws_flow import collect, expect, greet, send, take_floor
 
 
 def trame(type_: str, **data) -> dict:
@@ -302,13 +302,14 @@ async def test_un_second_agent_remplace_le_premier():
 
 async def test_le_depart_de_l_agent_debloque_le_tour():
     """Sans ça, le jeton resterait pris par une génération qui n'existe plus, et
-    le salon serait bloqué jusqu'à l'expiration — qui n'arrive jamais pendant
-    une génération."""
+    le salon resterait bloqué en `generating` — état dont plus rien ne le sort,
+    puisque même son porteur ne peut pas y envoyer."""
     room = Room("salon", broker=_broker())
     await room.start()
     link, poste = lien(room)
     room.host(link)
 
+    room.floor.grant("alice")
     issue = await room.submit("bonjour", author="alice")
     assert issue.started
     assert room.floor.state is FloorState.GENERATING
@@ -317,21 +318,23 @@ async def test_le_depart_de_l_agent_debloque_le_tour():
     room.unhost(link)
     await asyncio.wait_for(room._turn, 2)
 
-    assert room.floor.state is FloorState.OPEN
+    # `held` et non `open` : le tour se termine, la parole reste à son porteur.
+    assert room.floor.state is FloorState.HELD
     assert isinstance(room.agent, AbsentAgent)
     await room.aclose()
 
 
 async def test_soumettre_sans_agent_leve_avant_de_toucher_au_jeton():
-    """Prendre la parole pour découvrir ensuite que personne n'écoute
-    laisserait le salon bloqué le temps de l'expiration."""
+    """Passer en génération pour découvrir ensuite que personne n'écoute
+    laisserait le salon figé sur un tour qui ne finira pas."""
     room = Room("salon", broker=_broker())
+    room.floor.grant("alice")
 
     with pytest.raises(NoAgentError):
         await room.submit("bonjour", author="alice")
 
-    assert room.floor.state is FloorState.OPEN
-    assert room.floor.holder is None
+    assert room.floor.state is FloorState.HELD
+    assert room.floor.holder == "alice"
 
 
 async def test_le_niveau_de_confiance_voyage_avec_le_tour():
@@ -343,6 +346,7 @@ async def test_le_niveau_de_confiance_voyage_avec_le_tour():
     link, poste = lien(room)
     room.host(link)
 
+    room.floor.grant("bob")
     await room.submit("lis ça", author="bob", trust=TrustLevel.READER)
     demande = await ordre(poste, AgentMessage.RUN_TURN)
 
@@ -381,6 +385,7 @@ def test_un_vrai_demon_joue_un_tour_pour_un_participant(harness: Harness, client
     ) as vue:
         assert greet(vue)["data"]["agent"]["connected"] is True
 
+        take_floor(vue, "alice")
         vue.send_json(send("bonjour"))
         recus = collect(vue, "turn.ended")
 

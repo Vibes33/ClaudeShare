@@ -1,26 +1,39 @@
-"""Jeton de parole : qui a la main, qui attend, qui peut couper.
+"""Jeton de parole : qui a la main, qui la demande, qui l'accorde.
 
 Machine à états **pure** — aucune I/O, aucun réseau, aucune horloge murale. Elle
 ne fait qu'une chose : dire ce qui doit se passer. C'est l'appelant
 (`server/room.py`) qui diffuse et qui interrompt réellement le tour.
 
 Ce découplage n'est pas de la décoration : la partie difficile ici est
-l'enchaînement des cas — préemption pendant une génération, expiration pendant
-qu'on attend, départ du porteur — et elle se teste au millième de seconde tant
-qu'aucune socket n'est dans la boucle.
+l'enchaînement des cas — attribution pendant une génération, départ du porteur,
+demande d'une personne déjà en attente — et elle se teste au millième de seconde
+tant qu'aucune socket n'est dans la boucle.
 
-    open ──request──► held(qui, échéance) ──begin_turn──► generating
-     ▲                   │                                    │
-     └───────────────────┴──── release / expiration ──────────┘
-                                  end_turn
+**La parole s'accorde, elle ne se prend pas.** C'est le point qui distingue ce
+module de sa version précédente, où `request()` servait lui-même le premier
+arrivé dès que le jeton était libre. Comme un envoi libérait le jeton, la main
+repartait à qui soumettait le plus vite : le salon n'avait pas d'animateur, il
+avait un réflexe. Ici, une demande ne fait que se voir ; seul un `grant` la
+transforme en parole, et il vient de quelqu'un qui a `room.floor.grant`.
 
-**Envoyer libère.** Une fois le tour terminé, le jeton repart à la file plutôt
-que de rester au dernier locuteur : sans ça, la personne qui parle le plus garde
-la main par simple inertie.
+    open ──grant──► held ──begin_turn──► generating
+     ▲               │  ▲                    │
+     │               │  └──── end_turn ──────┘   (le porteur garde la main)
+     └── release / revoke / depart ──┘
 
-L'ordre d'attente est `(−priorité, date de demande)`. Une priorité haute passe
-devant, mais à priorité égale c'est le premier arrivé — une file de priorité
-sans ce second critère affame les derniers.
+**Le porteur garde la main entre deux tours.** Il peut enchaîner les prompts
+jusqu'à ce qu'on la lui retire : la parole est une désignation, pas un ticket à
+usage unique. Sans quoi le propriétaire devrait réapprouver la même personne
+après chaque réponse.
+
+**Une attribution pendant une génération est différée.** Le tour en cours va au
+bout — d'autres le regardent — et le nouveau porteur prend la main à la fin. Ne
+pas différer aurait donné une parole qu'on ne peut pas encore utiliser, et un
+`begin_turn` refusé juste après une approbation acceptée.
+
+Il n'y a **pas d'expiration** : le jeton reste tant qu'on ne le retire pas. Une
+échéance retirerait la parole que le propriétaire vient d'accorder, sans que
+personne ne l'ait demandé — et le retrait, lui, est déjà à portée d'un bouton.
 """
 
 from __future__ import annotations
@@ -31,19 +44,10 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-#: Au-delà, un porteur qui ne parle pas rend la main. Assez long pour rédiger,
-#: assez court pour qu'un onglet oublié ne bloque pas le salon.
-HOLD_TIMEOUT_S = 90.0
-
-#: Délai minimal entre deux préemptions par la même personne. La préemption est
-#: brutale par nature ; sans ce frein, une priorité haute devient un droit de
-#: couper la parole en continu.
-PREEMPT_COOLDOWN_S = 60.0
-
 
 class FloorState(StrEnum):
     OPEN = "open"
-    #: Quelqu'un a la main et rédige.
+    #: Quelqu'un a la main. Il rédige, ou attend simplement d'écrire.
     HELD = "held"
     #: Un tour tourne. Il n'a pas d'échéance : une génération peut être longue,
     #: et le chien de garde du superviseur couvre déjà le cas d'un CLI bloqué.
@@ -56,14 +60,22 @@ class Denial(StrEnum):
     NOT_HOLDER = "not_holder"
     NOTHING_TO_TAKE = "nothing_to_take"
     OWN_FLOOR = "own_floor"
-    COOLDOWN = "cooldown"
+    NOT_REQUESTED = "not_requested"
+    #: Le porteur a la parole, mais un tour tourne encore.
+    TURN_RUNNING = "turn_running"
 
 
 @dataclass(frozen=True, slots=True, order=True)
-class Waiter:
-    """Une demande en attente. L'ordre du tri est celui du dataclass."""
+class Request:
+    """Une demande en attente de décision. L'ordre du tri est celui du dataclass.
 
-    #: Négatif pour que la priorité haute sorte en premier d'un `min()`.
+    L'ordre n'attribue plus rien — il ne sert qu'à présenter les demandes à qui
+    décide. Mais il reste `(−priorité, date)` : une priorité haute se voit en
+    premier, et à priorité égale c'est le premier arrivé. Sans ce second
+    critère, une liste triée par la seule priorité rendrait l'ordre d'arrivée
+    invisible à qui doit trancher.
+    """
+
     rank_priority: int
     at: float
     who: str = field(compare=False)
@@ -86,14 +98,14 @@ class Outcome:
     reason: str = ""
     #: Vient d'obtenir le jeton. À prévenir.
     granted: str | None = None
-    #: Vient de le perdre contre son gré (préemption ou expiration).
+    #: Vient de le perdre contre son gré. À prévenir aussi.
     revoked: str | None = None
     #: Un tour tournait et doit être coupé pour de bon.
     interrupt: bool = False
-    #: Rang dans la file quand la demande n'est pas servie tout de suite.
+    #: Rang de la demande dans la liste présentée à qui décide.
     position: int | None = None
-    #: Secondes restantes, pour un refus de cooldown.
-    retry_in: float | None = None
+    #: Obtiendra le jeton à la fin du tour en cours.
+    deferred: str | None = None
 
 
 class Floor:
@@ -104,27 +116,19 @@ class Floor:
     donnerait l'illusion qu'on peut l'appeler d'ailleurs.
     """
 
-    def __init__(
-        self,
-        *,
-        hold_timeout: float = HOLD_TIMEOUT_S,
-        preempt_cooldown: float = PREEMPT_COOLDOWN_S,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        self._hold_timeout = hold_timeout
-        self._cooldown = preempt_cooldown
-        # Horloge monotone : une correction NTP ne doit pas rallonger ni écourter
-        # une échéance en cours.
+    def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
+        # Horloge monotone : elle ne sert plus qu'à dater les demandes pour les
+        # ordonner, mais une correction NTP réordonnerait une file en cours.
         self._clock = clock
         self._state = FloorState.OPEN
         self._holder: str | None = None
-        #: Priorité du porteur, conservée pour le cas où il est préempté : le
-        #: remettre en file à 0 le ferait rétrograder derrière des gens qu'il
-        #: devançait avant qu'on lui coupe la parole.
-        self._holder_priority = 0
-        self._deadline: float | None = None
-        self._queue: list[Waiter] = []
-        self._last_preempt: dict[str, float] = {}
+        #: Attribué pendant une génération : prendra la main à la fin du tour.
+        self._deferred: str | None = None
+        #: Le porteur perd la main à la fin du tour en cours — retrait demandé
+        #: pendant une génération, ou porteur parti. On ne coupe pas pour
+        #: autant : le tour appartient déjà autant à ceux qui le regardent.
+        self._revoke_after_turn = False
+        self._requests: list[Request] = []
 
     # -------------------------------------------------------------- lecture
 
@@ -137,11 +141,24 @@ class Floor:
         return self._holder
 
     @property
-    def queue(self) -> list[str]:
-        return [w.who for w in sorted(self._queue)]
+    def deferred(self) -> str | None:
+        return self._deferred
+
+    @property
+    def requests(self) -> list[str]:
+        return [r.who for r in sorted(self._requests)]
 
     def waiting(self, who: str) -> bool:
-        return any(w.who == who for w in self._queue)
+        return any(r.who == who for r in self._requests)
+
+    def can_send(self, who: str) -> bool:
+        """Cette personne peut-elle soumettre un prompt maintenant ?
+
+        Une seule formulation, partagée par le serveur et par ce qu'affichent
+        les interfaces : deux réponses différentes à cette question feraient un
+        bouton actif sur un envoi refusé.
+        """
+        return self._holder == who and self._state is FloorState.HELD
 
     @property
     def signature(self) -> tuple[Any, ...]:
@@ -150,170 +167,200 @@ class Floor:
         C'est ce que l'appelant compare pour décider s'il annonce un nouvel
         état. Le faire ainsi plutôt qu'en marquant chaque transition n'est pas
         un détail : deux transitions changeaient l'état sans se déclarer —
-        `begin_turn`, et la fin d'un tour sans personne en file — et les
-        interfaces restaient bloquées sur « en cours » indéfiniment. Une règle
-        qu'on ne peut pas oublier d'appliquer vaut mieux qu'un drapeau qu'on
-        oublie de poser.
+        `begin_turn`, et la fin d'un tour — et les interfaces restaient bloquées
+        sur « en cours » indéfiniment. Une règle qu'on ne peut pas oublier
+        d'appliquer vaut mieux qu'un drapeau qu'on oublie de poser.
 
-        `expires_in` en est volontairement absent : il bouge en continu, et le
-        diffuser inonderait le salon d'événements qui ne disent rien.
+        Les demandes en font partie : c'est par là que le propriétaire apprend
+        qu'on lui en adresse une, et une demande qui n'arrive pas est une
+        personne qui attend sans savoir qu'elle n'est pas vue.
         """
-        return (self._state, self._holder, tuple(w.who for w in sorted(self._queue)))
+        return (
+            self._state,
+            self._holder,
+            self._deferred,
+            tuple(r.who for r in sorted(self._requests)),
+        )
 
     def view(self) -> dict[str, Any]:
-        """État diffusable. L'échéance est **relative** : une horloge monotone
-        ne veut rien dire pour un client."""
-        reste = None
-        if self._deadline is not None:
-            reste = max(0.0, round(self._deadline - self._clock(), 1))
+        """État diffusable."""
         return {
             "state": str(self._state),
             "holder": self._holder,
-            "expires_in": reste,
-            "queue": [{"who": w.who, "priority": w.priority} for w in sorted(self._queue)],
+            "deferred": self._deferred,
+            "requests": [{"who": r.who, "priority": r.priority} for r in sorted(self._requests)],
         }
 
-    # ---------------------------------------------------------- transitions
+    # -------------------------------------------------- demander, retirer
 
     def request(self, who: str, priority: int = 0) -> Outcome:
-        """Demande la parole. Sert immédiatement si le jeton est libre."""
-        if self._holder == who:
-            # Le porteur qui redemande signale qu'il est toujours là : c'est le
-            # signal de vie qui repousse l'expiration.
-            self._touch()
-            return Outcome(reason="already_holder")
-
-        if self._state is FloorState.OPEN and not self._queue:
-            return self._grant(who, priority)
-
-        return self._enqueue(who, priority)
-
-    def release(self, who: str) -> Outcome:
-        """Rend la main volontairement.
-
-        Refusé pendant une génération : le tour est déjà parti, et le jeton
-        repartira de lui-même à la fin. Pour couper, c'est `stop`.
-        """
-        if self._holder != who:
-            return Outcome(accepted=False, reason=Denial.NOT_HOLDER)
-        if self._state is FloorState.GENERATING:
-            return Outcome(accepted=False, reason=Denial.NOT_HOLDER)
-        return self._open_and_pass()
-
-    def preempt(self, who: str, priority: int = 0) -> Outcome:
-        """Réquisitionne le jeton, y compris en pleine génération.
-
-        L'appelant a déjà vérifié la capacité `room.preempt` : cette couche ne
-        connaît pas les droits, seulement l'ordonnancement.
-        """
+        """Demande la parole. **N'accorde jamais** : quelqu'un doit trancher."""
         if self._holder == who:
             return Outcome(accepted=False, reason=Denial.OWN_FLOOR)
+        if self.waiting(who):
+            # Redemander ne change pas le rang : sinon une demande répétée
+            # servirait à remonter la liste, ou ferait perdre sa place.
+            return Outcome(reason="already_requested", position=self.requests.index(who) + 1)
+        self._requests.append(Request(rank_priority=-priority, at=self._clock(), who=who))
+        return Outcome(reason="requested", position=self.requests.index(who) + 1)
 
-        if self._state is FloorState.OPEN and self._holder is None:
-            # Rien à réquisitionner : la demande dégénère en demande ordinaire,
-            # et ne consomme donc pas le cooldown.
-            return self.request(who, priority)
+    def withdraw(self, who: str) -> Outcome:
+        """Retire sa propre demande."""
+        if not self.waiting(who):
+            return Outcome(accepted=False, reason=Denial.NOT_REQUESTED)
+        self._drop(who)
+        return Outcome(reason="withdrawn")
 
-        depuis = self._clock() - self._last_preempt.get(who, -self._cooldown)
-        if depuis < self._cooldown:
-            return Outcome(
-                accepted=False,
-                reason=Denial.COOLDOWN,
-                retry_in=round(self._cooldown - depuis, 1),
-            )
+    # --------------------------------------------------- accorder, refuser
 
-        evince = self._holder
+    def grant(self, who: str, *, immediate: bool = False) -> Outcome:
+        """Accorde la parole. L'appelant a vérifié `room.floor.grant`.
+
+        Pendant une génération, l'attribution est **différée** à la fin du tour,
+        sauf `immediate` — la réquisition, qui coupe. Deux verbes plutôt qu'un
+        drapeau silencieux : couper le tour de quelqu'un est une décision, elle
+        doit se lire dans l'appel.
+        """
+        if self._holder == who and self._deferred is None:
+            return Outcome(accepted=False, reason=Denial.OWN_FLOOR)
+
+        if self._state is FloorState.GENERATING and not immediate:
+            self._drop(who)
+            # Annule un retrait différé : le jeton va à quelqu'un, et laisser le
+            # drapeau posé ferait perdre la main au nouveau porteur à la fin du
+            # tour, sans que personne ne l'ait demandé.
+            self._revoke_after_turn = False
+            self._deferred = who
+            return Outcome(reason="deferred", deferred=who)
+
+        evince = self._holder if self._holder != who else None
         coupe = self._state is FloorState.GENERATING
-        self._last_preempt[who] = self._clock()
-
-        # La personne évincée retourne dans la file à son rang : la préempter
-        # n'est pas l'exclure, et son brouillon est conservé côté client.
-        if evince is not None:
-            self._enqueue(evince, priority=self._holder_priority)
-
-        self._holder = None
-        self._grant(who, priority)
+        self._deferred = None
+        self._install(who)
         return Outcome(
-            accepted=True,
-            reason="preempted",
+            reason="granted" if not coupe else "preempted",
             granted=who,
             revoked=evince,
             interrupt=coupe,
         )
 
+    def deny(self, who: str) -> Outcome:
+        """Refuse une demande. Elle disparaît ; la personne peut redemander."""
+        if not self.waiting(who):
+            return Outcome(accepted=False, reason=Denial.NOT_REQUESTED)
+        self._drop(who)
+        return Outcome(reason="denied", revoked=who)
+
+    def revoke(self) -> Outcome:
+        """Retire la parole sans la donner à personne.
+
+        Ne coupe pas un tour en cours : celui-ci va au bout et le jeton retombe
+        à personne. Pour couper, c'est `stop`, qui est un droit distinct.
+        """
+        if self._holder is None and self._deferred is None:
+            return Outcome(accepted=False, reason=Denial.NOTHING_TO_TAKE)
+        if self._state is FloorState.GENERATING:
+            # Le porteur perd la main à la fin de son tour : `_deferred` à None
+            # et un porteur qui ne survivra pas à `end_turn`.
+            perdu, self._deferred = self._holder, None
+            self._revoke_after_turn = True
+            return Outcome(reason="revoke_pending", deferred=None, revoked=perdu)
+        perdu = self._holder
+        self._deferred = None
+        self._release()
+        return Outcome(reason="revoked", revoked=perdu)
+
+    def release(self, who: str) -> Outcome:
+        """Rend la main volontairement.
+
+        Refusé pendant une génération : le tour est déjà parti. Pour couper,
+        c'est `stop`.
+        """
+        if self._holder != who:
+            return Outcome(accepted=False, reason=Denial.NOT_HOLDER)
+        if self._state is FloorState.GENERATING:
+            return Outcome(accepted=False, reason=Denial.TURN_RUNNING)
+        return self._hand_over(revoked=None, reason="released")
+
+    # ------------------------------------------------------------ les tours
+
     def begin_turn(self, who: str) -> Outcome:
         """Le porteur envoie son message : le tour démarre."""
-        if self._holder != who or self._state is not FloorState.HELD:
+        if not self.can_send(who):
             return Outcome(accepted=False, reason=Denial.NOT_HOLDER)
         self._state = FloorState.GENERATING
-        self._deadline = None
         return Outcome(reason="generating")
 
     def end_turn(self) -> Outcome:
-        """Le tour est fini — envoyer libère, le jeton repart à la file."""
+        """Le tour est fini.
+
+        Le porteur **garde** la main, sauf si on l'a réattribuée entre-temps :
+        c'est là que se pose une attribution différée, et c'est ce qui fait de
+        l'attente promise au demandeur une attente qui se termine.
+        """
         if self._state is not FloorState.GENERATING:
             return Outcome(accepted=False, reason=Denial.NOTHING_TO_TAKE)
-        return self._open_and_pass()
+        self._state = FloorState.HELD
+
+        if self._revoke_after_turn:
+            self._revoke_after_turn = False
+            perdu = self._holder
+            self._release()
+            return Outcome(reason="revoked", revoked=perdu)
+
+        if self._deferred is None:
+            return Outcome(reason="ended")
+
+        suivant, self._deferred = self._deferred, None
+        evince = self._holder
+        self._install(suivant)
+        return Outcome(reason="granted", granted=suivant, revoked=evince)
 
     def depart(self, who: str) -> Outcome:
         """Quelqu'un se déconnecte.
 
         Pendant une génération, le tour continue : d'autres personnes le
         regardent, et le couper parce que son auteur a fermé un onglet perdrait
-        un travail qui ne lui appartient plus vraiment.
+        un travail qui ne lui appartient plus vraiment. Le jeton, lui, ne lui
+        est pas rendu à la fin — il ne sert à personne chez un absent.
         """
-        self._queue = [w for w in self._queue if w.who != who]
+        self._drop(who)
+        if self._deferred == who:
+            self._deferred = None
         if self._holder != who:
             return Outcome(reason="left")
         if self._state is FloorState.GENERATING:
+            self._revoke_after_turn = True
             return Outcome(reason="left_generating")
-        return self._open_and_pass(revoked=who)
-
-    def tick(self) -> Outcome:
-        """Fait passer le temps. À appeler périodiquement.
-
-        Ne renvoie quelque chose que si une échéance vient d'être franchie.
-        """
-        if self._state is not FloorState.HELD or self._deadline is None:
-            return Outcome(reason="idle")
-        if self._clock() < self._deadline:
-            return Outcome(reason="idle")
-        return self._open_and_pass(revoked=self._holder, reason="expired")
+        return self._hand_over(revoked=who, reason="left")
 
     # ------------------------------------------------------------- internes
 
-    def _touch(self) -> None:
-        self._deadline = self._clock() + self._hold_timeout
+    def _drop(self, who: str) -> None:
+        self._requests = [r for r in self._requests if r.who != who]
 
-    def _grant(self, who: str, priority: int = 0) -> Outcome:
-        self._queue = [w for w in self._queue if w.who != who]
+    def _install(self, who: str) -> None:
+        # Une attribution annule un retrait différé : le jeton va à quelqu'un,
+        # sinon le nouveau porteur le perdrait à la fin du tour sans raison.
+        self._revoke_after_turn = False
+        self._drop(who)
         self._holder = who
-        self._holder_priority = priority
         self._state = FloorState.HELD
-        self._touch()
-        return Outcome(granted=who)
 
-    def _enqueue(self, who: str, priority: int) -> Outcome:
-        """Met en file, ou renvoie sa place si la personne y est déjà.
-
-        Redemander ne change pas le rang : sinon une demande répétée servirait à
-        remonter la file, ou au contraire ferait perdre sa place.
-        """
-        if not self.waiting(who):
-            self._queue.append(Waiter(rank_priority=-priority, at=self._clock(), who=who))
-        return Outcome(reason="queued", position=self.queue.index(who) + 1)
-
-    def _open_and_pass(
-        self, *, revoked: str | None = None, reason: str = "released"
-    ) -> Outcome:
-        """Libère le jeton et le passe au suivant, s'il y en a un."""
+    def _release(self) -> None:
         self._holder = None
-        self._deadline = None
         self._state = FloorState.OPEN
 
-        if not self._queue:
-            return Outcome(revoked=revoked, reason=reason)
+    def _hand_over(self, *, revoked: str | None, reason: str) -> Outcome:
+        """Le porteur s'en va. Une attribution différée s'applique, sinon rien.
 
-        suivant = min(self._queue)
-        self._grant(suivant.who, suivant.priority)
-        return Outcome(granted=suivant.who, revoked=revoked, reason=reason)
+        Personne n'est servi automatiquement depuis les demandes : c'est tout
+        l'objet de ce module. Le jeton retombe à personne, et qui décide voit
+        les demandes en attente.
+        """
+        if self._deferred is not None:
+            suivant, self._deferred = self._deferred, None
+            self._install(suivant)
+            return Outcome(reason=reason, granted=suivant, revoked=revoked)
+        self._release()
+        return Outcome(reason=reason, revoked=revoked)

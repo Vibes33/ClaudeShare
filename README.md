@@ -429,6 +429,14 @@ sinon « lecteur » ne voudrait plus dire la même chose d'un salon à l'autre.
 Deux garde-fous : le propriétaire garde toutes ses capacités même sous un
 `revoke`, et un salon conserve toujours au moins un propriétaire.
 
+Les capacités d'un rôle sont **recopiées en base** à sa création — c'est ce qui
+permet le sur-mesure par salon. Conséquence à connaître : ajouter une capacité
+au gabarit ne touche que les salons créés ensuite, et les salons existants
+demandent une migration. C'est ce que fait `0005_floor_grant` pour
+`room.floor.grant`, sans quoi le propriétaire d'un salon déjà ouvert se serait
+retrouvé sans le droit d'accorder la parole chez lui — c'est-à-dire dans un
+salon où plus personne ne peut parler.
+
 **Les droits sont relus à chaque intention, jamais mis en cache.** Une
 rétrogradation prend donc effet sans reconnexion, et si la personne qui pilote le
 tour en cours perd le droit de parler, ce tour est interrompu — sans quoi ce ne
@@ -463,38 +471,50 @@ sans `room.settings` n'obtient jamais l'auto-approbation des éditions.
 
 ## Jeton de parole
 
-Un salon ne laisse parler qu'une personne à la fois. La machine à états vit dans
-`core/floor.py`, **sans I/O ni horloge murale** : elle décide, et le salon
+Un salon ne laisse parler qu'une personne à la fois, et **la parole s'accorde,
+elle ne se prend pas**. Une personne demande ; quelqu'un qui a
+`room.floor.grant` — propriétaire ou modérateur — décide. La machine à états vit
+dans `core/floor.py`, **sans I/O ni horloge murale** : elle décide, et le salon
 exécute. Ce partage n'est pas de la décoration — l'enchaînement des cas
-(préemption pendant une génération, expiration pendant l'attente, départ du
-porteur) se teste au millième de seconde tant qu'aucune socket n'est en jeu.
+(attribution pendant une génération, départ du porteur, retrait différé) se
+teste au millième de seconde tant qu'aucune socket n'est en jeu.
 
 ```
-open ──request──► held(qui, échéance) ──envoi──► generating
- ▲                   │                              │
- └───────────────────┴──── release / expiration ────┘
+open ──grant──► held ──envoi──► generating
+ ▲               │  ▲               │
+ │               │  └─── fin du tour ┘   (le porteur garde la main)
+ └── release / revoke / départ ──┘
 ```
 
-**Envoyer un prompt vaut demande de parole** : seul dans un salon, on écrit sans
-rien réclamer. Et **envoyer libère** — le jeton repart à la file une fois le
-tour fini, sinon la personne qui parle le plus garde la main par inertie.
+La version précédente servait le premier arrivé : `request` accordait le jeton
+dès qu'il était libre, et comme envoyer le libérait, la main repartait à qui
+soumettait le plus vite. Le salon n'avait pas d'animateur, il avait un réflexe.
 
-L'ordre d'attente est `(−priorité, date de demande)`. La priorité fait passer
-devant ; à priorité égale c'est le premier arrivé, sans quoi les derniers ne
-passeraient jamais. Redemander ne change pas le rang : insister ne doit ni faire
-remonter la file, ni faire perdre sa place.
+**Le porteur garde la main entre deux tours.** La parole est une désignation,
+pas un ticket à usage unique : il enchaîne ses prompts jusqu'à ce qu'on la lui
+retire. Sans ça, le propriétaire réapprouverait la même personne après chaque
+réponse.
 
-`room.preempt` permet de réquisitionner le jeton, y compris en pleine
-génération — c'est le seul cas où le tour est réellement coupé, avec le drainage
-du tampon que `interrupt()` garantit. Trois garde-fous : la personne évincée
-**retourne en file à son rang** plutôt que d'être exclue, un **cooldown** empêche
-de couper la parole en continu, et réquisitionner un jeton libre ne consomme pas
-ce cooldown puisque rien n'a été réquisitionné.
+**Pendant une génération, personne n'écrit — pas même le porteur.** Et une
+attribution décidée à ce moment-là est **différée** : le tour en cours va au
+bout, le nouveau porteur prend la main à la fin. Accorder tout de suite donnerait
+une parole inutilisable, et un envoi refusé juste après une approbation acceptée.
 
-Un porteur inactif rend la main après 90 s ; une génération, elle, n'expire pas
-(elle peut être longue, et le chien de garde du superviseur couvre déjà un CLI
-bloqué). Une déconnexion libère le jeton, mais **n'interrompt pas** un tour déjà
-lancé : d'autres personnes le regardent.
+Les demandes sont ordonnées par `(−priorité, date)`. Cet ordre **n'attribue
+rien** : il ne fait que présenter les demandes à qui tranche, la priorité en
+premier et, à priorité égale, le premier arrivé. Redemander ne change pas le
+rang : insister ne doit ni faire remonter la liste, ni faire perdre sa place.
+
+`room.preempt` **s'ajoute** à `room.floor.grant` pour réquisitionner le jeton en
+coupant le tour en cours — c'est le seul cas où le tour est réellement
+interrompu, avec le drainage du tampon que `interrupt()` garantit. Attendre la
+fin d'un tour est le comportement ; l'interrompre est l'exception, et elle
+demande un droit de plus.
+
+Il n'y a **pas d'expiration** : le jeton reste tant qu'on ne le retire pas. Une
+échéance retirerait la parole que le propriétaire vient d'accorder, sans que
+personne ne l'ait demandé. Une déconnexion, elle, libère le jeton — mais
+**n'interrompt pas** un tour déjà lancé : d'autres personnes le regardent.
 
 ## Approbation d'outil
 
@@ -623,7 +643,7 @@ l'autre. Ce sont deux vues du même salon.
 |---|---|---|
 | Servi par | le même processus, sans build | `claudeshare join` |
 | Rendu | sous-ensemble markdown en nœuds DOM | `rich.text.Text` |
-| Jeton de parole | boutons, grisés selon les droits | F2 · F3 · F4 · F5 |
+| Jeton de parole | boutons, grisés selon les droits | F2 · F3 · F4 · F5 · F6 · F7 |
 | Approbation | boutons dans le panneau | F8 approuver · F9 refuser |
 
 Les deux appliquent les mêmes deux règles de reprise, et ce sont celles qui se
@@ -719,7 +739,7 @@ horaire élague au-delà de la rétention configurée, hors du chemin d'écritur
 | `db/models.py` | personnes, salons, appartenances, rôles |
 | `core/permissions.py` | résolution des droits, barrière `require()`, garde-fous d'escalade |
 | `core/invites.py` | cibles nominatives, durées de vie, états |
-| `core/floor.py` | jeton de parole : file priorisée, préemption, expiration |
+| `core/floor.py` | jeton de parole : demande, attribution, différé, retrait |
 | `agent/approval.py` | `can_use_tool` relié à une décision humaine |
 | `server/authz.py` | application sur les routes, déclaration pour la couverture |
 | `server/static/` | client web sans build : `protocol.js`, `render.js`, `app.js` |

@@ -41,6 +41,24 @@ def greet(ws, last_seq: int = 0) -> dict:
     return expect(ws, "snapshot")
 
 
+def take_floor(ws, label: str) -> dict:
+    """Se donner la parole à soi-même.
+
+    Nécessaire avant tout envoi depuis que la parole s'accorde : personne ne
+    parle sans qu'on l'ait décidé, propriétaire compris. Celui-ci a
+    `room.floor.grant`, donc il se l'accorde — c'est le bouton « Prendre la
+    parole » de l'interface.
+    """
+    ws.send_json(
+        {
+            "v": PROTOCOL_VERSION,
+            "type": ClientMessage.FLOOR_GRANT,
+            "data": {"who": label},
+        }
+    )
+    return expect(ws, "floor.changed")
+
+
 # ------------------------------------------------------- authentification
 
 
@@ -130,6 +148,7 @@ def test_les_deux_membres_voient_le_meme_flux(harness: Harness, client):
     ):
         greet(a)
         greet(b)
+        take_floor(a, "alice")
         a.send_json(send("dis bonjour"))
 
         for ws in (a, b):
@@ -155,6 +174,7 @@ def test_les_salons_sont_cloisonnes(harness: Harness, client):
     ):
         greet(a)
         greet(b)
+        take_floor(a, "alice")
         a.send_json(send("salut"))
         collect(a, "turn.ended")
 
@@ -169,6 +189,7 @@ def test_les_deltas_n_ont_pas_de_seq(harness: Harness, client):
         f"/ws/rooms/{room}", headers=harness.auth(harness.token(alice))
     ) as ws:
         greet(ws)
+        take_floor(ws, "alice")
         ws.send_json(send("salut"))
         frames = collect(ws, "turn.ended")
 
@@ -189,10 +210,16 @@ def test_la_reconnexion_ne_renvoie_que_le_manquant(harness: Harness, client):
 
     with client.websocket_connect(f"/ws/rooms/{room}", headers=headers) as ws:
         greet(ws)
+        take_floor(ws, "alice")
         ws.send_json(send("salut"))
-        # Jusqu'à la libération du jeton, et non jusqu'à `turn.ended` : le tour
-        # rend la main dans son `finally`, donc l'annonce suit sa propre fin.
+        # Jusqu'à la fin du tour **et** l'annonce du jeton : le tour repasse en
+        # `held` dans son `finally`, donc l'annonce suit sa propre fin.
         frames = collect(ws, "turn.ended") + collect(ws, "floor.changed")
+        # Puis rendre la main avant de fermer : depuis que le porteur garde le
+        # jeton entre deux tours, se déconnecter en le tenant est un événement
+        # de plus — réel, et qui rendrait ce test faussement instable.
+        ws.send_json({"v": PROTOCOL_VERSION, "type": ClientMessage.FLOOR_RELEASE, "data": {}})
+        frames += collect(ws, "floor.changed")
         dernier = max(f["seq"] for f in frames if f["seq"] is not None)
 
     with client.websocket_connect(f"/ws/rooms/{room}", headers=headers) as ws:

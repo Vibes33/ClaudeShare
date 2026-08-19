@@ -1,8 +1,12 @@
-"""Jeton de parole : file priorisée, préemption, expiration, départs.
+"""Jeton de parole : demander, accorder, différer, retirer.
 
 Tout est piloté par une horloge factice. Une machine à états qui dépend du temps
 réel se teste avec des `sleep`, donne une suite lente et se met à clignoter au
 premier ralentissement de la machine — le découplage vaut surtout pour ça.
+
+L'invariant que cette suite protège avant tout : **rien n'accorde la parole
+sauf `grant`**. C'est le défaut de la version précédente — `request` servait le
+premier arrivé — et il ne se voyait pas à la lecture, seulement à l'usage.
 """
 
 from __future__ import annotations
@@ -28,333 +32,401 @@ def floor(**kwargs) -> tuple[Floor, Horloge]:
     return Floor(clock=horloge, **kwargs), horloge
 
 
-# ----------------------------------------------------------------- la base
+# ------------------------------------------------- demander n'est pas obtenir
 
 
-def test_le_premier_a_demander_obtient_la_parole():
+def test_demander_n_accorde_rien():
+    """Le cœur du modèle. Même seul, même jeton libre : on attend une décision."""
     jeton, _ = floor()
     resultat = jeton.request("alice")
-    assert resultat.granted == "alice"
-    assert jeton.state is FloorState.HELD
-    assert jeton.holder == "alice"
 
-
-def test_le_second_attend():
-    jeton, _ = floor()
-    jeton.request("alice")
-    resultat = jeton.request("bob")
     assert resultat.granted is None
-    assert resultat.position == 1
-    assert jeton.queue == ["bob"]
+    assert jeton.state is FloorState.OPEN
+    assert jeton.holder is None
+    assert jeton.requests == ["alice"]
 
 
-def test_rendre_la_main_sert_le_suivant():
-    jeton, _ = floor()
+def test_la_demande_rend_son_rang():
+    jeton, horloge = floor()
     jeton.request("alice")
-    jeton.request("bob")
-    resultat = jeton.release("alice")
-    assert resultat.granted == "bob"
-    assert jeton.holder == "bob"
-
-
-def test_seul_le_porteur_peut_rendre_la_main():
-    jeton, _ = floor()
-    jeton.request("alice")
-    jeton.request("bob")
-    resultat = jeton.release("bob")
-    assert not resultat.accepted
-    assert resultat.reason == Denial.NOT_HOLDER
-    assert jeton.holder == "alice"
+    horloge.avance(1)
+    resultat = jeton.request("bob")
+    assert resultat.position == 2
 
 
 def test_redemander_ne_change_pas_le_rang():
-    """Sinon insister servirait à remonter la file — ou à perdre sa place."""
+    """Sinon une demande répétée servirait à remonter la liste."""
     jeton, horloge = floor()
     jeton.request("alice")
-    jeton.request("bob")
-    horloge.avance(5)
-    jeton.request("carol")
-    horloge.avance(5)
-
-    assert jeton.request("bob").position == 1
-    assert jeton.queue == ["bob", "carol"]
-
-
-# --------------------------------------------------------------- priorités
-
-
-def test_un_prioritaire_double_deux_personnes_en_file():
-    jeton, horloge = floor()
-    jeton.request("alice")
-    jeton.request("bob")
-    horloge.avance(1)
-    jeton.request("carol")
-    horloge.avance(1)
-    jeton.request("vip", priority=5)
-
-    assert jeton.queue == ["vip", "bob", "carol"]
-    assert jeton.release("alice").granted == "vip"
-
-
-def test_a_priorite_egale_c_est_le_premier_arrive():
-    """Une file de priorité sans ce second critère affame les derniers."""
-    jeton, horloge = floor()
-    jeton.request("alice")
-    for qui in ("bob", "carol", "dave"):
-        jeton.request(qui, priority=3)
-        horloge.avance(1)
-    assert jeton.queue == ["bob", "carol", "dave"]
-
-
-def test_la_priorite_est_conservee_a_travers_la_file():
-    jeton, horloge = floor()
-    jeton.request("alice")
-    jeton.request("vip", priority=9)
     horloge.avance(1)
     jeton.request("bob")
+    horloge.avance(1)
 
-    assert jeton.release("alice").granted == "vip"
-    # `vip` sort de la file : `bob` est seul derrière.
-    assert jeton.queue == ["bob"]
-
-
-# -------------------------------------------------------------- préemption
-
-
-def test_la_preemption_prend_la_main_a_un_redacteur():
-    jeton, _ = floor()
-    jeton.request("alice")
-    resultat = jeton.preempt("vip", priority=5)
-
-    assert resultat.granted == "vip"
-    assert resultat.revoked == "alice"
-    # Personne ne rédigeait de tour : rien à couper.
-    assert not resultat.interrupt
+    resultat = jeton.request("alice")
+    assert resultat.reason == "already_requested"
+    assert resultat.position == 1
+    assert jeton.requests == ["alice", "bob"]
 
 
-def test_la_preemption_pendant_une_generation_demande_une_coupure():
-    """C'est le seul cas où l'appelant doit vraiment interrompre le SDK."""
-    jeton, _ = floor()
-    jeton.request("alice")
-    jeton.begin_turn("alice")
-    resultat = jeton.preempt("vip")
-
-    assert resultat.interrupt
-    assert resultat.revoked == "alice"
-    assert jeton.holder == "vip"
-
-
-def test_la_personne_preemptee_retourne_en_file():
-    """La préempter n'est pas l'exclure."""
-    jeton, _ = floor()
-    jeton.request("alice")
-    jeton.preempt("vip")
-    assert jeton.queue == ["alice"]
-    assert jeton.release("vip").granted == "alice"
-
-
-def test_la_preemption_ne_retrograde_pas_la_personne_evincee():
+def test_la_priorite_passe_devant_a_egalite_le_premier_arrive():
     jeton, horloge = floor()
-    jeton.request("chef", priority=8)
+    jeton.request("alice")
     horloge.avance(1)
-    jeton.request("bob")  # en file derrière
+    jeton.request("bob")
     horloge.avance(1)
-    jeton.preempt("vip", priority=9)
+    jeton.request("carol", priority=5)
 
-    # `chef` gardait l'avantage sur `bob` avant qu'on lui coupe la parole.
-    assert jeton.queue == ["chef", "bob"]
+    assert jeton.requests == ["carol", "alice", "bob"]
 
 
-def test_on_ne_se_preempte_pas_soi_meme():
+def test_retirer_sa_demande():
     jeton, _ = floor()
     jeton.request("alice")
-    resultat = jeton.preempt("alice")
-    assert not resultat.accepted
-    assert resultat.reason == Denial.OWN_FLOOR
+    assert jeton.withdraw("alice").accepted
+    assert jeton.requests == []
 
 
-def test_preempter_un_jeton_libre_est_une_demande_ordinaire():
+def test_retirer_une_demande_qu_on_n_a_pas_faite():
     jeton, _ = floor()
-    resultat = jeton.preempt("vip")
-    assert resultat.granted == "vip"
-    assert resultat.revoked is None
+    refus = jeton.withdraw("alice")
+    assert not refus.accepted
+    assert refus.reason == Denial.NOT_REQUESTED
 
 
-def test_le_cooldown_freine_les_preemptions_en_rafale():
-    """Sans lui, une priorité haute devient un droit de couper en continu."""
-    jeton, horloge = floor(preempt_cooldown=60.0)
+# -------------------------------------------------------------- accorder
+
+
+def test_accorder_donne_la_parole_et_consomme_la_demande():
+    jeton, _ = floor()
     jeton.request("alice")
-    assert jeton.preempt("vip").accepted
 
-    jeton.release("vip")  # alice récupère la main
-    horloge.avance(10)
-    refuse = jeton.preempt("vip")
-    assert not refuse.accepted
-    assert refuse.reason == Denial.COOLDOWN
-    assert refuse.retry_in == 50.0
+    resultat = jeton.grant("alice")
+    assert resultat.granted == "alice"
+    assert jeton.holder == "alice"
+    assert jeton.state is FloorState.HELD
+    assert jeton.requests == []
+
+
+def test_accorder_a_quelqu_un_qui_n_a_rien_demande():
+    """Le propriétaire distribue la parole ; une demande n'est pas un préalable."""
+    jeton, _ = floor()
+    assert jeton.grant("alice").granted == "alice"
     assert jeton.holder == "alice"
 
 
-def test_le_cooldown_finit_par_expirer():
-    jeton, horloge = floor(preempt_cooldown=60.0)
-    jeton.request("alice")
-    jeton.preempt("vip")
-    jeton.release("vip")
-    horloge.avance(61)
-    assert jeton.preempt("vip").accepted
+def test_accorder_a_un_autre_evince_le_porteur():
+    jeton, _ = floor()
+    jeton.grant("alice")
 
-
-def test_preempter_un_jeton_libre_ne_consomme_pas_le_cooldown():
-    """Rien n'a été réquisitionné : il n'y a rien à freiner."""
-    jeton, horloge = floor(preempt_cooldown=60.0)
-    jeton.preempt("vip")
-    jeton.release("vip")
-    jeton.request("alice")
-    horloge.avance(1)
-    assert jeton.preempt("vip").accepted
-
-
-# -------------------------------------------------------------- expiration
-
-
-def test_un_porteur_inactif_rend_la_main():
-    jeton, horloge = floor(hold_timeout=90.0)
-    jeton.request("alice")
-    jeton.request("bob")
-
-    horloge.avance(89)
-    assert jeton.tick().granted is None
-    assert jeton.holder == "alice"
-
-    horloge.avance(2)
-    resultat = jeton.tick()
-    assert resultat.revoked == "alice"
+    resultat = jeton.grant("bob")
     assert resultat.granted == "bob"
-    assert resultat.reason == "expired"
+    assert resultat.revoked == "alice"
+    assert not resultat.interrupt
+    assert jeton.holder == "bob"
 
 
-def test_redemander_repousse_l_echeance():
-    """Le signal de vie du porteur : il est toujours là, il rédige."""
-    jeton, horloge = floor(hold_timeout=90.0)
-    jeton.request("alice")
-    horloge.avance(80)
-    jeton.request("alice")
-    horloge.avance(80)
-    assert jeton.tick().revoked is None
-    assert jeton.holder == "alice"
+def test_accorder_au_porteur_actuel_est_refuse():
+    jeton, _ = floor()
+    jeton.grant("alice")
+    refus = jeton.grant("alice")
+    assert not refus.accepted
+    assert refus.reason == Denial.OWN_FLOOR
 
 
-def test_une_generation_n_expire_pas():
-    """Une génération peut être longue ; le chien de garde du superviseur
-    couvre déjà le cas d'un CLI bloqué."""
-    jeton, horloge = floor(hold_timeout=90.0)
-    jeton.request("alice")
-    jeton.begin_turn("alice")
-    horloge.avance(10_000)
-    assert jeton.tick().revoked is None
-    assert jeton.state is FloorState.GENERATING
-
-
-def test_le_jeton_libre_ne_declenche_rien():
-    jeton, horloge = floor()
-    avant = jeton.signature
-    horloge.avance(10_000)
-
-    resultat = jeton.tick()
-
-    assert (resultat.granted, resultat.revoked) == (None, None)
-    assert jeton.signature == avant
-
-
-# ------------------------------------------------------------------- tours
-
-
-def test_envoyer_libere():
-    """Sinon la personne qui parle le plus garde la main par inertie."""
+def test_refuser_une_demande_la_fait_disparaitre():
     jeton, _ = floor()
     jeton.request("alice")
-    jeton.request("bob")
-    jeton.begin_turn("alice")
-    assert jeton.end_turn().granted == "bob"
+
+    resultat = jeton.deny("alice")
+    assert resultat.accepted
+    assert resultat.revoked == "alice"
+    assert jeton.requests == []
+    assert jeton.holder is None
 
 
-def test_le_jeton_reste_libre_si_personne_n_attend():
+def test_refuser_ce_qui_n_est_pas_demande():
     jeton, _ = floor()
-    jeton.request("alice")
-    jeton.begin_turn("alice")
-    resultat = jeton.end_turn()
-    assert resultat.granted is None
+    refus = jeton.deny("alice")
+    assert not refus.accepted
+    assert refus.reason == Denial.NOT_REQUESTED
+
+
+def test_retirer_la_parole_sans_la_donner():
+    jeton, _ = floor()
+    jeton.grant("alice")
+
+    resultat = jeton.revoke()
+    assert resultat.revoked == "alice"
+    assert jeton.holder is None
     assert jeton.state is FloorState.OPEN
 
 
-def test_seul_le_porteur_demarre_un_tour():
+def test_retirer_quand_personne_n_a_la_parole():
     jeton, _ = floor()
-    jeton.request("alice")
+    refus = jeton.revoke()
+    assert not refus.accepted
+    assert refus.reason == Denial.NOTHING_TO_TAKE
+
+
+# ------------------------------------------------------------- les tours
+
+
+def test_seul_le_porteur_peut_envoyer():
+    jeton, _ = floor()
+    jeton.grant("alice")
+
+    assert jeton.can_send("alice")
+    assert not jeton.can_send("bob")
     assert not jeton.begin_turn("bob").accepted
 
 
-def test_rendre_la_main_pendant_une_generation_est_refuse():
-    """Le tour est parti ; le jeton repartira de lui-même à la fin."""
+def test_pendant_une_generation_meme_le_porteur_ne_peut_plus_envoyer():
+    """« Les autres sont bloqués pendant la durée de réponse » — lui aussi."""
     jeton, _ = floor()
-    jeton.request("alice")
+    jeton.grant("alice")
     jeton.begin_turn("alice")
-    assert not jeton.release("alice").accepted
+
+    assert jeton.state is FloorState.GENERATING
+    assert not jeton.can_send("alice")
+    assert not jeton.begin_turn("alice").accepted
+
+
+def test_le_porteur_garde_la_main_apres_son_tour():
+    """Une désignation, pas un ticket à usage unique."""
+    jeton, _ = floor()
+    jeton.grant("alice")
+    jeton.begin_turn("alice")
+
+    resultat = jeton.end_turn()
+    assert resultat.granted is None
+    assert jeton.holder == "alice"
+    assert jeton.can_send("alice")
+
+
+def test_finir_un_tour_qui_ne_tourne_pas():
+    jeton, _ = floor()
+    refus = jeton.end_turn()
+    assert not refus.accepted
+    assert refus.reason == Denial.NOTHING_TO_TAKE
+
+
+def test_rendre_la_main_pendant_une_generation_est_refuse():
+    jeton, _ = floor()
+    jeton.grant("alice")
+    jeton.begin_turn("alice")
+
+    refus = jeton.release("alice")
+    assert not refus.accepted
+    assert refus.reason == Denial.TURN_RUNNING
+
+
+def test_rendre_la_main_ne_sert_personne_automatiquement():
+    jeton, _ = floor()
+    jeton.request("bob")
+    jeton.grant("alice")
+
+    jeton.release("alice")
+    assert jeton.holder is None
+    assert jeton.requests == ["bob"]
+
+
+# ------------------------------------- attribution différée pendant un tour
+
+
+def test_accorder_pendant_une_generation_est_differe():
+    """« Cela met en suspens le prochain user : il attend la fin de la réponse. »"""
+    jeton, _ = floor()
+    jeton.grant("alice")
+    jeton.begin_turn("alice")
+    jeton.request("bob")
+
+    resultat = jeton.grant("bob")
+    assert resultat.deferred == "bob"
+    assert resultat.granted is None
+    assert not resultat.interrupt
+    # Le tour d'alice continue, et bob ne peut pas encore écrire.
+    assert jeton.holder == "alice"
+    assert jeton.state is FloorState.GENERATING
+    assert not jeton.can_send("bob")
+    # Mais sa demande est tranchée : elle n'attend plus de décision.
+    assert jeton.requests == []
+
+
+def test_l_attribution_differee_prend_effet_a_la_fin_du_tour():
+    jeton, _ = floor()
+    jeton.grant("alice")
+    jeton.begin_turn("alice")
+    jeton.grant("bob")
+
+    resultat = jeton.end_turn()
+    assert resultat.granted == "bob"
+    assert resultat.revoked == "alice"
+    assert jeton.holder == "bob"
+    assert jeton.can_send("bob")
+
+
+def test_la_derniere_attribution_differee_gagne():
+    """Le propriétaire change d'avis pendant la génération : c'est son droit."""
+    jeton, _ = floor()
+    jeton.grant("alice")
+    jeton.begin_turn("alice")
+    jeton.grant("bob")
+    jeton.grant("carol")
+
+    assert jeton.deferred == "carol"
+    assert jeton.end_turn().granted == "carol"
+
+
+def test_reprendre_la_parole_differee_pour_soi():
+    """Le porteur préempté d'un différé peut annuler en se la réaccordant."""
+    jeton, _ = floor()
+    jeton.grant("alice")
+    jeton.begin_turn("alice")
+    jeton.grant("bob")
+
+    assert jeton.grant("alice").deferred == "alice"
+    assert jeton.end_turn().granted == "alice"
+    assert jeton.holder == "alice"
+
+
+def test_la_requisition_coupe_le_tour():
+    jeton, _ = floor()
+    jeton.grant("alice")
+    jeton.begin_turn("alice")
+
+    resultat = jeton.grant("bob", immediate=True)
+    assert resultat.interrupt
+    assert resultat.granted == "bob"
+    assert resultat.revoked == "alice"
+    assert jeton.holder == "bob"
+    assert jeton.state is FloorState.HELD
+
+
+def test_un_retrait_pendant_une_generation_prend_effet_a_la_fin():
+    jeton, _ = floor()
+    jeton.grant("alice")
+    jeton.begin_turn("alice")
+
+    resultat = jeton.revoke()
+    assert resultat.revoked == "alice"
+    assert not resultat.interrupt
+    # Le tour va au bout : d'autres le regardent.
     assert jeton.state is FloorState.GENERATING
 
+    jeton.end_turn()
+    assert jeton.holder is None
+    assert jeton.state is FloorState.OPEN
 
-# ----------------------------------------------------------------- départs
 
-
-def test_le_depart_du_porteur_sert_le_suivant():
+def test_une_attribution_annule_un_retrait_differe():
+    """Sinon le nouveau porteur perdrait la main à la fin du tour sans raison."""
     jeton, _ = floor()
-    jeton.request("alice")
-    jeton.request("bob")
+    jeton.grant("alice")
+    jeton.begin_turn("alice")
+    jeton.revoke()
+
+    jeton.grant("bob")
+    assert jeton.end_turn().granted == "bob"
+    assert jeton.holder == "bob"
+
+
+# ------------------------------------------------------------- les départs
+
+
+def test_le_depart_du_porteur_libere_le_jeton():
+    jeton, _ = floor()
+    jeton.grant("alice")
+
     resultat = jeton.depart("alice")
     assert resultat.revoked == "alice"
-    assert resultat.granted == "bob"
+    assert jeton.holder is None
 
 
-def test_le_depart_retire_de_la_file():
+def test_le_depart_ne_sert_personne_automatiquement():
+    jeton, _ = floor()
+    jeton.request("bob")
+    jeton.grant("alice")
+
+    jeton.depart("alice")
+    assert jeton.holder is None
+    assert jeton.requests == ["bob"]
+
+
+def test_le_depart_applique_une_attribution_differee():
+    jeton, _ = floor()
+    jeton.grant("alice")
+    jeton.begin_turn("alice")
+    jeton.grant("bob")
+    jeton.end_turn()
+    # bob a la main, alice n'a plus rien : son départ ne doit rien changer.
+    assert jeton.depart("alice").granted is None
+    assert jeton.holder == "bob"
+
+
+def test_le_depart_retire_la_demande():
     jeton, _ = floor()
     jeton.request("alice")
-    jeton.request("bob")
-    jeton.request("carol")
-    jeton.depart("bob")
-    assert jeton.queue == ["carol"]
+    jeton.depart("alice")
+    assert jeton.requests == []
 
 
 def test_le_depart_pendant_une_generation_laisse_le_tour_vivre():
-    """D'autres personnes le regardent : fermer un onglet ne doit pas le tuer."""
+    """D'autres regardent : couper parce qu'un onglet s'est fermé perdrait leur tour."""
     jeton, _ = floor()
-    jeton.request("alice")
-    jeton.request("bob")
+    jeton.grant("alice")
     jeton.begin_turn("alice")
 
     resultat = jeton.depart("alice")
-    assert not resultat.interrupt
+    assert resultat.reason == "left_generating"
     assert jeton.state is FloorState.GENERATING
-    # Le jeton repart bien à la fin du tour.
-    assert jeton.end_turn().granted == "bob"
+
+    # En revanche le jeton ne lui est pas rendu : il ne sert à personne chez un absent.
+    jeton.end_turn()
+    assert jeton.holder is None
 
 
-# ------------------------------------------------------------------- vue
-
-
-def test_la_vue_donne_une_echeance_relative():
-    """Une horloge monotone ne veut rien dire pour un client."""
-    jeton, horloge = floor(hold_timeout=90.0)
-    jeton.request("alice")
-    jeton.request("bob", priority=2)
-    horloge.avance(30)
-
-    vue = jeton.view()
-    assert vue["state"] == "held"
-    assert vue["holder"] == "alice"
-    assert vue["expires_in"] == 60.0
-    assert vue["queue"] == [{"who": "bob", "priority": 2}]
-
-
-def test_la_vue_d_un_jeton_libre_n_a_pas_d_echeance():
+def test_le_depart_annule_l_attribution_qui_lui_etait_differee():
     jeton, _ = floor()
-    vue = jeton.view()
-    assert vue == {"state": "open", "holder": None, "expires_in": None, "queue": []}
+    jeton.grant("alice")
+    jeton.begin_turn("alice")
+    jeton.grant("bob")
+
+    jeton.depart("bob")
+    assert jeton.deferred is None
+    jeton.end_turn()
+    assert jeton.holder == "alice"
+
+
+# ------------------------------------------------------------- la diffusion
+
+
+def test_la_signature_bouge_a_chaque_changement_visible():
+    """Ce qui ne bouge pas la signature n'est pas diffusé — donc ne se voit pas."""
+    jeton, _ = floor()
+    vues = [jeton.signature]
+
+    for action in (
+        lambda: jeton.request("bob"),
+        lambda: jeton.grant("alice"),
+        lambda: jeton.begin_turn("alice"),
+        lambda: jeton.grant("bob"),
+        lambda: jeton.end_turn(),
+    ):
+        action()
+        assert jeton.signature != vues[-1], "un changement visible n'a pas été annoncé"
+        vues.append(jeton.signature)
+
+
+def test_la_vue_porte_le_porteur_le_differe_et_les_demandes():
+    jeton, _ = floor()
+    jeton.grant("alice")
+    jeton.begin_turn("alice")
+    jeton.request("carol", priority=3)
+    jeton.grant("bob")
+
+    assert jeton.view() == {
+        "state": "generating",
+        "holder": "alice",
+        "deferred": "bob",
+        "requests": [{"who": "carol", "priority": 3}],
+    }

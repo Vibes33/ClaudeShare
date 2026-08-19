@@ -38,7 +38,7 @@ def instantane(seq: int = 0, **data: Any) -> dict:
         "partials": {},
         "present": [],
         "capabilities": [],
-        "floor": {"state": "open", "holder": None, "queue": [], "expires_in": None},
+        "floor": {"state": "open", "holder": None, "deferred": None, "requests": []},
         "approvals": [],
     }
     corps.update(data)
@@ -195,11 +195,11 @@ def test_le_jeton_suit_les_transitions():
     view.apply(
         evenement(
             EventType.FLOOR_CHANGED, 1, state="held", holder="alice",
-            queue=[{"who": "bob", "priority": 0}], expires_in=90.0, reason="released",
+            deferred=None, requests=[{"who": "bob", "priority": 0}], reason="granted",
         )
     )
     assert view.floor["holder"] == "alice"
-    assert view.floor["queue"] == [{"who": "bob", "priority": 0}]
+    assert view.floor["requests"] == [{"who": "bob", "priority": 0}]
     # `turn_id` et `author` sont l'enveloppe de l'événement, pas l'état du jeton.
     assert "turn_id" not in view.floor
 
@@ -336,7 +336,7 @@ def test_l_instantane_du_vrai_serveur_se_reduit(harness, client):
     les deux clients afficheraient un salon vide. On prend donc un instantané
     produit par le vrai serveur et on le fait passer par la vraie réduction.
     """
-    from .test_ws_flow import collect, greet, send
+    from .test_ws_flow import collect, greet, send, take_floor
 
     alice = harness.user("alice")
     room = harness.room(alice, workspace="a")
@@ -351,11 +351,14 @@ def test_l_instantane_du_vrai_serveur_se_reduit(harness, client):
         assert view.present == ["alice"]
         assert view.floor["state"] == "open"
 
+        view.apply(take_floor(ws, "alice"))
+        assert view.floor["holder"] == "alice"
+
         ws.send_json(send("bonjour"))
         for frame in collect(ws, str(EventType.TURN_ENDED)):
             view.apply(frame)
-        # Le jeton se libère *après* la fin du tour : `end_turn` est dans le
-        # `finally` du tour, donc sa diffusion suit `turn.ended`.
+        # L'état du jeton revient *après* la fin du tour : `end_turn` est dans
+        # le `finally` du tour, donc sa diffusion suit `turn.ended`.
         view.apply(collect(ws, str(EventType.FLOOR_CHANGED))[-1])
 
     tour = view.transcript[-1]
@@ -364,7 +367,9 @@ def test_l_instantane_du_vrai_serveur_se_reduit(harness, client):
     # définitif : si les deux se cumulaient, on lirait « bonjourbonjour ».
     assert tour.body == "bonjour"
     assert tour.ended is not None
-    assert view.floor["holder"] is None
+    # Le porteur garde la main entre deux tours : c'est une désignation.
+    assert view.floor["holder"] == "alice"
+    assert view.floor["state"] == "held"
 
 
 # ------------------------------------------------------------- l'affichage

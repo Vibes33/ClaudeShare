@@ -124,6 +124,20 @@ class Harness:
                 role_name=role,
             )
 
+    def give_floor(self, room_id: str, who: str) -> None:
+        """Accorde la parole sans passer par une socket.
+
+        Depuis que la parole s'accorde plutôt qu'elle ne se prend, tout envoi en
+        suppose une — y compris dans les suites qui ne testent pas la passation.
+        Leur faire jouer la conversation complète des trames noierait ce qu'elles
+        vérifient ; le raccord socket, lui, est couvert par `test_floor_ws`.
+
+        Le salon doit être monté : il l'est dès la première connexion.
+        """
+        live = self.ctx.rooms.get(room_id)
+        assert live is not None, "le salon n'est pas monté — connectez-vous d'abord"
+        live.floor.grant(who)
+
     @staticmethod
     def auth(secret: str) -> dict[str, str]:
         return {"Authorization": f"Bearer {secret}"}

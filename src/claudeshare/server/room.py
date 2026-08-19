@@ -15,7 +15,6 @@ il ne peut simplement pas faire tourner de tour.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -24,7 +23,7 @@ from ..agent.hooks import AuditRecord
 from ..agent.toolpolicy import TrustLevel
 from ..core.broker import Broadcaster, InProcessBroadcaster
 from ..core.eventlog import EventLog, LogStore
-from ..core.floor import Floor, Outcome
+from ..core.floor import Denial, Floor, Outcome
 from ..events import Event, EventType
 from ..protocol import ServerMessage, envelope
 from .agentlink import AbsentAgent, AgentLink, NoAgentError
@@ -32,19 +31,13 @@ from .approvals import ApprovalDesk
 
 logger = logging.getLogger(__name__)
 
-#: Fréquence de vérification des échéances du jeton. Le jeton n'a pas besoin
-#: d'expirer à la seconde près ; sonder plus souvent ne ferait que réveiller la
-#: boucle pour rien.
-TICK_INTERVAL_S = 5.0
-
-
 @dataclass(frozen=True, slots=True)
 class Submission:
     """Ce qu'il advient d'un prompt soumis."""
 
     started: bool
-    #: Rang dans la file quand le tour n'a pas pu démarrer.
-    position: int | None = None
+    #: Pourquoi il n'est pas parti. Code de `Denial`, stable pour les interfaces.
+    reason: str = ""
 
 
 class Room:
@@ -73,7 +66,6 @@ class Room:
         #: Dernier état du jeton annoncé au salon. Sert à ne diffuser que les
         #: vrais changements — voir `_apply`.
         self._floor_signature = self.floor.signature
-        self._ticker: asyncio.Task[Any] | None = None
         #: Nettoyages en cours. Référencés pour qu'ils ne soient pas ramassés
         #: avant la fin — `create_task` ne garde qu'une référence faible.
         self._chores: set[asyncio.Task[Any]] = set()
@@ -275,9 +267,12 @@ class Room:
                 "`claudeshare agent`"
             )
 
-        demande = await self._apply(self.floor.request(author, priority))
-        if self.floor.holder != author:
-            return Submission(started=False, position=demande.position)
+        # Soumettre ne demande plus la parole : il faut l'avoir. Le faire ici
+        # revenait à servir le premier arrivé, et c'est exactement ce que le
+        # jeton sur approbation supprime. Une demande est une intention à part,
+        # que quelqu'un doit accorder — voir `core/floor.py`.
+        if not self.floor.can_send(author):
+            return Submission(started=False, reason=str(self._blocage(author)))
 
         await self._apply(self.floor.begin_turn(author))
 
@@ -299,15 +294,42 @@ class Room:
 
     # ------------------------------------------------------- jeton de parole
 
+    def _blocage(self, who: str) -> Denial:
+        """Pourquoi cette personne ne peut pas envoyer. Pour le dire, pas pour décider.
+
+        Trois empêchements différents, trois messages différents : ne pas avoir
+        la parole, l'avoir mais attendre la fin d'un tour, ou l'avoir obtenue
+        pour la fin du tour en cours. Les confondre sous « vous n'avez pas la
+        parole » ferait chercher un droit à quelqu'un qui n'a qu'à patienter.
+        """
+        if self.floor.holder == who:
+            return Denial.TURN_RUNNING
+        return Denial.NOT_HOLDER
+
     async def request_floor(self, who: str, priority: int = 0) -> Outcome:
+        """Demande la parole. Ne l'accorde pas : quelqu'un doit trancher."""
         return await self._apply(self.floor.request(who, priority))
+
+    async def withdraw_floor(self, who: str) -> Outcome:
+        return await self._apply(self.floor.withdraw(who))
+
+    async def grant_floor(self, who: str, *, immediate: bool = False) -> Outcome:
+        """Accorde la parole. L'appelant a vérifié `room.floor.grant`.
+
+        `immediate` coupe le tour en cours et demande en plus `room.preempt` :
+        attendre la fin d'un tour est le comportement, l'interrompre est
+        l'exception.
+        """
+        return await self._apply(self.floor.grant(who, immediate=immediate))
+
+    async def deny_floor(self, who: str) -> Outcome:
+        return await self._apply(self.floor.deny(who))
+
+    async def revoke_floor(self) -> Outcome:
+        return await self._apply(self.floor.revoke())
 
     async def release_floor(self, who: str) -> Outcome:
         return await self._apply(self.floor.release(who))
-
-    async def preempt_floor(self, who: str, priority: int = 0) -> Outcome:
-        """Réquisitionne le jeton. L'appelant a vérifié `room.preempt`."""
-        return await self._apply(self.floor.preempt(who, priority))
 
     async def _apply(self, outcome: Outcome) -> Outcome:
         """Exécute les conséquences d'une transition du jeton.
@@ -335,30 +357,20 @@ class Room:
             )
         return outcome
 
-    async def _tick_forever(self) -> None:
-        """Fait expirer les jetons abandonnés.
-
-        Un porteur qui ferme son ordinateur portable sans se déconnecter
-        proprement bloquerait sinon le salon jusqu'au redémarrage du serveur.
-        """
-        while True:
-            await asyncio.sleep(TICK_INTERVAL_S)
-            try:
-                await self._apply(self.floor.tick())
-            except Exception:
-                logger.exception("échec du tic du jeton dans %s", self.id)
-
     # ------------------------------------------------------------ cycle de vie
 
     async def start(self) -> None:
         """Démarre la coordination. N'attend aucun agent.
 
-        Un salon existe sans hôte : on peut y lire l'historique et prendre la
-        parole en file. Attendre un agent pour ouvrir le salon rendrait la
-        conversation illisible dès que son propriétaire ferme son portable.
+        Un salon existe sans hôte : on peut y lire l'historique et demander la
+        parole. Attendre un agent pour ouvrir le salon rendrait la conversation
+        illisible dès que son propriétaire ferme son portable.
+
+        Plus rien à lancer ici depuis que le jeton n'expire plus : il n'y a
+        aucune échéance à faire passer. La méthode reste — le cycle de vie d'un
+        salon est appelé de plusieurs endroits, et le rendre asymétrique pour
+        gagner quatre lignes ferait chercher où est passé le `start`.
         """
-        if self._ticker is None:
-            self._ticker = asyncio.create_task(self._tick_forever())
 
     async def stop(self) -> bool:
         return await self.agent.interrupt()
@@ -366,11 +378,6 @@ class Room:
     async def aclose(self) -> None:
         if self._chores:
             await asyncio.gather(*self._chores, return_exceptions=True)
-        if self._ticker is not None:
-            self._ticker.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._ticker
-            self._ticker = None
         if self._turn is not None and not self._turn.done():
             await self.agent.interrupt()
         self.approvals.forget()

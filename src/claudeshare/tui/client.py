@@ -70,8 +70,16 @@ class RoomView:
     last_seq: int = 0
     capabilities: frozenset[str] = frozenset()
     present: list[str] = field(default_factory=list)
+    #: Son propre nom dans le salon, tel que l'instantané le donne. Sert à
+    #: savoir si « alice a la parole » veut dire soi.
+    me: str = ""
     floor: dict[str, Any] = field(
-        default_factory=lambda: {"state": "open", "holder": None, "queue": [], "expires_in": None}
+        default_factory=lambda: {
+            "state": "open",
+            "holder": None,
+            "deferred": None,
+            "requests": [],
+        }
     )
     #: Qui héberge le salon. Sans agent, on lit mais on n'exécute pas.
     agent: dict[str, Any] = field(
@@ -167,6 +175,7 @@ class RoomView:
         # l'instantané fait autorité dessus.
         self.capabilities = frozenset(data.get("capabilities") or ())
         self.present = list(data.get("present") or [])
+        self.me = data.get("me") or self.me
         self.floor = data.get("floor") or self.floor
         self.agent = data.get("agent") or self.agent
         self.truncated = bool(data.get("truncated"))

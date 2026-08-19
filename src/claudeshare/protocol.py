@@ -34,11 +34,21 @@ class ClientMessage(StrEnum):
     #: Interrompt le tour en cours.
     STREAM_STOP = "stream.stop"
 
-    #: Demande la parole, ou signale qu'on est toujours là en la rédigeant.
+    #: Demande la parole. Elle n'est pas accordée pour autant : quelqu'un qui a
+    #: `room.floor.grant` doit trancher.
     FLOOR_REQUEST = "floor.request"
+    #: Retire sa propre demande.
+    FLOOR_WITHDRAW = "floor.withdraw"
     #: Rend la main.
     FLOOR_RELEASE = "floor.release"
-    #: Réquisitionne le jeton, y compris en pleine génération (`room.preempt`).
+    #: Accorde la parole à quelqu'un (`room.floor.grant`). Pendant une
+    #: génération, l'attribution prend effet à la fin du tour.
+    FLOOR_GRANT = "floor.grant"
+    #: Refuse une demande (`room.floor.grant`).
+    FLOOR_DENY = "floor.deny"
+    #: Retire la parole sans la donner à personne (`room.floor.grant`).
+    FLOOR_REVOKE = "floor.revoke"
+    #: Accorde la parole **en coupant** le tour en cours (`room.preempt`).
     FLOOR_PREEMPT = "floor.preempt"
 
     #: Tranche une demande d'approbation d'outil (`room.tools.approve`).

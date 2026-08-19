@@ -109,6 +109,7 @@ def test_la_session_claude_est_retenue_pour_la_reprise(harness: Harness, client)
                 break
         # L'identifiant de session n'arrive qu'avec le premier ResultMessage :
         # une simple connexion ne suffit pas à le connaître.
+        harness.give_floor(room, "alice")
         ws.send_json(
             {"v": PROTOCOL_VERSION, "type": ClientMessage.PROMPT_SEND, "data": {"prompt": "salut"}}
         )

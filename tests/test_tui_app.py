@@ -34,7 +34,7 @@ def instantane(**data) -> dict:
         "partials": {},
         "present": ["alice", "bob"],
         "capabilities": ["room.read", "room.speak"],
-        "floor": {"state": "held", "holder": "alice", "queue": [], "expires_in": 90.0},
+        "floor": {"state": "held", "holder": "alice", "deferred": None, "requests": []},
         "approvals": [],
     }
     corps.update(data)
@@ -119,11 +119,11 @@ async def test_le_prompt_part_a_la_validation():
         assert app.query_one("#prompt").value == ""
 
 
-async def test_un_message_mis_en_file_est_rendu_a_son_auteur():
+async def test_un_message_refuse_faute_de_parole_est_rendu_a_son_auteur():
     """Le serveur ne conserve pas un prompt refusé, et c'est délibéré : il ne
     décide pas à la place de quelqu'un que ce qu'il a écrit il y a dix minutes
     est toujours ce qu'il veut envoyer. Il revient donc dans le champ, à
-    renvoyer une fois le jeton obtenu — sinon il est simplement perdu."""
+    renvoyer une fois la parole obtenue — sinon il est simplement perdu."""
     app, journal = monter()
     async with app.run_test() as pilot:
         await asyncio.sleep(PEINTURE_S)
@@ -134,9 +134,9 @@ async def test_un_message_mis_en_file_est_rendu_a_son_auteur():
         assert app.query_one("#prompt").value == ""
 
         await app._on_frame(
-            {"v": PROTOCOL_VERSION, "type": str(ServerMessage.QUEUED), "seq": None,
-             "data": {"position": 2}},
-            str(ServerMessage.QUEUED),
+            {"v": PROTOCOL_VERSION, "type": str(ServerMessage.ERROR), "seq": None,
+             "data": {"code": "not_holder", "message": "vous n'avez pas la parole"}},
+            str(ServerMessage.ERROR),
             None,
         )
         assert app.query_one("#prompt").value == "à mon tour"
@@ -182,3 +182,51 @@ async def test_sans_le_droit_d_approuver_la_touche_ne_fait_rien():
 
         assert not [t for t in journal if t["type"] == str(ClientMessage.TOOL_APPROVE)]
         assert "ne pouvez pas approuver" in app.query_one("#cote_contenu").content.plain
+
+
+async def test_accorder_la_parole_depuis_le_terminal():
+    """F6 sert la première demande en attente, pas soi-même."""
+    trames = [
+        instantane(
+            capabilities=["room.read", "room.speak", "room.floor.grant"],
+            floor={
+                "state": "open",
+                "holder": None,
+                "deferred": None,
+                "requests": [{"who": "bob", "priority": 0}],
+            },
+        )
+    ]
+    app, journal = monter(trames)
+    async with app.run_test() as pilot:
+        await asyncio.sleep(PEINTURE_S)
+        assert "bob" in app.query_one("#cote_contenu").content.plain
+
+        await pilot.press("f6")
+        await pilot.pause()
+
+    assert [t for t in journal if t["type"] == str(ClientMessage.FLOOR_GRANT)] == [
+        {"v": PROTOCOL_VERSION, "type": str(ClientMessage.FLOOR_GRANT), "data": {"who": "bob"}}
+    ]
+
+
+async def test_sans_le_droit_d_accorder_la_touche_le_dit():
+    trames = [
+        instantane(
+            floor={
+                "state": "open",
+                "holder": None,
+                "deferred": None,
+                "requests": [{"who": "bob", "priority": 0}],
+            },
+        )
+    ]
+    app, journal = monter(trames)
+    async with app.run_test() as pilot:
+        await asyncio.sleep(PEINTURE_S)
+        await pilot.press("f6")
+        await pilot.pause()
+        await asyncio.sleep(PEINTURE_S)
+
+        assert not [t for t in journal if t["type"] == str(ClientMessage.FLOOR_GRANT)]
+        assert "ne décidez pas" in app.query_one("#cote_contenu").content.plain

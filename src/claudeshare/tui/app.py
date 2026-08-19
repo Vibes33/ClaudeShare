@@ -52,6 +52,8 @@ class ClaudeShareTUI(App):
         ("f2", "floor_request", "Demander"),
         ("f3", "floor_release", "Rendre"),
         ("f4", "floor_preempt", "Réquisitionner"),
+        ("f6", "floor_grant", "Accorder"),
+        ("f7", "floor_deny", "Refuser la parole"),
         ("f5", "stop", "Interrompre"),
         ("f8", "approve", "Approuver"),
         ("f9", "deny", "Refuser"),
@@ -98,16 +100,19 @@ class ClaudeShareTUI(App):
             self._message = "" if self.view.hosted else "⚠ personne n'héberge ce salon"
         elif type_ == ServerMessage.ERROR:
             d = frame.get("data") or {}
-            retard = f" (réessayez dans {d['retry_in']} s)" if d.get("retry_in") else ""
-            self._message = f"⚠ {d.get('message') or d.get('code')}{retard}"
-        elif type_ == ServerMessage.QUEUED:
-            # Le serveur ne garde pas un prompt refusé — il refuse de décider à
-            # la place de quelqu'un que ce qu'il a écrit il y a dix minutes est
-            # toujours ce qu'il veut envoyer. On le lui rend donc dans le champ,
-            # s'il est encore monté : une trame peut arriver pendant l'arrêt.
-            if champs := self.query("#prompt"):
+            self._message = f"⚠ {d.get('message') or d.get('code')}"
+            # Un envoi refusé faute de parole : le serveur ne garde pas le
+            # prompt — il refuse de décider à la place de quelqu'un que ce qu'il
+            # a écrit il y a dix minutes est toujours ce qu'il veut envoyer. On
+            # le lui rend donc dans le champ, s'il est encore monté : une trame
+            # peut arriver pendant l'arrêt.
+            rendre = d.get("code") in ("not_holder", "turn_running")
+            if rendre and (champs := self.query("#prompt")):
                 champs.first(Input).value = self._brouillon
-            self._message = f"En file — position {self.view.queued}. Message rendu."
+        elif type_ == ServerMessage.QUEUED:
+            self._message = (
+                f"Parole demandée — {self.view.queued}ᵉ en attente de décision."
+            )
         if turn_id:
             self._dirty.add(turn_id)
 
@@ -176,7 +181,30 @@ class ClaudeShareTUI(App):
         await self.client.send(ClientMessage.FLOOR_RELEASE)
 
     async def action_floor_preempt(self) -> None:
-        await self.client.send(ClientMessage.FLOOR_PREEMPT)
+        await self.client.send(ClientMessage.FLOOR_PREEMPT, who=self.view.me)
+
+    async def action_floor_grant(self) -> None:
+        """Accorde la parole à la première demande.
+
+        Sans demande en attente, se l'accorde à soi-même : c'est le « Prendre la
+        parole » du web, et le seul moyen pour l'animateur d'écrire dans un
+        salon qu'il vient d'ouvrir.
+        """
+        await self._passer(ClientMessage.FLOOR_GRANT, defaut=self.view.me)
+
+    async def action_floor_deny(self) -> None:
+        await self._passer(ClientMessage.FLOOR_DENY)
+
+    async def _passer(self, message: str, defaut: str | None = None) -> None:
+        if not self.view.can(Capability.FLOOR_GRANT):
+            self._message = "⚠ vous ne décidez pas de qui a la parole"
+            return
+        demandes = self.view.floor.get("requests") or []
+        cible = demandes[0]["who"] if demandes else defaut
+        if cible is None:
+            self._message = "aucune demande de parole en attente"
+            return
+        await self.client.send(message, who=cible)
 
     async def action_stop(self) -> None:
         await self.client.send(ClientMessage.STREAM_STOP)
@@ -262,16 +290,21 @@ def _rendre_cote(view: RoomView, statut: str, message: str) -> Text:
         out.append("  le propriétaire doit lancer `claudeshare agent`\n", style="dim")
 
     f = view.floor
-    out.append("\nJeton\n", style="bold")
-    out.append(f"  {f.get('state', '?')}", style="yellow")
-    if f.get("holder"):
-        out.append(f" · {f['holder']}")
-    if f.get("expires_in") is not None and f.get("state") == "held":
-        out.append(f" ({round(f['expires_in'])} s)", style="dim")
-    out.append("\n")
-    for i, attente in enumerate(f.get("queue") or [], start=1):
-        priorite = f" (p{attente['priority']})" if attente.get("priority") else ""
-        out.append(f"  {i}. {attente['who']}{priorite}\n", style="dim")
+    out.append("\nJeton de parole\n", style="bold")
+    # Le porteur d'abord, et en clair : c'est la question que se pose qui
+    # regarde ce panneau. L'état de la machine vient après, en second.
+    out.append(f"  {f.get('holder') or 'personne'}\n", style="green" if f.get("holder") else "dim")
+    out.append(f"  {f.get('state', '?')}\n", style="yellow")
+    if f.get("deferred"):
+        out.append(f"  {f['deferred']} à la fin du tour\n", style="cyan")
+
+    if demandes := f.get("requests") or []:
+        out.append("\nDemandes\n", style="bold")
+        for i, attente in enumerate(demandes, start=1):
+            priorite = f" (p{attente['priority']})" if attente.get("priority") else ""
+            out.append(f"  {i}. {attente['who']}{priorite}\n", style="yellow")
+        if view.can(Capability.FLOOR_GRANT):
+            out.append("  F6 accorder · F7 refuser\n", style="dim")
 
     if view.approvals:
         out.append("\nApprobations\n", style="bold")

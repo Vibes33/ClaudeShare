@@ -20,10 +20,6 @@ import { renderMarkdown, elem, replace } from "./render.js";
 const RECONNECT_MIN_MS = 500;
 const RECONNECT_MAX_MS = 15000;
 
-//: Signal de vie envoyé pendant qu'on rédige. Le serveur traite la demande d'un
-//: porteur comme « je suis toujours là » et repousse l'expiration du jeton.
-const KEEPALIVE_MS = 30000;
-
 const state = {
   me: null,
   rooms: [],
@@ -36,7 +32,7 @@ const state = {
   turns: new Map(),
   order: [],
   present: [],
-  floor: { state: "open", holder: null, queue: [], expires_in: null },
+  floor: { state: "open", holder: null, deferred: null, requests: [] },
   //: Qui héberge le salon. Sans agent, on lit mais on n'exécute pas.
   agent: { connected: false, host: null, workspace: "" },
   //: Mon propre démon, tel que `/api/agent` le décrit. Distinct de `agent`
@@ -46,7 +42,11 @@ const state = {
   identifiant: { present: false, storable: false, managed: false },
   approvals: new Map(),
   queued: null,
-  //: Dernier prompt envoyé, rendu à son auteur s'il part en file.
+  //: Demandes de parole déjà signalées. Sans cette mémoire, chaque `floor.changed`
+  //: — il y en a un par transition — rejouerait la notification de qui attend
+  //: depuis dix minutes.
+  signalees: new Set(),
+  //: Dernier prompt envoyé, rendu à son auteur si la parole lui manque.
   brouillon: "",
   title: "",
 };
@@ -54,14 +54,13 @@ const state = {
 const dom = {};
 let dirty = new Set();
 let frameRequested = false;
-let keepalive = 0;
 
 // --------------------------------------------------------------- démarrage
 
 document.addEventListener("DOMContentLoaded", async () => {
   for (const id of [
     "app", "login", "providers", "rooms", "room", "title", "status", "who",
-    "transcript", "composer", "prompt", "send", "floor", "queue", "presence", "host", "code",
+    "transcript", "composer", "prompt", "send", "floor", "requests", "presence", "host", "code",
     "approvals", "toasts", "actions",
   ]) {
     dom[id] = document.getElementById(id);
@@ -497,15 +496,9 @@ function connecter() {
     // ce qui manque, et le dédoublonnage couvre le recouvrement.
     socket.send(JSON.stringify(frame(ClientMessage.HELLO, { last_seq: state.lastSeq })));
 
-    // Posé une fois par connexion, et non à chaque rendu : le remettre à zéro
-    // en peignant ferait qu'il ne partirait jamais dans un salon actif, et le
-    // jeton expirerait sous les doigts de quelqu'un en train de rédiger.
-    clearInterval(keepalive);
-    keepalive = setInterval(() => {
-      if (state.floor.holder === state.me.label && state.floor.state === "held") {
-        emettre(ClientMessage.FLOOR_REQUEST);
-      }
-    }, KEEPALIVE_MS);
+    // Plus de signal de vie à envoyer : le jeton n'expire plus. Il se retire,
+    // et c'est une décision de quelqu'un — pas une échéance qui tombe pendant
+    // qu'on rédige.
   });
 
   socket.addEventListener("message", (e) => {
@@ -520,7 +513,6 @@ function connecter() {
 
   socket.addEventListener("close", (e) => {
     state.socket = null;
-    clearInterval(keepalive);
     if (e.code === 4401) return afficherConnexion();
     if (e.code === 4404 || e.code === 4403) {
       statut("accès refusé");
@@ -536,7 +528,6 @@ function connecter() {
 }
 
 function fermer() {
-  clearInterval(keepalive);
   if (state.socket) {
     const socket = state.socket;
     state.socket = null;
@@ -574,12 +565,7 @@ function appliquer(trame) {
     case ServerMessage.QUEUED:
       state.queued = d.position;
       state.floor = d;
-      // Le serveur ne garde pas le prompt refusé : il refuse de décider à la
-      // place de quelqu'un que ce qu'il a écrit il y a dix minutes est toujours
-      // ce qu'il veut envoyer. On le lui rend donc, tel quel, à renvoyer quand
-      // son tour vient.
-      if (state.brouillon) dom.prompt.value = state.brouillon;
-      toast(`En file d'attente — position ${d.position}. Votre message vous est rendu.`);
+      toast(`Parole demandée — ${d.position}ᵉ en attente de décision.`);
       return peindre();
     case ServerMessage.ERROR:
       return erreur(d);
@@ -700,6 +686,7 @@ function evenement(type, d) {
       state.approvals.delete(d.approval_id);
       break;
     case EventType.FLOOR_CHANGED:
+      signalerDemandes(d);
       state.floor = d;
       if (d.holder === state.me.label) state.queued = null;
       break;
@@ -717,8 +704,11 @@ function evenement(type, d) {
 }
 
 function erreur(d) {
-  if (d.code === "cooldown" && d.retry_in) {
-    return toast(`${d.message} — réessayez dans ${d.retry_in} s.`);
+  // Un envoi refusé faute de parole : le serveur ne garde pas le prompt — il
+  // refuse de décider à la place de quelqu'un que ce qu'il a écrit il y a dix
+  // minutes est toujours ce qu'il veut envoyer. On le lui rend donc, tel quel.
+  if ((d.code === "not_holder" || d.code === "turn_running") && state.brouillon) {
+    dom.prompt.value = state.brouillon;
   }
   toast(d.message || d.code || "erreur");
 }
@@ -908,26 +898,67 @@ async function commander(action, bouton, workspace = "") {
   if (!reponse.ok) toast(motif(reponse));
 }
 
+/**
+ * Prévient qui décide qu'on lui demande la parole.
+ *
+ * Comparé à ce qui a déjà été signalé, et non à l'état précédent : chaque
+ * transition du jeton diffuse un `floor.changed` complet, donc se contenter de
+ * « la liste a changé » rejouerait la notification à chaque tour pour quelqu'un
+ * qui attend depuis dix minutes.
+ */
+function signalerDemandes(f) {
+  const demandeurs = (f.requests || []).map((r) => r.who);
+  if (peut(Capability.FLOOR_GRANT)) {
+    for (const qui of demandeurs) {
+      if (qui === state.me.label || state.signalees.has(qui)) continue;
+      toast(`${qui} demande la parole.`);
+    }
+  }
+  // Une demande servie ou refusée doit pouvoir se resignaler si elle revient.
+  state.signalees = new Set(demandeurs);
+}
+
 function dessinerJeton() {
   const f = state.floor;
   const mien = f.holder === state.me.label;
-  const libelle = {
-    open: "personne n'a la parole",
-    held: mien ? "vous avez la parole" : `${f.holder} rédige`,
-    generating: mien ? "votre tour tourne" : `tour de ${f.holder}`,
-  }[f.state] || f.state;
 
-  replace(dom.floor, elem("span", `etat ${f.state}`, libelle));
-  if (f.expires_in != null && f.state === "held") {
-    dom.floor.appendChild(elem("span", "echeance", ` (${Math.round(f.expires_in)} s)`));
+  // Le pseudo du porteur d'abord, en clair : c'est la question que se pose qui
+  // regarde ce panneau. L'état de la machine ne fait que la préciser.
+  replace(
+    dom.floor,
+    elem("strong", `porteur ${f.holder ? "" : "vide"}`, f.holder || "personne"),
+    elem("span", `etat ${f.state}`, {
+      open: " — personne n'a la parole",
+      held: mien ? " — c'est à vous" : " — rédige",
+      generating: mien ? " — votre tour tourne" : " — tour en cours",
+    }[f.state] || ` — ${f.state}`),
+  );
+  if (f.deferred) {
+    dom.floor.appendChild(
+      elem("span", "differe", ` · ${f.deferred} prendra la parole à la fin du tour`),
+    );
   }
 
+  const peutAccorder = peut(Capability.FLOOR_GRANT);
   replace(
-    dom.queue,
-    ...(f.queue || []).map((w, i) =>
-      elem("li", w.who === state.me.label ? "moi" : "",
-        `${i + 1}. ${w.who}${w.priority ? ` (priorité ${w.priority})` : ""}`),
-    ),
+    dom.requests,
+    ...(f.requests || []).map((w) => {
+      const li = elem("li", w.who === state.me.label ? "moi" : "");
+      li.appendChild(
+        elem("span", "demandeur", `${w.who}${w.priority ? ` (priorité ${w.priority})` : ""}`),
+      );
+      // Accepter ou refuser se fait là où la demande se voit : obliger à viser
+      // un bouton ailleurs ferait perdre de vue **qui** on est en train de
+      // servir quand plusieurs attendent.
+      if (peutAccorder) {
+        const oui = elem("button", "bouton oui", "Accorder");
+        const non = elem("button", "bouton non", "Refuser");
+        oui.addEventListener("click", () => emettre(ClientMessage.FLOOR_GRANT, { who: w.who }));
+        non.addEventListener("click", () => emettre(ClientMessage.FLOOR_DENY, { who: w.who }));
+        li.append(oui, non);
+      }
+      return li;
+    }),
   );
 }
 
@@ -1000,34 +1031,57 @@ function dessinerApprobations() {
 function dessinerActions() {
   const f = state.floor;
   const mien = f.holder === state.me.label;
+  const jAttends = (f.requests || []).some((r) => r.who === state.me.label);
+  const accorde = peut(Capability.FLOOR_GRANT);
+
   const boutons = [
-    ["Demander la parole", ClientMessage.FLOOR_REQUEST, peut(Capability.SPEAK) && !mien],
-    ["Rendre la parole", ClientMessage.FLOOR_RELEASE, mien && f.state === "held"],
-    ["Réquisitionner", ClientMessage.FLOOR_PREEMPT, peut(Capability.PREEMPT) && !mien && !!f.holder],
-    ["Interrompre", ClientMessage.STREAM_STOP,
+    ["Demander la parole", ClientMessage.FLOOR_REQUEST, {},
+      peut(Capability.SPEAK) && !mien && !jAttends && !accorde],
+    ["Retirer ma demande", ClientMessage.FLOOR_WITHDRAW, {}, jAttends],
+    // Qui décide ne demande pas : il se sert. C'est le geste d'ouverture d'un
+    // salon neuf, où personne n'a encore la parole.
+    ["Prendre la parole", ClientMessage.FLOOR_GRANT, { who: state.me.label },
+      accorde && !mien],
+    ["Rendre la parole", ClientMessage.FLOOR_RELEASE, {}, mien && f.state === "held"],
+    ["Retirer la parole", ClientMessage.FLOOR_REVOKE, {}, accorde && !!f.holder && !mien],
+    ["Réquisitionner", ClientMessage.FLOOR_PREEMPT, { who: state.me.label },
+      peut(Capability.PREEMPT) && accorde && !mien && f.state === "generating"],
+    ["Interrompre", ClientMessage.STREAM_STOP, {},
       f.state === "generating" && (mien || peut(Capability.STOP))],
   ];
 
   replace(
     dom.actions,
-    ...boutons.map(([libelle, message, actif]) => {
+    ...boutons.map(([libelle, message, data, actif]) => {
       const b = elem("button", "bouton", libelle);
       // Grisé, pas caché : voir qu'une action existe et qu'on n'y a pas droit
       // vaut mieux que de découvrir plus tard qu'elle existait.
       b.disabled = !actif;
-      b.addEventListener("click", () => emettre(message));
+      b.addEventListener("click", () => emettre(message, data));
       return b;
     }),
   );
 
-  // Le droit d'écrire et la présence d'un exécutant sont deux choses
-  // différentes, et le placeholder doit dire laquelle manque.
+  // Trois empêchements distincts, trois phrases distinctes. Les confondre sous
+  // un champ grisé sans explication ferait chercher un droit à quelqu'un qui
+  // n'a qu'à attendre la fin d'une réponse.
   const heberge = !!(state.agent && state.agent.connected);
-  dom.send.disabled = !peut(Capability.SPEAK) || !heberge;
-  dom.prompt.disabled = !peut(Capability.SPEAK);
-  dom.prompt.placeholder = !peut(Capability.SPEAK)
+  const peutEcrire = peut(Capability.SPEAK);
+  const aLaMain = mien && f.state === "held";
+
+  dom.prompt.disabled = !peutEcrire || !aLaMain;
+  dom.send.disabled = dom.prompt.disabled || !heberge;
+  dom.prompt.placeholder = !peutEcrire
     ? "Lecture seule"
-    : (heberge ? "Écrire à Claude…" : "Personne n'héberge ce salon");
+    : !heberge
+      ? "Personne n'héberge ce salon"
+      : aLaMain
+        ? "Écrire à Claude…"
+        : mien
+          ? "Réponse en cours…"
+          : f.deferred === state.me.label
+            ? "La parole vous revient à la fin de la réponse"
+            : "Demandez la parole pour écrire";
 }
 
 function statut(texte) {

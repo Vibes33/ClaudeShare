@@ -14,7 +14,7 @@ from claudeshare.protocol import PROTOCOL_VERSION, ClientMessage
 
 from .conftest import Harness, script
 from .fakes import AskTool
-from .test_ws_flow import collect, expect, greet, send
+from .test_ws_flow import collect, expect, greet, send, take_floor
 
 
 def trame(type_: str, **data) -> dict:
@@ -45,6 +45,24 @@ def floor_until(ws, holder: str | None, limit: int = 30) -> dict:
     raise AssertionError(f"jeton jamais passé à {holder!r} ; vus : {vus}")
 
 
+def floor_where(ws, predicat, limit: int = 30) -> dict:
+    """Attend l'état du jeton qui satisfait `predicat`.
+
+    Toute transition diffuse un `floor.changed`, y compris une demande qui se
+    met en attente : prendre la première trame venue attraperait presque
+    toujours la mauvaise.
+    """
+    vus = []
+    for _ in range(limit):
+        frame = ws.receive_json()
+        if frame["type"] != "floor.changed":
+            continue
+        vus.append(frame["data"])
+        if predicat(frame["data"]):
+            return frame
+    raise AssertionError(f"état jamais atteint ; vus : {vus}")
+
+
 def salon(harness: Harness, room: str):
     """Le salon monté côté serveur — pour observer l'état du jeton."""
     live = harness.ctx.rooms.get(room)
@@ -55,27 +73,22 @@ def salon(harness: Harness, room: str):
 # --------------------------------------------------------------- le jeton
 
 
-def test_le_second_a_ecrire_est_mis_en_file(harness: Harness, client):
-    """Deux envois simultanés ne se marchent plus dessus : le second attend."""
+def test_envoyer_sans_la_parole_est_refuse(harness: Harness, client):
+    """Le défaut corrigé : n'importe qui pouvait parler à n'importe quel moment."""
     alice, bob = harness.user("alice"), harness.user("bob")
     room = harness.room(alice, workspace="a")
     harness.join(room, bob, role="ecrivain")
 
-    with connect(client, harness, room, alice) as a, connect(client, harness, room, bob) as b:
-        greet(a)
+    with connect(client, harness, room, bob) as b:
         greet(b)
-
-        # Alice prend la parole et la garde le temps de rédiger.
-        a.send_json(trame(ClientMessage.FLOOR_REQUEST))
-        assert expect(a, "floor.changed")["data"]["holder"] == "alice"
-
         b.send_json(send("et moi ?"))
-        file = expect(b, "queued")
-        assert file["data"]["position"] == 1
-        assert file["data"]["holder"] == "alice"
+        refus = expect(b, "error")
+        assert refus["data"]["code"] == "not_holder"
+        assert salon(harness, room).floor.holder is None
 
 
-def test_rendre_la_main_sert_le_suivant(harness: Harness, client):
+def test_une_demande_n_accorde_rien_et_se_voit(harness: Harness, client):
+    """Elle attend une décision, et le salon la connaît — c'est la notification."""
     alice, bob = harness.user("alice"), harness.user("bob")
     room = harness.room(alice, workspace="a")
     harness.join(room, bob, role="ecrivain")
@@ -83,31 +96,91 @@ def test_rendre_la_main_sert_le_suivant(harness: Harness, client):
     with connect(client, harness, room, alice) as a, connect(client, harness, room, bob) as b:
         greet(a)
         greet(b)
-        a.send_json(trame(ClientMessage.FLOOR_REQUEST))
-        expect(a, "floor.changed")
-        b.send_json(trame(ClientMessage.FLOOR_REQUEST))
-        expect(b, "queued")
 
-        a.send_json(trame(ClientMessage.FLOOR_RELEASE))
-        # Le nouvel état part à tout le monde, pas seulement à qui l'a provoqué.
-        assert floor_until(b, "bob")["data"]["queue"] == []
+        b.send_json(trame(ClientMessage.FLOOR_REQUEST))
+        # Le propriétaire l'apprend sans avoir rien demandé.
+        vue = expect(a, "floor.changed")["data"]
+        assert [r["who"] for r in vue["requests"]] == ["bob"]
+        assert vue["holder"] is None
+
+
+def test_accorder_la_parole_permet_d_envoyer(harness: Harness, client):
+    alice, bob = harness.user("alice"), harness.user("bob")
+    room = harness.room(alice, workspace="a")
+    harness.join(room, bob, role="ecrivain")
+
+    with connect(client, harness, room, alice) as a, connect(client, harness, room, bob) as b:
+        greet(a)
+        greet(b)
+        b.send_json(trame(ClientMessage.FLOOR_REQUEST))
+        expect(a, "floor.changed")
+
+        a.send_json(trame(ClientMessage.FLOOR_GRANT, who="bob"))
+        assert floor_until(b, "bob")["data"]["requests"] == []
+
+        b.send_json(send("merci"))
+        assert expect(b, "turn.started")
+
+
+def test_refuser_une_demande(harness: Harness, client):
+    alice, bob = harness.user("alice"), harness.user("bob")
+    room = harness.room(alice, workspace="a")
+    harness.join(room, bob, role="ecrivain")
+
+    with connect(client, harness, room, alice) as a, connect(client, harness, room, bob) as b:
+        greet(a)
+        greet(b)
+        b.send_json(trame(ClientMessage.FLOOR_REQUEST))
+        expect(a, "floor.changed")
+
+        a.send_json(trame(ClientMessage.FLOOR_DENY, who="bob"))
+        vue = floor_where(b, lambda d: not d["requests"])["data"]
+        assert vue["holder"] is None
+
+
+def test_un_ecrivain_ne_peut_pas_accorder_la_parole(harness: Harness, client):
+    """Sans ce refus, la passation ne serait qu'une convention."""
+    alice, bob = harness.user("alice"), harness.user("bob")
+    room = harness.room(alice, workspace="a")
+    harness.join(room, bob, role="ecrivain")
+
+    with connect(client, harness, room, bob) as b:
+        greet(b)
+        b.send_json(trame(ClientMessage.FLOOR_GRANT, who="bob"))
+        assert expect(b, "error")["data"]["code"] == "forbidden"
+        assert salon(harness, room).floor.holder is None
+
+
+def test_retirer_la_parole(harness: Harness, client):
+    alice, bob = harness.user("alice"), harness.user("bob")
+    room = harness.room(alice, workspace="a")
+    harness.join(room, bob, role="ecrivain")
+
+    with connect(client, harness, room, alice) as a, connect(client, harness, room, bob) as b:
+        greet(a)
+        greet(b)
+        a.send_json(trame(ClientMessage.FLOOR_GRANT, who="bob"))
+        floor_until(a, "bob")
+
+        a.send_json(trame(ClientMessage.FLOOR_REVOKE))
+        assert floor_until(b, None)["data"]["state"] == "open"
 
 
 def test_le_salon_apprend_chaque_etat_du_jeton(harness: Harness, client):
     """Le cycle complet d'un envoi doit être annoncé, pas seulement ses bords.
 
     Deux transitions passaient sous silence : le passage en génération, et la
-    libération d'un tour que personne n'attendait. Elles ne s'annonçaient pas
-    parce qu'elles ne donnent ni ne retirent le jeton à personne — mais elles
-    changent bien l'état affiché. Une interface restait donc bloquée sur « en
-    cours », et le bouton « interrompre », conditionné à l'état `generating`,
-    ne s'activait jamais.
+    fin d'un tour. Elles ne s'annoncent ni ne retirent le jeton à personne —
+    mais elles changent bien l'état affiché. Une interface restait donc bloquée
+    sur « en cours », et le bouton « interrompre », conditionné à l'état
+    `generating`, ne s'activait jamais.
     """
     alice = harness.user("alice")
     room = harness.room(alice, workspace="a")
 
     with connect(client, harness, room, alice) as a:
         greet(a)
+        take_floor(a, "alice")
         a.send_json(send("bonjour"))
 
         etats = []
@@ -116,10 +189,13 @@ def test_le_salon_apprend_chaque_etat_du_jeton(harness: Harness, client):
             if frame["type"] != "floor.changed":
                 continue
             etats.append(frame["data"]["state"])
-            if frame["data"]["state"] == "open":
+            if len(etats) == 2:
                 break
 
-    assert etats == ["held", "generating", "open"]
+        # `held` après le tour, et non `open` : le porteur garde la main.
+        # Vérifié dans le `with` — en sortir déconnecte Alice, ce qui la libère.
+        assert etats == ["generating", "held"]
+        assert salon(harness, room).floor.holder == "alice"
 
 
 def test_un_lecteur_ne_peut_pas_demander_la_parole(harness: Harness, client):
@@ -141,8 +217,7 @@ def test_seul_le_porteur_rend_la_main(harness: Harness, client):
     with connect(client, harness, room, alice) as a, connect(client, harness, room, bob) as b:
         greet(a)
         greet(b)
-        a.send_json(trame(ClientMessage.FLOOR_REQUEST))
-        expect(a, "floor.changed")
+        take_floor(a, "alice")
 
         b.send_json(trame(ClientMessage.FLOOR_RELEASE))
         assert expect(b, "error")["data"]["code"] == "not_holder"
@@ -158,7 +233,7 @@ def test_le_depart_libere_le_jeton(harness: Harness, client):
         greet(a)
         with connect(client, harness, room, bob) as b:
             greet(b)
-            b.send_json(trame(ClientMessage.FLOOR_REQUEST))
+            a.send_json(trame(ClientMessage.FLOOR_GRANT, who="bob"))
             assert floor_until(b, "bob")
 
         assert floor_until(a, None)["data"]["state"] == "open"
@@ -171,8 +246,7 @@ def test_l_instantane_porte_l_etat_du_jeton(harness: Harness, client):
 
     with connect(client, harness, room, alice) as a:
         greet(a)
-        a.send_json(trame(ClientMessage.FLOOR_REQUEST))
-        expect(a, "floor.changed")
+        take_floor(a, "alice")
 
         with connect(client, harness, room, bob) as b:
             jeton = greet(b)["data"]["floor"]
@@ -180,10 +254,37 @@ def test_l_instantane_porte_l_etat_du_jeton(harness: Harness, client):
             assert jeton["state"] == "held"
 
 
-# ------------------------------------------------------------ préemption
+# ------------------------------------------- passation pendant un tour
 
 
-def test_un_prioritaire_coupe_une_generation(harness: Harness, client):
+def test_accorder_pendant_une_generation_attend_la_fin(harness: Harness, client):
+    """« Cela met en suspens le prochain user : il attend la fin de la réponse. »"""
+    alice, bob = harness.user("alice"), harness.user("bob")
+    room = harness.room(alice, workspace="a")
+    harness.join(room, bob, role="ecrivain")
+
+    with connect(client, harness, room, alice) as a, connect(client, harness, room, bob) as b:
+        greet(a)
+        greet(b)
+        take_floor(a, "alice")
+
+        # Le tour d'Alice se bloque avant son dernier message.
+        harness.fake.gate = asyncio.Event()
+        a.send_json(send("un long travail"))
+        expect(a, "turn.started")
+
+        a.send_json(trame(ClientMessage.FLOOR_GRANT, who="bob"))
+        differe = floor_where(b, lambda d: d["deferred"] == "bob")["data"]
+        assert differe["holder"] == "alice"
+        # Rien n'a été coupé : le tour d'Alice va au bout.
+        assert harness.fake.interrupts == 0
+        assert not salon(harness, room).floor.can_send("bob")
+
+        harness.fake.gate.set()
+        assert floor_until(b, "bob")["data"]["deferred"] is None
+
+
+def test_la_requisition_coupe_le_tour(harness: Harness, client):
     """Le cas qui compte : le tour est réellement interrompu, et le tour
     suivant n'est pas pollué par les messages du précédent."""
     alice, vip = harness.user("alice"), harness.user("vip")
@@ -193,25 +294,21 @@ def test_un_prioritaire_coupe_une_generation(harness: Harness, client):
     with connect(client, harness, room, alice) as a, connect(client, harness, room, vip) as v:
         greet(a)
         greet(v)
+        take_floor(a, "alice")
 
-        # Le tour d'Alice se bloque avant son dernier message.
         harness.fake.gate = asyncio.Event()
         a.send_json(send("un long travail"))
         expect(a, "turn.started")
 
-        v.send_json(trame(ClientMessage.FLOOR_PREEMPT))
+        v.send_json(trame(ClientMessage.FLOOR_PREEMPT, who="vip"))
         assert floor_until(v, "vip")
         assert harness.fake.interrupts == 1
 
         fin = expect(a, "turn.ended")
         assert fin["data"]["interrupted"] is True
 
-        # La personne évincée est retournée en file, pas exclue. Vérifié dans
-        # le `with` : en sortir la déconnecte, ce qui la retire de la file.
-        assert salon(harness, room).floor.queue == ["alice"]
 
-
-def test_un_ecrivain_ne_peut_pas_preempter(harness: Harness, client):
+def test_un_ecrivain_ne_peut_pas_requisitionner(harness: Harness, client):
     alice, bob = harness.user("alice"), harness.user("bob")
     room = harness.room(alice, workspace="a")
     harness.join(room, bob, role="ecrivain")
@@ -219,34 +316,11 @@ def test_un_ecrivain_ne_peut_pas_preempter(harness: Harness, client):
     with connect(client, harness, room, alice) as a, connect(client, harness, room, bob) as b:
         greet(a)
         greet(b)
-        a.send_json(trame(ClientMessage.FLOOR_REQUEST))
-        expect(a, "floor.changed")
+        take_floor(a, "alice")
 
-        b.send_json(trame(ClientMessage.FLOOR_PREEMPT))
+        b.send_json(trame(ClientMessage.FLOOR_PREEMPT, who="bob"))
         assert expect(b, "error")["data"]["code"] == "forbidden"
         assert salon(harness, room).floor.holder == "alice"
-
-
-def test_le_cooldown_remonte_jusqu_au_client(harness: Harness, client):
-    alice, vip = harness.user("alice"), harness.user("vip")
-    room = harness.room(alice, workspace="a")
-    harness.join(room, vip, role="moderateur")
-
-    with connect(client, harness, room, alice) as a, connect(client, harness, room, vip) as v:
-        greet(a)
-        greet(v)
-        a.send_json(trame(ClientMessage.FLOOR_REQUEST))
-        expect(a, "floor.changed")
-
-        v.send_json(trame(ClientMessage.FLOOR_PREEMPT))
-        floor_until(v, "vip")
-        v.send_json(trame(ClientMessage.FLOOR_RELEASE))  # alice récupère la main
-        floor_until(v, "alice")
-
-        v.send_json(trame(ClientMessage.FLOOR_PREEMPT))
-        refus = expect(v, "error")
-        assert refus["data"]["code"] == "cooldown"
-        assert refus["data"]["retry_in"] > 0
 
 
 # ------------------------------------------------- approbation d'outil
@@ -269,6 +343,7 @@ def test_une_demande_d_outil_est_soumise_au_salon(harness: Harness, client):
     with connect(client, harness, room, alice) as a, connect(client, harness, room, bob) as b:
         greet(a)
         greet(b)
+        take_floor(a, "alice")
         a.send_json(send("liste la racine"))
 
         invite = expect(b, "tool.approval_requested")
@@ -297,6 +372,7 @@ def test_un_refus_remonte_jusqu_a_claude(harness: Harness, client):
     with connect(client, harness, room, alice) as a, connect(client, harness, room, bob) as b:
         greet(a)
         greet(b)
+        take_floor(a, "alice")
         a.send_json(send("liste la racine"))
         invite = expect(b, "tool.approval_requested")
 
@@ -328,6 +404,7 @@ def test_un_tour_ne_s_approuve_pas_lui_meme(harness: Harness, client):
     with connect(client, harness, room, alice) as a, connect(client, harness, room, bob) as b:
         greet(a)
         greet(b)
+        take_floor(b, "bob")
         b.send_json(send("liste la racine"))
         invite = expect(b, "tool.approval_requested")
 
@@ -354,6 +431,7 @@ def test_l_hote_peut_approuver_son_propre_appel(harness: Harness, client):
 
     with connect(client, harness, room, alice) as a:
         greet(a)
+        take_floor(a, "alice")
         a.send_json(send("liste la racine"))
         invite = expect(a, "tool.approval_requested")
         a.send_json(
@@ -374,6 +452,7 @@ def test_un_lecteur_ne_peut_pas_trancher(harness: Harness, client):
     with connect(client, harness, room, alice) as a, connect(client, harness, room, bob) as b:
         greet(a)
         greet(b)
+        take_floor(a, "alice")
         a.send_json(send("liste la racine"))
         invite = expect(b, "tool.approval_requested")
 
@@ -398,6 +477,7 @@ def test_une_demande_en_cours_apparait_dans_l_instantane(harness: Harness, clien
 
     with connect(client, harness, room, alice) as a:
         greet(a)
+        take_floor(a, "alice")
         a.send_json(send("liste la racine"))
         invite = expect(a, "tool.approval_requested")
 
@@ -431,6 +511,7 @@ def test_une_capacite_d_approbation_suffit_sans_droit_d_ecriture(harness: Harnes
     with connect(client, harness, room, alice) as a, connect(client, harness, room, bob) as b:
         greet(a)
         greet(b)
+        take_floor(a, "alice")
         a.send_json(send("liste la racine"))
         invite = expect(b, "tool.approval_requested")
         b.send_json(

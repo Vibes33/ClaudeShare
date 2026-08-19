@@ -82,6 +82,10 @@ async def serve_socket(
         await room.joined(who)
         snapshot = room.snapshot(last_seq)
         snapshot["data"]["capabilities"] = sorted(capabilities())
+        # Son propre nom, tel que le salon le désigne. Le jeton de parole
+        # s'exprime en étiquettes — « qui a la main » — et un client incapable
+        # de reconnaître la sienne ne sait pas si c'est de lui qu'on parle.
+        snapshot["data"]["me"] = who
         await websocket.send_json(snapshot)
 
         downstream = asyncio.create_task(_pump_down(websocket, subscription))
@@ -177,19 +181,61 @@ async def _pump_up(
                         error(room.id, "forbidden", "vous n'avez pas le droit d'écrire ici")
                     )
                     continue
-                outcome = await room.request_floor(who, priority())
-                await _report(websocket, room, outcome)
+                await _report(websocket, room, await room.request_floor(who, priority()))
+
+            case ClientMessage.FLOOR_WITHDRAW:
+                await _report(websocket, room, await room.withdraw_floor(who))
 
             case ClientMessage.FLOOR_RELEASE:
                 await _report(websocket, room, await room.release_floor(who))
 
+            case ClientMessage.FLOOR_GRANT:
+                if str(Capability.FLOOR_GRANT) not in capabilities():
+                    await websocket.send_json(
+                        error(room.id, "forbidden", "vous ne décidez pas de qui a la parole")
+                    )
+                    continue
+                cible = data.get("who")
+                if not isinstance(cible, str) or not cible:
+                    await websocket.send_json(error(room.id, "bad_message", "`who` manquant"))
+                    continue
+                await _report(websocket, room, await room.grant_floor(cible))
+
+            case ClientMessage.FLOOR_DENY:
+                if str(Capability.FLOOR_GRANT) not in capabilities():
+                    await websocket.send_json(
+                        error(room.id, "forbidden", "vous ne décidez pas de qui a la parole")
+                    )
+                    continue
+                cible = data.get("who")
+                if not isinstance(cible, str) or not cible:
+                    await websocket.send_json(error(room.id, "bad_message", "`who` manquant"))
+                    continue
+                await _report(websocket, room, await room.deny_floor(cible))
+
+            case ClientMessage.FLOOR_REVOKE:
+                if str(Capability.FLOOR_GRANT) not in capabilities():
+                    await websocket.send_json(
+                        error(room.id, "forbidden", "vous ne décidez pas de qui a la parole")
+                    )
+                    continue
+                await _report(websocket, room, await room.revoke_floor())
+
             case ClientMessage.FLOOR_PREEMPT:
-                if str(Capability.PREEMPT) not in capabilities():
+                # Deux droits, et c'est voulu : accorder la parole est une
+                # chose, couper le tour de quelqu'un pour l'accorder tout de
+                # suite en est une autre. Qui n'a que `floor.grant` attribue —
+                # l'attribution prendra effet à la fin du tour.
+                caps = capabilities()
+                if not {str(Capability.FLOOR_GRANT), str(Capability.PREEMPT)} <= caps:
                     await websocket.send_json(
                         error(room.id, "forbidden", "vous ne pouvez pas réquisitionner le jeton")
                     )
                     continue
-                await _report(websocket, room, await room.preempt_floor(who, priority()))
+                cible = data.get("who")
+                if not isinstance(cible, str) or not cible:
+                    cible = who
+                await _report(websocket, room, await room.grant_floor(cible, immediate=True))
 
             case ClientMessage.TOOL_APPROVE:
                 await _handle_approval(websocket, room, who, data, capabilities())
@@ -250,13 +296,9 @@ async def _handle_prompt(
         # Le brouillon reste côté client : il le renverra en obtenant la
         # parole. Le garder ici voudrait dire décider à sa place que ce qu'il a
         # écrit il y a dix minutes est toujours ce qu'il veut envoyer.
-        await websocket.send_json(
-            envelope(
-                ServerMessage.QUEUED,
-                room.id,
-                {"position": issue.position, **room.floor.view()},
-            )
-        )
+        refus = error(room.id, issue.reason, _EXPLICATIONS.get(issue.reason, ""))
+        refus["data"].update(room.floor.view())
+        await websocket.send_json(refus)
 
 
 async def _handle_approval(
@@ -311,10 +353,9 @@ async def _report(websocket: WebSocket, room: Room, outcome: Outcome) -> None:
     dans la file.
     """
     if not outcome.accepted:
-        refus = error(room.id, str(outcome.reason), _EXPLICATIONS.get(outcome.reason, ""))
-        if outcome.retry_in is not None:
-            refus["data"]["retry_in"] = outcome.retry_in
-        await websocket.send_json(refus)
+        await websocket.send_json(
+            error(room.id, str(outcome.reason), _EXPLICATIONS.get(outcome.reason, ""))
+        )
         return
     if outcome.position is not None:
         await websocket.send_json(
@@ -328,7 +369,8 @@ async def _report(websocket: WebSocket, room: Room, outcome: Outcome) -> None:
 
 _EXPLICATIONS = {
     Denial.NOT_HOLDER: "vous n'avez pas la parole",
-    Denial.NOTHING_TO_TAKE: "il n'y a rien à reprendre",
+    Denial.NOTHING_TO_TAKE: "personne n'a la parole",
     Denial.OWN_FLOOR: "vous avez déjà la parole",
-    Denial.COOLDOWN: "réquisition trop rapprochée de la précédente",
+    Denial.NOT_REQUESTED: "cette personne ne demande pas la parole",
+    Denial.TURN_RUNNING: "attendez la fin de la réponse en cours",
 }
