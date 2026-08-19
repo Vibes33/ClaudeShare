@@ -63,7 +63,7 @@ h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; colo
 }
 
 #titre-connexion {
-  width: min(46rem, 92vw);
+  width: min(62rem, 94vw);
   /* Le rapport du `viewBox` (300 × 100). Le fixer évite que le SVG se calcule
      une hauteur d'après son contenu et saute d'une taille à l'autre au premier
      rendu. */
@@ -86,7 +86,10 @@ h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; colo
      qui dépasse, donc le mot serait tronqué sans qu'aucune erreur ne le dise. */
   font-size: 2.75rem;
   font-weight: 700;
-  stroke-width: 0.3;
+  /* 0,3 dans l'original, pour une police de 4,5 rem. Rapportée à la nôtre, plus
+     petite, la même valeur donnait un cheveu que le bouton écrasait. C'est le
+     rapport au corps du texte qui compte, pas la valeur. */
+  stroke-width: 0.45;
 }
 
 /* La couleur du trait est posée par calque, et **jamais** sur `.trait` : en
@@ -95,7 +98,7 @@ h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; colo
    dégradé est porté par son attribut `stroke`. L'effet disparaît alors sans que
    rien ne signale pourquoi. */
 .revele .survol,
-.revele .trace { stroke: #262626; }
+.revele .trace { stroke: #4d4d4d; }
 .revele .peint { stroke: url(#degradeTitre); }
 
 /* Le contour de survol : présent en permanence, révélé par l'opacité. Le
@@ -177,10 +180,14 @@ h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; colo
   inset: 0;
   z-index: 1;
   border-radius: inherit;
+  /* Aucun blanc pur : à côté d'un titre en trait sombre, un liseré qui monte
+     jusqu'au blanc fait du bouton le seul objet visible de la page. Les hautes
+     lumières s'arrêtent donc dans les gris moyens, et l'écart entre les deux
+     éléments se referme. */
   background: conic-gradient(
     from var(--angle),
-    #4a4a4a, #cfcfcf, #6f6f6f, #ffffff, #8a8a8a,
-    #3d3d3d, #b9c3cc, #5a5a5a, #e8e8e8, #4a4a4a
+    #303030, #8e8e8e, #494949, #a8a8a8, #5c5c5c,
+    #282828, #7d858c, #3d3d3d, #999999, #303030
   );
   animation: tourner 6s linear infinite;
 }
@@ -215,13 +222,13 @@ h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; colo
   z-index: 3;
   font-size: 14px;
   font-weight: 400;
-  color: #8a8a8a;
+  color: #7e7e7e;
   text-shadow: 0 1px 2px rgb(0 0 0 / 0.5);
   white-space: nowrap;
   transition: color 0.3s;
 }
 
-.metal:hover .metal-texte { color: #d6d6d6; }
+.metal:hover .metal-texte { color: #b4b4b4; }
 
 /* L'onde au clic, partant du point touché. */
 .metal-onde {
