@@ -784,11 +784,25 @@ function ouvrir(roomId) {
 
 function connecter() {
   const scheme = location.protocol === "https:" ? "wss" : "ws";
-  const socket = new WebSocket(`${scheme}://${location.host}/ws/rooms/${state.roomId}`);
+  const salon = state.roomId;
+  const socket = new WebSocket(`${scheme}://${location.host}/ws/rooms/${salon}`);
   state.socket = socket;
   statut("connexion…");
 
+  // Une socket qu'on ferme ne se tait pas tout de suite : les trames déjà
+  // arrivées sont distribuées après l'appel à `close()`, et ses écouteurs
+  // restent branchés. En sautant vite d'un salon à l'autre, la fin du tour du
+  // salon précédent atterrissait donc dans l'état du suivant — un « réflexion… »
+  // sous une conversation à laquelle il n'appartenait pas, et des tours
+  // fantômes créés de toutes pièces par leurs propres deltas.
+  //
+  // D'où ce test, dans chaque écouteur : cette socket est-elle encore celle du
+  // salon regardé ? Comparer les deux objets et non les identifiants — rouvrir
+  // le même salon donne une nouvelle socket, et l'ancienne doit se taire aussi.
+  const courante = () => state.socket === socket;
+
   socket.addEventListener("open", () => {
+    if (!courante()) return;
     state.backoff = RECONNECT_MIN_MS;
     // `last_seq` porte tout le protocole de reprise : le serveur ne renvoie que
     // ce qui manque, et le dédoublonnage couvre le recouvrement.
@@ -800,6 +814,7 @@ function connecter() {
   });
 
   socket.addEventListener("message", (e) => {
+    if (!courante()) return;
     let trame;
     try {
       trame = JSON.parse(e.data);
@@ -810,6 +825,10 @@ function connecter() {
   });
 
   socket.addEventListener("close", (e) => {
+    // Sans ce garde, la fermeture d'une socket abandonnée effaçait celle du
+    // salon qu'on venait d'ouvrir, puis relançait une connexion vers lui : deux
+    // sockets sur le même salon, et chaque événement affiché en double.
+    if (!courante()) return;
     state.socket = null;
     if (e.code === 4401) return afficherConnexion();
     // Fermeture voulue — on a quitté le salon. Annoncer une reconnexion
@@ -823,7 +842,9 @@ function connecter() {
     }
     statut("reconnexion…");
     setTimeout(() => {
-      if (state.roomId) connecter();
+      // Le salon d'origine, et pas « un salon quelconque » : entre-temps on a
+      // pu en ouvrir un autre, qui a déjà sa connexion.
+      if (state.roomId === salon && !state.socket) connecter();
     }, state.backoff);
     state.backoff = Math.min(state.backoff * 2, RECONNECT_MAX_MS);
   });
@@ -863,6 +884,10 @@ function fermer() {
   // connexion avait déjà échoué, la barre restait sur « reconnexion… », à
   // promettre le retour d'un lien que plus personne n'attendait.
   state.roomId = null;
+  // Les tours en attente de dessin appartenaient au salon qu'on quitte. Leurs
+  // identifiants ne désignent plus rien, et les garder ferait chercher dans le
+  // salon suivant des tours qui n'y sont pas.
+  dirty.clear();
   statut("hors ligne");
 }
 
