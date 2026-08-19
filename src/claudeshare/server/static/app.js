@@ -731,6 +731,14 @@ function connecter() {
 function fermer() {
   state.title = "";
   dom.title.textContent = "";
+  // Tout ce que la barre affiche du salon part avec lui. Le titre seul ne
+  // suffisait pas : le porteur de la parole et le bouton de réglages restaient
+  // à l'écran, à décrire un salon qu'on venait de quitter.
+  replace(dom.porteur);
+  replace(dom.presents);
+  dom.cote.hidden = true;
+  dom["ouvrir-cote"].hidden = true;
+  dom["ouvrir-cote"].classList.remove("ouvert");
   if (state.socket) {
     const socket = state.socket;
     state.socket = null;
@@ -1030,9 +1038,10 @@ function dessinerPorteur() {
     return;
   }
   const mien = f.holder === state.me.label;
+  // Sans photo : elle est déjà dans la pile des présents, et la répéter ici
+  // ferait deux fois la même personne à trente pixels d'écart.
   replace(
     dom.porteur,
-    vignetteDe(f.holder, "vignette petite"),
     elem("span", "porteur-nom", mien ? "vous" : f.holder),
     elem("span", `porteur-etat ${f.state}`, f.state === "generating" ? "répond" : "a la parole"),
   );

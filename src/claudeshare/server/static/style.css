@@ -684,21 +684,17 @@ select.saisie { flex: 0 0 auto; }
   background: var(--texte); border: none; border-radius: 100px; cursor: pointer;
   transition: background 0.18s, opacity 0.18s;
 }
-#send::before {
-  content: ""; position: absolute; left: 50%; top: 50%;
-  width: 8px; height: 8px; margin: -6px 0 0 -4px;
-  border-left: 1.8px solid #000; border-top: 1.8px solid #000;
-  transform: rotate(45deg);
+#send .icone {
+  position: absolute; left: 50%; top: 50%;
+  width: 18px; height: 18px; margin: -9px 0 0 -9px;
+  fill: none; stroke: #000; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round;
 }
-#send::after {
-  content: ""; position: absolute; left: 50%; top: 50%;
-  width: 1.8px; height: 13px; margin: -6px 0 0 -0.9px; background: #000;
-}
+#send .icone.arret { fill: #000; stroke: none; }
+/* Une seule des deux à la fois, choisie par l'état du bouton. */
+#send .arret, #send.arret .envoi { display: none; }
+#send.arret .arret { display: block; }
 #send.arret { background: var(--erreur); }
-#send.arret::before { display: none; }
-#send.arret::after {
-  width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 2px;
-}
 #send:disabled { opacity: 0.3; cursor: not-allowed; }
 
 /* Les gestes autour du message : la parole, l'interruption. Sous la saisie,
@@ -791,11 +787,13 @@ select.saisie { flex: 0 0 auto; }
 .porteur-etat { color: var(--doux); }
 .porteur-etat.generating { color: var(--accent); }
 
-/* Les présents en pile : chaque photo mord sur la précédente, et son liseré la
-   détache du fond. Trois au plus — au-delà, un compteur, sinon la barre
-   s'allonge précisément dans les salons où elle doit rester lisible. */
-#presents { display: inline-flex; align-items: center; }
-#presents > * { margin-left: -8px; box-shadow: 0 0 0 2px #0e0e11; }
+/* Les présents en pile, en haut à gauche de la zone de saisie : chaque photo
+   mord sur la précédente, et son liseré la détache du fond. Trois au plus —
+   au-delà, un compteur, sinon la ligne s'allonge précisément dans les salons
+   les plus fréquentés. */
+#presents { display: flex; align-items: center; padding: 0.7rem 0.9rem 0; }
+#presents:empty { display: none; }
+#presents > * { margin-left: -7px; box-shadow: 0 0 0 2px #121215; }
 #presents > *:first-child { margin-left: 0; }
 .vignette.petite { width: 22px; height: 22px; }
 .vignette.petite.initiales { font-size: 0.58rem; }
