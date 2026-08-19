@@ -135,14 +135,94 @@ export function renderInline(text) {
   return out;
 }
 
-/** Bloc de code. `textContent` : le contenu n'est jamais interprété. */
+/**
+ * Bloc de code, avec de quoi le copier.
+ *
+ * `textContent` partout : le contenu d'un bloc de code vient d'un modèle ou
+ * d'une sortie de commande, et n'est jamais interprété.
+ *
+ * Le bouton copie la **source**, pas ce qui est affiché : c'est le même texte
+ * aujourd'hui, mais une coloration syntaxique ajouterait des éléments dont la
+ * sélection ramasserait les frontières. Le lire depuis une variable plutôt que
+ * depuis le DOM met cette différence hors de portée.
+ */
 function codeBlock(lines, language) {
+  const source = lines.join("\n");
+
+  const bloc = document.createElement("figure");
+  bloc.className = "bloc-code";
+
+  const tete = document.createElement("figcaption");
+  tete.className = "bloc-code-tete";
+  const nom = document.createElement("span");
+  nom.className = "bloc-code-langue";
+  nom.textContent = language || "texte";
+  tete.appendChild(nom);
+  tete.appendChild(boutonCopier(source));
+
   const pre = document.createElement("pre");
   const code = document.createElement("code");
   if (language) code.dataset.language = language;
-  code.textContent = lines.join("\n");
+  code.textContent = source;
   pre.appendChild(code);
-  return pre;
+
+  bloc.append(tete, pre);
+  return bloc;
+}
+
+/** Le bouton de copie, et son accusé de réception. */
+function boutonCopier(source) {
+  const bouton = document.createElement("button");
+  bouton.type = "button";
+  bouton.className = "bloc-code-copier";
+  bouton.textContent = "Copier";
+
+  bouton.addEventListener("click", async () => {
+    const fait = await copier(source);
+    bouton.textContent = fait ? "Copié" : "Refusé";
+    bouton.classList.add(fait ? "fait" : "rate");
+    setTimeout(() => {
+      bouton.textContent = "Copier";
+      bouton.classList.remove("fait", "rate");
+    }, 1600);
+  });
+  return bouton;
+}
+
+/**
+ * Copie un texte, par l'API moderne ou par l'ancienne.
+ *
+ * `navigator.clipboard` n'existe que sur une **origine sécurisée**. Un relais
+ * joint par son adresse IP en clair — ce que fait n'importe qui l'essayant sur
+ * son réseau local — n'en dispose donc pas, et c'est précisément là que le
+ * bouton compte le plus : on y colle des commandes à taper ailleurs.
+ *
+ * Le repli passe par une zone de texte hors écran et `execCommand`, qui est
+ * obsolète mais universellement compris. Elle est retirée dans tous les cas.
+ */
+async function copier(texte) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(texte);
+      return true;
+    } catch {
+      // La permission a pu être retirée : on tente quand même l'ancienne voie.
+    }
+  }
+  const zone = document.createElement("textarea");
+  zone.value = texte;
+  zone.setAttribute("readonly", "");
+  zone.style.position = "fixed";
+  zone.style.opacity = "0";
+  document.body.appendChild(zone);
+  try {
+    zone.select();
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    zone.remove();
+  }
 }
 
 function inlineNode(token) {

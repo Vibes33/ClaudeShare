@@ -752,11 +752,50 @@ select.saisie { flex: 0 0 auto; }
   border: 1px solid var(--verre-bord); border-radius: 14px;
   background: rgb(255 255 255 / 0.04);
 }
-.de-claude .bulle-texte { background: none; border-color: transparent; padding: 0.6rem 0; }
+/* Claude aussi parle dans une bulle, d'un ton plus sombre : sans elle, sa
+   réponse flottait sur le fond et ne se lisait plus comme un tour de parole. */
+.de-claude .bulle-texte {
+  background: rgb(255 255 255 / 0.015);
+  border-color: rgb(255 255 255 / 0.06);
+}
 .bulle-texte p:first-child { margin-top: 0; }
 .bulle-texte p:last-child { margin-bottom: 0; }
 .reflexion { color: var(--doux); font-style: italic; padding: 0.4rem 0; }
 .fin { color: var(--doux); font-size: 0.78rem; margin: 0.2rem 0 0 2.8rem; }
+
+/* Un bloc de code se lit, mais surtout se **copie**. D'où l'en-tête : le
+   langage à gauche pour savoir ce qu'on lit, le bouton à droite, toujours à la
+   même place — le chercher dans un coin différent à chaque bloc coûte plus que
+   la sélection à la main qu'il remplace. */
+.bloc-code {
+  margin: 0.8rem 0; overflow: hidden;
+  border: 1px solid var(--verre-bord); border-radius: 12px;
+  background: rgb(0 0 0 / 0.45);
+}
+.bloc-code-tete {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0.35rem 0.4rem 0.35rem 0.85rem;
+  border-bottom: 1px solid var(--verre-bord);
+  background: rgb(255 255 255 / 0.03);
+}
+.bloc-code-langue {
+  font-family: var(--mono); font-size: 0.72rem;
+  letter-spacing: 0.04em; color: var(--doux);
+}
+.bloc-code-copier {
+  padding: 0.25rem 0.6rem; font: inherit; font-size: 0.72rem;
+  color: var(--doux); background: rgb(255 255 255 / 0.05);
+  border: 1px solid var(--verre-bord); border-radius: 100px; cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.bloc-code-copier:hover { color: var(--texte); background: rgb(255 255 255 / 0.1); }
+.bloc-code-copier.fait { color: var(--ok); border-color: rgb(110 196 140 / 0.4); }
+.bloc-code-copier.rate { color: var(--erreur); border-color: rgb(240 113 120 / 0.4); }
+.bloc-code pre {
+  margin: 0; padding: 0.8rem 0.85rem; overflow-x: auto;
+  background: none; border: none; border-radius: 0;
+  font-family: var(--mono); font-size: 0.82rem; line-height: 1.5;
+}
 
 .bulle-texte pre, .entree, .sortie {
   overflow-x: auto; padding: 0.6rem 0.8rem;
