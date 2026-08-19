@@ -14,6 +14,7 @@
 import { ClientMessage, ServerMessage, EventType, Capability, frame } from "./protocol.js";
 import { renderMarkdown, elem, replace } from "./render.js";
 import { monterConnexion } from "./login.js";
+import { boutonMetal, aide } from "./ui.js";
 
 //: Repli de reconnexion. Croît jusqu'à ce plafond pour ne pas marteler un
 //: serveur qui redémarre, tout en restant assez court pour qu'un réveil de
@@ -151,18 +152,116 @@ function router() {
   ouvrir(hash[1]);
 }
 
+/**
+ * L'accueil : trois cartes, en bento.
+ *
+ * Les salons à gauche, sur toute la hauteur et défilables — c'est la seule
+ * liste qui grandit sans limite, donc la seule qui doit défiler chez elle
+ * plutôt que d'allonger la page. À droite, les deux actions qui font entrer
+ * dans un salon, puis l'agent, qui décide si ces salons exécutent quoi que ce
+ * soit.
+ */
 function afficherSalons() {
   fermer();
   dom.room.hidden = true;
   dom.rooms.hidden = false;
-  replace(dom.rooms, elem("h2", "", "Vos salons"), ...state.rooms.map(carteSalon));
+  replace(dom.rooms, carteSalons(), carteEntrer(), carteAgent());
+}
 
-  if (!state.rooms.length) {
-    dom.rooms.appendChild(elem("p", "vide", "Vous n'êtes membre d'aucun salon."));
+/** Une carte du bento : un titre, une phrase, et ce qu'on y met. */
+function carte(classe, titre, sousTitre) {
+  const bloc = elem("section", `carte ${classe}`);
+  const tete = elem("header", "carte-tete");
+  tete.appendChild(elem("h2", "", titre));
+  if (sousTitre) tete.appendChild(elem("p", "carte-sous", sousTitre));
+  bloc.appendChild(tete);
+  return bloc;
+}
+
+function carteSalons() {
+  const bloc = carte(
+    "carte-salons",
+    "Vos salons",
+    state.rooms.length === 1 ? "1 salon" : `${state.rooms.length} salons`,
+  );
+  const liste = elem("div", "salons-defile");
+  if (state.rooms.length) {
+    liste.append(...state.rooms.map(carteSalon));
+  } else {
+    liste.appendChild(
+      elem("p", "vide", "Vous n'êtes membre d'aucun salon. Créez-en un, ou entrez un code."),
+    );
   }
-  dom.rooms.appendChild(formulaireCreation());
-  dom.rooms.appendChild(formulaireCode());
-  dom.rooms.appendChild(etatDemon());
+  bloc.appendChild(liste);
+  return bloc;
+}
+
+/** Créer un salon, ou en rejoindre un. Les deux façons d'entrer quelque part. */
+function carteEntrer() {
+  const bloc = carte("carte-entrer", "Entrer", "Créer le vôtre, ou rejoindre celui d'un autre");
+
+  bloc.appendChild(
+    champAction({
+      etiquette: aide(
+        "Nouveau salon",
+        "Créer un salon",
+        "Vous en êtes propriétaire : vous distribuez la parole, et c'est votre "
+        + "agent qui l'exécute — donc votre abonnement Claude qui est consommé.",
+      ),
+      placeholder: "Titre du salon",
+      bouton: "Créer",
+      maxLength: 128,
+      action: creer,
+    }),
+  );
+
+  bloc.appendChild(
+    champAction({
+      etiquette: aide(
+        "Rejoindre avec un code",
+        "Le code d'un salon",
+        "Sept chiffres, donnés par la personne qui héberge. Vous écrirez à son "
+        + "agent, donc sur son abonnement — et seulement quand elle vous "
+        + "accorde la parole.",
+      ),
+      placeholder: "1234567",
+      bouton: "Rejoindre",
+      maxLength: 16,
+      numerique: true,
+      action: rejoindre,
+    }),
+  );
+  return bloc;
+}
+
+/**
+ * Un champ et son bouton, avec la validation au clavier.
+ *
+ * Factorisé parce que les deux formulaires d'entrée ne diffèrent que par leurs
+ * mots : les écrire deux fois, c'était deux occasions d'oublier la touche
+ * Entrée d'un côté.
+ */
+function champAction({ etiquette, placeholder, bouton, maxLength, numerique, action }) {
+  const bloc = elem("div", "champ-action");
+  bloc.appendChild(elem("label", "champ-etiquette")).appendChild(etiquette);
+
+  const champ = elem("input", "saisie");
+  champ.type = "text";
+  champ.placeholder = placeholder;
+  champ.maxLength = maxLength;
+  if (numerique) champ.inputMode = "numeric";
+
+  const valider = boutonMetal(bouton, { onClick: () => action(champ, valider) });
+  champ.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    action(champ, valider);
+  });
+
+  const ligne = elem("div", "ligne");
+  ligne.append(champ, valider);
+  bloc.appendChild(ligne);
+  return bloc;
 }
 
 function carteSalon(r) {
@@ -216,42 +315,6 @@ async function archiver(r, bouton) {
   afficherSalons();
 }
 
-/**
- * Création d'un salon. Un seul champ : le titre.
- *
- * Le dossier de travail n'en fait volontairement pas partie. Il est choisi par
- * l'agent qui héberge, sur sa propre machine ; le demander ici laisserait
- * croire que le relais réserve un dossier, ce qu'il ne fait plus.
- */
-function formulaireCreation() {
-  const bloc = elem("div", "creation");
-  bloc.appendChild(elem("h2", "", "Nouveau salon"));
-
-  const champ = elem("input", "titre");
-  champ.type = "text";
-  champ.placeholder = "Titre du salon";
-  champ.maxLength = 128;
-
-  const bouton = elem("button", "bouton", "Créer");
-  const lancer = () => creer(champ, bouton);
-  bouton.addEventListener("click", lancer);
-  champ.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      lancer();
-    }
-  });
-
-  const ligne = elem("div", "ligne");
-  ligne.append(champ, bouton);
-  bloc.appendChild(ligne);
-  bloc.appendChild(
-    elem("p", "vide",
-      "Vous en serez propriétaire, et votre agent l'exécutera."),
-  );
-  return bloc;
-}
-
 async function creer(champ, bouton) {
   const titre = champ.value.trim();
   if (!titre) return champ.focus();
@@ -267,38 +330,6 @@ async function creer(champ, bouton) {
   champ.value = "";
   await rafraichir();
   location.hash = `#/rooms/${reponse.data.id}`;
-}
-
-/** Rejoindre un salon dont on nous a dicté le code. */
-function formulaireCode() {
-  const bloc = elem("div", "creation");
-  bloc.appendChild(elem("h2", "", "Rejoindre avec un code"));
-
-  const champ = elem("input", "titre");
-  champ.type = "text";
-  champ.inputMode = "numeric";
-  champ.placeholder = "1234567";
-  champ.maxLength = 16;
-
-  const bouton = elem("button", "bouton", "Rejoindre");
-  const lancer = () => rejoindre(champ, bouton);
-  bouton.addEventListener("click", lancer);
-  champ.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      lancer();
-    }
-  });
-
-  const ligne = elem("div", "ligne");
-  ligne.append(champ, bouton);
-  bloc.appendChild(ligne);
-  bloc.appendChild(
-    elem("p", "vide",
-      "Vous pourrez écrire à l'agent de la personne qui héberge — donc sur son "
-      + "abonnement."),
-  );
-  return bloc;
 }
 
 async function rejoindre(champ, bouton) {
@@ -320,44 +351,69 @@ async function rejoindre(champ, bouton) {
 /**
  * Votre agent : l'identifiant déposé, et le processus qui tourne.
  *
- * Deux faits distincts, et l'interface doit les séparer. On peut avoir déposé
- * un jeton sans agent démarré ; on peut avoir un agent démarré qui n'a pas
- * encore ouvert sa socket. Les confondre en un seul voyant ferait chercher au
- * mauvais endroit.
+ * Deux faits distincts, et la carte les sépare. On peut avoir déposé un jeton
+ * sans agent démarré ; on peut avoir un agent démarré qui n'a pas encore ouvert
+ * sa socket. Les confondre en un seul voyant ferait chercher au mauvais
+ * endroit.
  */
-function etatDemon() {
-  const bloc = elem("div", "demon");
-  bloc.appendChild(elem("h2", "", "Votre agent"));
+function carteAgent() {
+  const bloc = carte(
+    "carte-agent",
+    "Votre agent",
+    "Le processus qui exécute vos salons, avec votre abonnement",
+  );
 
-  if (state.demon.connected) {
-    bloc.appendChild(elem("span", "etat", "connecté"));
-    bloc.appendChild(elem("span", "vide", `dossier proposé : ${state.demon.base || "—"}`));
-  } else {
-    bloc.appendChild(elem("span", "etat absent", "aucun agent"));
-    bloc.appendChild(
-      elem("span", "vide", "Sans lui, vos salons se lisent mais n'exécutent rien."),
-    );
-  }
+  bloc.appendChild(voyantAgent());
 
-  // Ce relais ne lance pas d'agents : la seule voie est la ligne de commande,
-  // et le dire vaut mieux que de montrer un bouton qui refusera.
+  // Ce relais ne lance pas d'agents : la seule voie est la ligne de commande.
+  // Le dire vaut mieux que de montrer un bouton qui refusera.
   if (!state.identifiant.managed) {
-    bloc.appendChild(elem("code", "commande", "claudeshare agent"));
+    const note = elem("div", "agent-cli");
+    note.appendChild(
+      aide(
+        "À lancer sur votre machine",
+        "Pourquoi chez vous",
+        "Ce relais n'exécute rien : il distribue la parole. La session Claude "
+        + "tourne sur votre ordinateur, avec vos fichiers et votre abonnement, "
+        + "et rien de tout cela ne transite par le serveur.",
+      ),
+    );
+    note.appendChild(elem("code", "commande", "claudeshare agent"));
+    bloc.appendChild(note);
     return bloc;
   }
 
-  bloc.appendChild(formulaireIdentifiant());
+  bloc.appendChild(blocIdentifiant());
   bloc.appendChild(boutonsAgent());
+
   const journal = (state.demon.managed || {}).log || [];
-  if (journal.length) {
-    bloc.appendChild(elem("pre", "sortie", journal.join("\n")));
-  }
+  if (journal.length) bloc.appendChild(elem("pre", "sortie", journal.join("\n")));
   return bloc;
 }
 
-/** Dépôt de l'identifiant Anthropic. Le secret n'est jamais réaffiché. */
-function formulaireIdentifiant() {
-  const bloc = elem("div", "identifiant");
+/** L'état du démon, en une ligne : une pastille et ce qu'elle implique. */
+function voyantAgent() {
+  const ligne = elem("div", "agent-etat");
+  const connecte = state.demon.connected;
+  ligne.appendChild(elem("span", `pastille ${connecte ? "vive" : "eteinte"}`));
+  ligne.appendChild(elem("strong", "", connecte ? "connecté" : "aucun agent"));
+  ligne.appendChild(
+    elem("span", "carte-sous", connecte
+      ? `dossier proposé : ${state.demon.base || "—"}`
+      : "Vos salons se lisent, mais n'exécutent rien."),
+  );
+  return ligne;
+}
+
+/**
+ * Le dépôt de l'identifiant Anthropic.
+ *
+ * Le secret n'est jamais réaffiché : ce qui revient du serveur est son type et
+ * son empreinte, de quoi reconnaître lequel est en place sans pouvoir le
+ * relire.
+ */
+function blocIdentifiant() {
+  const bloc = elem("div", "agent-identifiant");
 
   if (!state.identifiant.storable) {
     // Dit avant qu'on colle quoi que ce soit : coller un jeton pour s'entendre
@@ -371,60 +427,78 @@ function formulaireIdentifiant() {
   }
 
   if (state.identifiant.present) {
-    bloc.appendChild(
-      elem("span", "vide",
-        `identifiant déposé · ${state.identifiant.kind} · ${state.identifiant.fingerprint}`),
+    const ligne = elem("div", "agent-depose");
+    ligne.appendChild(elem("span", "pastille vive"));
+    ligne.appendChild(
+      elem("span", "", `${state.identifiant.kind} · ${state.identifiant.fingerprint}`),
     );
-    const oublier = elem("button", "bouton non", "Oublier");
-    oublier.addEventListener("click", async () => {
-      oublier.disabled = true;
-      await fetch("/api/credential", { method: "DELETE" });
-      await rafraichir();
-      afficherSalons();
-    });
-    bloc.appendChild(oublier);
+    ligne.appendChild(
+      boutonMetal("Oublier", {
+        ton: "discret",
+        onClick: async (e) => {
+          e.currentTarget.disabled = true;
+          await fetch("/api/credential", { method: "DELETE" });
+          await rafraichir();
+          afficherSalons();
+        },
+      }),
+    );
+    bloc.appendChild(ligne);
     return bloc;
   }
 
-  const choix = elem("select", "titre");
+  const choix = elem("select", "saisie");
   for (const [valeur, libelle] of [
-    ["subscription", "Abonnement (claude setup-token)"],
-    ["api_key", "Clé API (facturée à l'usage)"],
+    ["subscription", "Abonnement"],
+    ["api_key", "Clé API"],
   ]) {
     const option = elem("option", "", libelle);
     option.value = valeur;
     choix.appendChild(option);
   }
 
-  const champ = elem("input", "titre");
+  const champ = elem("input", "saisie");
   champ.type = "password";
   champ.placeholder = "collez votre jeton";
   champ.autocomplete = "off";
 
-  const poser = elem("button", "bouton", "Déposer");
-  poser.addEventListener("click", async () => {
-    const secret = champ.value.trim();
-    if (!secret) return champ.focus();
-    poser.disabled = true;
-    // `PUT` : déposer un identifiant remplace le précédent, ce n'est pas une
-    // création répétable.
-    const reponse = await post("/api/credential", { kind: choix.value, secret }, "PUT");
-    poser.disabled = false;
-    champ.value = "";
-    if (!reponse.ok) return toast(motif(reponse));
-    await rafraichir();
-    afficherSalons();
+  const poser = boutonMetal("Déposer", {
+    onClick: () => deposer(choix, champ, poser),
   });
 
-  bloc.append(
-    elem("p", "vide",
-      "Obtenez un jeton d'abonnement avec « claude setup-token », ou une clé API "
-      + "depuis la console Anthropic. Il est chiffré ici et jamais réaffiché."),
-    choix,
-    champ,
-    poser,
+  const etiquette = elem("label", "champ-etiquette");
+  etiquette.appendChild(
+    aide(
+      "Identifiant Anthropic",
+      "Abonnement ou clé API",
+      "Un jeton d'abonnement s'obtient avec « claude setup-token » et consomme "
+      + "votre forfait. Une clé API vient de la console Anthropic et se facture "
+      + "à l'usage. Dans les deux cas, le secret est chiffré ici et ne vous est "
+      + "jamais réaffiché — seule son empreinte revient.",
+    ),
   );
+
+  // Le secret occupe sa propre ligne : collé entre le sélecteur et le bouton,
+  // il n'en montrerait que trois caractères. Le type et l'action, eux, tiennent
+  // ensemble en dessous — ce sont deux petits contrôles.
+  const ligne = elem("div", "ligne");
+  ligne.append(choix, poser);
+  bloc.append(etiquette, champ, ligne);
   return bloc;
+}
+
+async function deposer(choix, champ, bouton) {
+  const secret = champ.value.trim();
+  if (!secret) return champ.focus();
+  bouton.disabled = true;
+  // `PUT` : déposer un identifiant remplace le précédent, ce n'est pas une
+  // création répétable.
+  const reponse = await post("/api/credential", { kind: choix.value, secret }, "PUT");
+  bouton.disabled = false;
+  champ.value = "";
+  if (!reponse.ok) return toast(motif(reponse));
+  await rafraichir();
+  afficherSalons();
 }
 
 function boutonsAgent() {
@@ -432,12 +506,13 @@ function boutonsAgent() {
   const gere = state.demon.managed || {};
 
   if (gere.running) {
-    const arreter = elem("button", "bouton non", "Arrêter mon agent");
-    arreter.addEventListener("click", () => piloter("stop", arreter));
+    const arreter = boutonMetal("Arrêter mon agent", {
+      ton: "discret",
+      onClick: () => piloter("stop", arreter),
+    });
     ligne.appendChild(arreter);
   } else if (state.identifiant.present) {
-    const lancer = elem("button", "bouton", "Démarrer mon agent");
-    lancer.addEventListener("click", () => piloter("start", lancer));
+    const lancer = boutonMetal("Démarrer mon agent", { onClick: () => piloter("start", lancer) });
     ligne.appendChild(lancer);
   }
   if (gere.error) ligne.appendChild(elem("span", "vide", gere.error));

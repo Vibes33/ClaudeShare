@@ -2,28 +2,28 @@
    part tel quel au navigateur. */
 
 :root {
-  --fond: #12131a;
-  --panneau: #1a1c26;
-  --bord: #2b2e3d;
-  --texte: #e6e7ee;
-  --doux: #9a9db2;
+  --fond: #08080a;
+  --panneau: #121216;
+  --bord: #24242b;
+  --texte: #e8e8ec;
+  --doux: #8b8b96;
   --accent: #7aa2f7;
   --ok: #6ec48c;
   --alerte: #e0af68;
   --erreur: #f07178;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+
+  /* Le verre : une nappe claire très diluée sur fond noir, et un liseré à
+     peine plus marqué. Les deux ensemble seulement — une bordure franche sur
+     un fond transparent donne un cadre, pas une épaisseur. */
+  --verre: rgb(255 255 255 / 0.035);
+  --verre-bord: rgb(255 255 255 / 0.09);
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    --fond: #f6f7fb;
-    --panneau: #ffffff;
-    --bord: #dfe2ec;
-    --texte: #1b1d26;
-    --doux: #5c6076;
-    --accent: #2f5fd0;
-  }
-}
+/* Pas de variante claire. L'écran d'entrée est noir par construction — le
+   titre ne se révèle que sur du noir — et proposer une seconde direction
+   donnerait deux interfaces à tenir d'accord pour une application qui se
+   regarde surtout la nuit. */
 
 * { box-sizing: border-box; }
 
@@ -294,31 +294,76 @@ h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; colo
 
 /* ---------------------------------------------------------------- salons */
 
+/* Bento : trois colonnes, chaque bloc dans sa carte de verre. La liste des
+   salons tient la première sur toute la hauteur — c'est la seule qui grandit
+   sans limite, donc la seule qui défile chez elle plutôt que d'allonger la
+   page. */
 #rooms {
   flex: 1; min-height: 0; overflow-y: auto;
-  width: 100%; max-width: 44rem; margin: 2rem auto; padding: 0 1.5rem;
-  display: flex; flex-direction: column; gap: 0.5rem;
+  width: 100%; max-width: 82rem; margin: 0 auto; padding: 1.5rem;
+  display: grid; gap: 1rem;
+  /* La colonne des salons est la plus large : c'est la seule qui porte une
+     liste, les deux autres portent des formulaires courts. */
+  grid-template-columns: 1.15fr 1fr 1fr;
+  grid-template-rows: minmax(0, 1fr);
+  /* Les cartes épousent leur contenu, sauf celle des salons qui prend la
+     hauteur. Sans ça, les trois s'étirent et deux d'entre elles affichent
+     surtout du vide. */
+  align-items: start;
 }
+
+/* En dessous de trois colonnes confortables, les cartes s'empilent : un bento
+   comprimé donne des colonnes où plus rien ne tient. */
+@media (max-width: 62rem) {
+  #rooms { grid-template-columns: 1fr; grid-template-rows: none; }
+  .carte-salons { max-height: 60vh; }
+}
+
+.carte {
+  display: flex; flex-direction: column; min-height: 0;
+  padding: 1.2rem;
+  border-radius: 18px;
+  border: 1px solid var(--verre-bord);
+  background: var(--verre);
+  /* Le verre : un flou de ce qu'il y a derrière, plus un liseré clair en haut
+     à l'intérieur — c'est ce reflet qui donne l'épaisseur, pas la transparence. */
+  backdrop-filter: blur(20px) saturate(140%);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06), 0 12px 30px rgb(0 0 0 / 0.35);
+}
+
+.carte-tete { margin-bottom: 1rem; }
+.carte-tete h2 { margin: 0; font-size: 1.05rem; font-weight: 600; }
+.carte-sous { margin: 0.2rem 0 0; color: var(--doux); font-size: 0.85rem; }
+
+.carte-salons { align-self: stretch; }
+/* Le défilement appartient à la carte, pas à la page. */
+.salons-defile {
+  flex: 1; min-height: 0; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 0.5rem;
+  margin: -0.3rem; padding: 0.3rem;
+}
+
 .salon {
   display: flex; align-items: center; gap: 0.5rem;
-  border: 1px solid var(--bord); border-radius: 8px;
-  background: var(--panneau);
+  border: 1px solid var(--verre-bord); border-radius: 12px;
+  background: rgb(255 255 255 / 0.02);
+  transition: background 0.2s, border-color 0.2s;
 }
-.salon:hover { border-color: var(--accent); }
+.salon:hover { background: rgb(255 255 255 / 0.05); border-color: rgb(255 255 255 / 0.16); }
 .salon .lien {
   flex: 1; min-width: 0;
-  display: flex; align-items: baseline; gap: 0.8rem;
-  padding: 0.8rem 1rem; color: var(--texte); text-decoration: none;
+  display: flex; align-items: baseline; gap: 0.8rem; flex-wrap: wrap;
+  padding: 0.7rem 0.9rem; color: var(--texte); text-decoration: none;
 }
 /* Discret par défaut : retirer un salon ne doit pas être le geste le plus
    visible de la liste. */
 .retirer {
-  flex: 0 0 auto; margin-right: 0.6rem; padding: 0.1rem 0.5rem;
+  flex: 0 0 auto; margin-right: 0.5rem; padding: 0.1rem 0.5rem;
   font: inherit; font-size: 1.1rem; line-height: 1.4;
   color: var(--doux); background: none; border: none; border-radius: 6px;
   cursor: pointer; opacity: 0.5;
 }
-.retirer:hover { color: var(--erreur); opacity: 1; background: var(--fond); }
+.retirer:hover { color: var(--erreur); opacity: 1; background: rgb(255 255 255 / 0.06); }
 .retirer:disabled { opacity: 0.3; cursor: not-allowed; }
 .chemin { color: var(--doux); font-family: var(--mono); font-size: 0.8rem; }
 .puce { margin-left: auto; color: var(--ok); font-size: 0.8rem; }
@@ -328,15 +373,79 @@ h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; colo
 .puce + .puce { margin-left: 0.8rem; }
 .vide { color: var(--doux); font-style: italic; }
 
-/* ------------------------------------------------------- création */
+/* ------------------------------------------------------- entrer et agent */
 
-.creation {
-  margin-top: 1.5rem; padding: 1rem;
-  border: 1px dashed var(--bord); border-radius: 8px;
+.champ-action + .champ-action { margin-top: 1.2rem; }
+.champ-etiquette {
+  display: block; margin-bottom: 0.4rem;
+  font-size: 0.88rem; font-weight: 500;
 }
-.creation h2 { margin-top: 0; }
-.creation .ligne { display: flex; gap: 0.5rem; }
-.creation .vide { display: block; margin: 0.6rem 0 0; font-size: 0.85rem; }
+.carte .ligne { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+
+.saisie {
+  flex: 1; min-width: 6rem; height: 46px; padding: 0 0.9rem;
+  font: inherit; color: var(--texte);
+  background: rgb(255 255 255 / 0.04);
+  border: 1px solid var(--verre-bord); border-radius: 100px;
+  outline: none;
+}
+.saisie:focus { border-color: rgb(255 255 255 / 0.24); background: rgb(255 255 255 / 0.07); }
+.saisie::placeholder { color: rgb(255 255 255 / 0.28); }
+select.saisie { flex: 0 0 auto; }
+
+.agent-etat { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; }
+.agent-etat .carte-sous { flex-basis: 100%; }
+.pastille {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--alerte);
+}
+.pastille.vive { background: var(--ok); box-shadow: 0 0 10px rgb(110 196 140 / 0.6); }
+.pastille.eteinte { background: rgb(255 255 255 / 0.22); }
+
+.agent-cli { margin-top: 1rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.agent-identifiant { margin-top: 1.2rem; }
+.agent-identifiant .saisie[type="password"] { width: 100%; margin-bottom: 0.5rem; }
+.agent-depose { display: flex; align-items: center; flex-wrap: wrap; gap: 0.6rem; font-size: 0.9rem; }
+.carte .sortie { margin-top: 1rem; max-height: 10rem; }
+
+/* ------------------------------------------------------------ bulle d'aide */
+
+.avec-aide { display: inline-flex; align-items: center; gap: 0.4rem; }
+.aide {
+  width: 16px; height: 16px; padding: 0; flex: 0 0 auto;
+  font: inherit; font-size: 0.7rem; line-height: 1;
+  color: var(--doux); background: rgb(255 255 255 / 0.06);
+  border: 1px solid var(--verre-bord); border-radius: 50%;
+  cursor: help;
+}
+.aide:hover { color: var(--texte); background: rgb(255 255 255 / 0.12); }
+
+.bulle {
+  position: fixed; z-index: 100;
+  min-width: 15rem; max-width: 22rem;
+  padding: 0.7rem 0.85rem;
+  border-radius: 12px;
+  border: 1px solid var(--verre-bord);
+  background: rgb(18 18 20 / 0.92);
+  backdrop-filter: blur(14px);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.06), 0 16px 40px rgb(0 0 0 / 0.55);
+  /* Elle ne doit jamais intercepter un clic : elle suit le curseur, donc elle
+     est en permanence sous lui. */
+  pointer-events: none;
+  opacity: 0; transform: translateY(6px) scale(0.96); transform-origin: top left;
+  /* Une courbe qui dépasse, plutôt qu'un ressort simulé : c'est ce que donne
+     l'original, sans embarquer de bibliothèque d'animation. */
+  transition: opacity 0.16s ease-out, transform 0.24s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.bulle.ouverte { opacity: 1; transform: translateY(0) scale(1); }
+.bulle-titre { display: block; margin-bottom: 0.3rem; font-size: 0.88rem; }
+.bulle-texte { margin: 0; color: var(--doux); font-size: 0.83rem; line-height: 1.5; }
+
+@media (prefers-reduced-motion: reduce) {
+  .bulle { transition: opacity 0.1s linear; transform: none; }
+  .bulle.ouverte { transform: none; }
+}
+
 .titre {
   flex: 1; padding: 0.45rem 0.6rem;
   font: inherit; color: var(--texte);
@@ -413,6 +522,38 @@ h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; colo
 #requests li { margin-bottom: 0.35rem; }
 #requests .moi { font-weight: 600; }
 #requests .bouton { margin-left: 0.4rem; padding: 0.15rem 0.5rem; font-size: 0.82rem; }
+#actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.8rem; }
+#presence { color: var(--doux); font-size: 0.88rem; }
+#host { display: flex; flex-direction: column; gap: 0.15rem; font-size: 0.88rem; }
+#host .etat { font-weight: 600; color: var(--ok); }
+#host .etat.absent { color: var(--alerte); }
+#host .chemin { word-break: break-all; }
+#host .commande {
+  display: block; margin: 0.3rem 0; padding: 0.4rem 0.5rem;
+  font-family: var(--mono); font-size: 0.78rem; word-break: break-all;
+  background: var(--fond); border: 1px solid var(--bord); border-radius: 6px;
+  user-select: all;
+}
+#host .bouton { align-self: flex-start; }
+#host .titre { margin: 0.3rem 0; font-size: 0.85rem; }
+#code { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+#code .commande {
+  padding: 0.25rem 0.5rem;
+  font-family: var(--mono); font-size: 1rem; letter-spacing: 0.12em;
+  background: var(--fond); border: 1px solid var(--bord); border-radius: 6px;
+  user-select: all;
+}
+/* La commande à taper, partout où on la montre. `user-select: all` pour qu'un
+   simple clic la sélectionne entière — elle est faite pour être copiée. */
+.commande {
+  align-self: flex-start; padding: 0.4rem 0.7rem;
+  font-family: var(--mono); font-size: 0.82rem;
+  color: var(--texte); background: rgb(255 255 255 / 0.05);
+  border: 1px solid var(--verre-bord); border-radius: 10px;
+  user-select: all;
+}
+
+.bouton { margin-left: 0.4rem; padding: 0.15rem 0.5rem; font-size: 0.82rem; }
 #actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.8rem; }
 #presence { color: var(--doux); font-size: 0.88rem; }
 #host { display: flex; flex-direction: column; gap: 0.15rem; font-size: 0.88rem; }

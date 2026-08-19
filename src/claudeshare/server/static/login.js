@@ -1,28 +1,22 @@
 /**
  * L'écran de connexion : le titre à révélation, et le bouton d'entrée.
  *
- * Deux composants repris de bibliothèques React — `text-hover-effect`
- * d'Aceternity UI et `liquid-metal-button` de jolyui — portés en DOM natif.
- * Le portage n'est pas un choix esthétique : ce client n'a **pas d'étape de
- * construction**, et sa CSP (`script-src 'self'`, `default-src 'none'`) interdit
- * toute origine externe. Un composant React tiers demanderait les deux.
+ * Le titre reprend `text-hover-effect` d'Aceternity UI, porté en DOM natif — ce
+ * client n'a **pas d'étape de construction**, et sa CSP (`script-src 'self'`,
+ * `default-src 'none'`) interdit toute origine externe. Un composant React
+ * tiers demanderait les deux. Le bouton, lui, vit dans `ui.js` : il sert aussi
+ * ailleurs.
  *
- * Ce qui est repris au trait près : la structure SVG à trois textes superposés,
- * les cinq arrêts de dégradé, le masque radial de rayon 20 % qui suit le
- * curseur, l'épaisseur de trait 0,3 et le tracé en 4 s ; pour le bouton, ses
- * dimensions, ses rayons, son dégradé intérieur `#202020 → #000000`, sa pile
- * d'ombres et son onde au clic.
- *
- * Ce qui est **approché** : le liseré métallique. L'original le produit par un
- * fragment shader WebGL (`@paper-design/shaders`), soit une dépendance tierce
- * de plusieurs dizaines de kilooctets à embarquer et à tenir à jour, pour un
- * liseré de deux pixels. Il est ici peint par un dégradé conique en rotation.
+ * Repris au trait près : les trois textes SVG superposés, les cinq arrêts de
+ * dégradé, le masque radial de rayon 20 % qui suit le curseur et le tracé
+ * d'ouverture.
  *
  * Tout est construit par le DOM, jamais depuis une chaîne de balisage : c'est
  * la règle du client, et `tests/test_protocol.py` la vérifie.
  */
 
-import { elem, replace } from "./render.js";
+import { replace } from "./render.js";
+import { boutonMetal } from "./ui.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -147,43 +141,14 @@ function tracerPuisSolidifier(trace) {
   );
 }
 
-/**
- * Le bouton d'entrée. Un lien, pas un `<button>` : la connexion OAuth est une
- * navigation, et la rendre cliquable au clavier comme au clic sans réécrire ce
- * qu'un lien fait déjà serait du travail perdu.
- *
- * Trois calques empilés, comme l'original : le liseré animé, la pastille noire,
- * puis le libellé.
- */
-export function bouton(libelle, href) {
-  const lien = elem("a", "metal");
-  lien.href = href;
-
-  const liseré = elem("span", "metal-liseré");
-  const fond = elem("span", "metal-fond");
-  const texte = elem("span", "metal-texte", libelle);
-  lien.append(liseré, fond, texte);
-
-  // L'onde part du point cliqué. Posée sur le lien puis retirée à la fin de son
-  // animation : la laisser vivre accumulerait un nœud par clic.
-  lien.addEventListener("pointerdown", (e) => {
-    const cadre = lien.getBoundingClientRect();
-    const onde = elem("span", "metal-onde");
-    onde.style.setProperty("--x", `${e.clientX - cadre.left}px`);
-    onde.style.setProperty("--y", `${e.clientY - cadre.top}px`);
-    onde.addEventListener("animationend", () => onde.remove());
-    lien.appendChild(onde);
-  });
-
-  return lien;
-}
-
 /** Peint l'écran complet : le titre, puis un bouton par fournisseur. */
 export function monterConnexion(cible, providers, texteTitre) {
   replace(cible.titre, titre(texteTitre));
   replace(
     cible.providers,
-    ...providers.map((p) => bouton(`Se connecter avec ${etiquette(p)}`, `/auth/${p}`)),
+    ...providers.map((p) =>
+      boutonMetal(`Se connecter avec ${etiquette(p)}`, { href: `/auth/${p}` }),
+    ),
   );
 }
 
