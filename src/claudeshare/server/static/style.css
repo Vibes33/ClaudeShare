@@ -870,6 +870,17 @@ select.saisie { flex: 0 0 auto; }
   background: rgb(255 255 255 / 0.05);
   border: 1px solid var(--verre-bord); border-radius: 100px;
 }
+/* L'aperçu déborde du remplissage de gauche pour venir se coller au bord
+   arrondi : une miniature qui flotte au milieu d'une pilule se lit comme une
+   icône, collée elle se lit comme l'image elle-même. */
+.piece-apercu {
+  flex: 0 0 auto; width: 26px; height: 26px;
+  margin: -0.25rem 0 -0.25rem -0.45rem;
+  object-fit: cover; border-radius: 100px;
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.12);
+}
+.piece:has(.piece-apercu) { padding-left: 0.35rem; }
+
 .piece-nom {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--texte);

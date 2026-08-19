@@ -1406,10 +1406,59 @@ function joindre(fichier) {
   if (fichier.size > MAX_OCTETS_PIECE) {
     return toast(`« ${fichier.name} » dépasse ${MAX_OCTETS_PIECE / 1_000_000} Mo.`);
   }
-  const piece = { nom: fichier.name, taille: fichier.size, id: null, erreur: "" };
+  const piece = { nom: fichier.name, taille: fichier.size, id: null, erreur: "", apercu: null };
   state.pieces.push(piece);
   dessinerPieces();
   deposerPiece(piece, fichier);
+  apercuDe(fichier).then((apercu) => {
+    if (!apercu || !state.pieces.includes(piece)) return;
+    piece.apercu = apercu;
+    dessinerPieces();
+  });
+}
+
+//: Côté de l'aperçu, en pixels de mise en page. Doublé à la fabrication pour
+//: rester net sur un écran dense.
+const APERCU_COTE = 26;
+
+/**
+ * Une miniature carrée d'une image, ou `null` si le fichier n'en est pas une.
+ *
+ * Redessinée dans un canevas plutôt qu'affichée telle quelle. Trois raisons, et
+ * la dernière est la vraie :
+ *
+ * 1. la miniature pèse deux kilooctets quel que soit le poids de l'original ;
+ * 2. elle est recadrée au carré, donc la rangée de vignettes reste régulière ;
+ * 3. elle sort en `data:` — que la CSP autorise déjà. Afficher le fichier
+ *    d'origine demanderait d'ouvrir `blob:` dans `img-src`, c'est-à-dire
+ *    d'élargir la politique pour un confort d'affichage.
+ *
+ * Un format que le navigateur ne sait pas décoder — un SVG, par exemple — lève
+ * ici et ne donne pas d'aperçu. C'est le bon résultat : on ne rend jamais un
+ * document capable de porter du script.
+ */
+async function apercuDe(fichier) {
+  if (!fichier.type.startsWith("image/")) return null;
+  try {
+    const image = await createImageBitmap(fichier);
+    const cote = APERCU_COTE * Math.min(3, window.devicePixelRatio || 1);
+    const canevas = elem("canvas");
+    canevas.width = cote;
+    canevas.height = cote;
+
+    // Recadrage centré : on prend le plus grand carré de l'image, puis on le
+    // réduit. Étirer déformerait les visages et les captures d'écran.
+    const source = Math.min(image.width, image.height);
+    canevas.getContext("2d").drawImage(
+      image,
+      (image.width - source) / 2, (image.height - source) / 2, source, source,
+      0, 0, cote, cote,
+    );
+    image.close();
+    return canevas.toDataURL("image/png");
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1461,6 +1510,12 @@ function dessinerPieces() {
     ...state.pieces.map((piece) => {
       const etat = piece.erreur ? " rate" : piece.id ? "" : " envoi";
       const el = elem("span", `piece${etat}`);
+      if (piece.apercu) {
+        const image = elem("img", "piece-apercu");
+        image.src = piece.apercu;
+        image.alt = "";
+        el.appendChild(image);
+      }
       el.append(
         elem("span", "piece-nom", piece.nom),
         elem("span", "piece-taille", piece.erreur || (piece.id ? octets(piece.taille) : "envoi…")),
