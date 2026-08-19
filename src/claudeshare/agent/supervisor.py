@@ -305,6 +305,10 @@ class SessionSupervisor:
                 "interrupted": outcome.interrupted,
                 "terminal_reason": outcome.terminal_reason,
                 "cost_usd": outcome.cost_usd,
+                # Déjà calculée pour l'`Outcome`, elle n'était transmise à
+                # personne : sans elle, une interface ne peut rien dire de ce
+                # qu'un tour a consommé.
+                "usage": outcome.usage,
             },
         )
         return outcome

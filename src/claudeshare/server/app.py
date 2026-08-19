@@ -36,7 +36,7 @@ from ..core.capabilities import Capability
 from ..core.secretbox import SecretBox
 from ..core.workspace import ensure_root
 from ..db.eventstore import DatabaseLogStore
-from ..db.models import Room
+from ..db.models import Room, User
 from ..db.session import Database, Schema, default_url
 from .api.invites import build_invites_router, build_redeem_router
 from .api.profile import build_avatar_router, build_profile_router
@@ -357,6 +357,11 @@ def create_app(
                 await websocket.close(code=4404)
                 return
             detached = (record.id, record.title, record.workspace, record.session_id)
+            # Résolue ici, dans la session déjà ouverte : la présence transporte
+            # les photos pour que le salon puisse montrer qui est là sans
+            # interroger l'API une fois par personne.
+            moi = session.get(User, principal.user_id)
+            avatar = moi.avatar_url if moi else None
 
         live = await _ensure_live(ctx, detached)
         try:
@@ -364,6 +369,7 @@ def create_app(
                 websocket,
                 live,
                 principal.label,
+                avatar=avatar,
                 # Relus à chaque intention : une rétrogradation doit prendre
                 # effet sans reconnexion.
                 capabilities=lambda: _capabilities_of(ctx, room_id, principal.user_id),

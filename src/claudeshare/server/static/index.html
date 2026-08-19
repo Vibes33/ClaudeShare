@@ -45,12 +45,20 @@
       <span>ClaudeShare</span>
     </a>
     <span id="title"></span>
+    <!-- Qui a la parole : dans la barre, et non dans le panneau latéral. C'est
+         l'information que tout le monde consulte, alors que le panneau ne sert
+         qu'à qui héberge. -->
+    <span id="porteur"></span>
+    <span id="presents"></span>
     <span id="etat-lien">
       <span id="status-point"></span>
       <span id="status">hors ligne</span>
     </span>
     <!-- Un bouton, pas un libellé : il ouvre le menu de profil. -->
     <button id="who" type="button"></button>
+    <button id="ouvrir-cote" type="button" aria-label="Réglages du salon" hidden>
+      <span class="barres"></span>
+    </button>
   </header>
 
   <main id="rooms" hidden></main>
@@ -58,33 +66,36 @@
   <main id="room" hidden>
     <section id="transcript" aria-live="polite"></section>
 
-    <aside id="cote">
-      <h2>Hôte</h2>
+    <!-- Le panneau ne sert qu'à qui héberge : caché derrière un bouton, il
+         rend au salon toute sa largeur pour le reste du monde. -->
+    <aside id="cote" hidden>
+      <h2>Hébergement</h2>
       <p id="host"></p>
 
       <h2>Code du salon</h2>
       <div id="code"></div>
 
-      <h2>Jeton de parole</h2>
-      <p id="floor"></p>
-      <div id="actions"></div>
-
       <h2>Demandes de parole</h2>
       <ol id="requests"></ol>
 
-      <h2>Approbations</h2>
+      <h2>Approbations d'outil</h2>
       <div id="approvals"></div>
-
-      <h2>Présents</h2>
-      <p id="presence"></p>
     </aside>
 
     <!-- Une `div` et non un `form` : la CSP interdit les gestionnaires en
          ligne, donc pas de `onsubmit="return false"`, et un vrai formulaire
          rechargerait la page sur Entrée. Tout passe par app.js. -->
     <div id="composer">
-      <textarea id="prompt" rows="3" placeholder="Écrire à Claude…"></textarea>
-      <button id="send" type="button" class="bouton">Envoyer</button>
+      <div id="saisie">
+        <textarea id="prompt" rows="1" placeholder="Écrire à Claude…"></textarea>
+        <div id="saisie-pied">
+          <button id="joindre" type="button" aria-label="Joindre un fichier">+</button>
+          <span id="modele"></span>
+          <span id="jetons"></span>
+          <button id="send" type="button" aria-label="Envoyer"></button>
+        </div>
+      </div>
+      <div id="actions"></div>
     </div>
   </main>
 </div>

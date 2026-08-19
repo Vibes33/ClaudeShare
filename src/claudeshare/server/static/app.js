@@ -35,6 +35,12 @@ const state = {
   order: [],
   present: [],
   floor: { state: "open", holder: null, deferred: null, requests: [] },
+  //: Photo de profil par étiquette présente, telle que la présence l'annonce.
+  avatars: {},
+  //: Jetons consommés depuis l'ouverture de la page, cumulés sur les tours.
+  jetons: { entree: 0, sortie: 0 },
+  //: Le modèle que l'agent a réellement ouvert, annoncé par `session.ready`.
+  modele: "",
   //: Qui héberge le salon. Sans agent, on lit mais on n'exécute pas.
   agent: { connected: false, host: null, workspace: "" },
   //: Mon propre démon, tel que `/api/agent` le décrit. Distinct de `agent`
@@ -62,14 +68,22 @@ let frameRequested = false;
 document.addEventListener("DOMContentLoaded", async () => {
   for (const id of [
     "app", "login", "providers", "rooms", "room", "title", "status", "who",
-    "transcript", "composer", "prompt", "send", "floor", "requests", "presence", "host", "code",
-    "titre-connexion", "barre",
+    "transcript", "composer", "prompt", "send", "requests", "host", "code",
+    "titre-connexion", "barre", "porteur", "presents", "ouvrir-cote", "cote",
+    "saisie", "joindre", "modele", "jetons",
     "approvals", "toasts", "actions",
   ]) {
     dom[id] = document.getElementById(id);
   }
 
   dom.send.addEventListener("click", envoyer);
+  dom.prompt.addEventListener("input", ajusterHauteur);
+  // Le panneau du salon s'ouvre et se ferme par le même bouton, dont la croix
+  // dit l'état courant.
+  dom["ouvrir-cote"].addEventListener("click", () => {
+    dom.cote.hidden = !dom.cote.hidden;
+    dom["ouvrir-cote"].classList.toggle("ouvert", !dom.cote.hidden);
+  });
   dom.prompt.addEventListener("keydown", (e) => {
     // Entrée envoie, Maj+Entrée passe à la ligne. L'inverse surprend tout le
     // monde dans un champ de discussion.
@@ -510,11 +524,11 @@ function carteAgent() {
   return bloc;
 }
 
-/** L'état du démon, en une ligne : une pastille et ce qu'elle implique. */
+/** L'état du démon, en une ligne : un voyant et ce qu'il implique. */
 function voyantAgent() {
   const ligne = elem("div", "agent-etat");
   const connecte = state.demon.connected;
-  ligne.appendChild(elem("span", `pastille ${connecte ? "vive" : "eteinte"}`));
+  ligne.appendChild(elem("span", `voyant ${connecte ? "vive" : "eteinte"}`));
   ligne.appendChild(elem("strong", "", connecte ? "connecté" : "aucun agent"));
   ligne.appendChild(
     elem("span", "carte-sous", connecte
@@ -547,7 +561,7 @@ function blocIdentifiant() {
 
   if (state.identifiant.present) {
     const ligne = elem("div", "agent-depose");
-    ligne.appendChild(elem("span", "pastille vive"));
+    ligne.appendChild(elem("span", "voyant vive"));
     ligne.appendChild(
       elem("span", "", `${state.identifiant.kind} · ${state.identifiant.fingerprint}`),
     );
@@ -766,6 +780,7 @@ function appliquer(trame) {
       return;
     case ServerMessage.PRESENCE:
       state.present = d.present || [];
+      state.avatars = d.avatars || {};
       return peindre();
     case ServerMessage.AGENT:
       state.agent = d;
@@ -788,6 +803,7 @@ function instantane(d) {
   // Des états, pas un historique : l'instantané fait autorité dessus.
   state.caps = new Set(d.capabilities || []);
   state.present = d.present || [];
+  state.avatars = d.avatars || {};
   state.floor = d.floor || state.floor;
   state.agent = d.agent || state.agent;
   state.approvals = new Map((d.approvals || []).map((a) => [a.approval_id, a]));
@@ -870,6 +886,12 @@ function evenement(type, d) {
       t.ended = d;
       t.thinking = false;
       state.queued = null;
+      // Cumulé pour la page, pas pour le salon : la conversation peut avoir
+      // commencé avant qu'on arrive, et prétendre en connaître le total serait
+      // faux. Ce compteur dit ce qui a été consommé sous nos yeux.
+      const u = d.usage || {};
+      state.jetons.entree += (u.input_tokens || 0) + (u.cache_read_input_tokens || 0);
+      state.jetons.sortie += u.output_tokens || 0;
       break;
     }
     case EventType.TOOL_APPROVAL_REQUESTED:
@@ -882,6 +904,9 @@ function evenement(type, d) {
       signalerDemandes(d);
       state.floor = d;
       if (d.holder === state.me.label) state.queued = null;
+      break;
+    case EventType.SESSION_READY:
+      state.modele = d.model || state.modele;
       break;
     case EventType.SESSION_ERROR:
       toast(`Session en erreur : ${d.reason || "inconnue"}`);
@@ -908,7 +933,9 @@ function erreur(d) {
 
 // ------------------------------------------------------------- intentions
 
+/** Envoie, ou interrompt si un tour est en cours — le bouton est le même. */
 function envoyer() {
+  if (dom.send.classList.contains("arret")) return emettre(ClientMessage.STREAM_STOP);
   const texte = dom.prompt.value.trim();
   if (!texte) return;
   emettre(ClientMessage.PROMPT_SEND, { prompt: texte });
@@ -916,6 +943,18 @@ function envoyer() {
   // salon répond `queued`, on le remet dans le champ (voir `appliquer`).
   state.brouillon = texte;
   dom.prompt.value = "";
+  ajusterHauteur();
+}
+
+/**
+ * La zone de saisie grandit avec son contenu, jusqu'à un plafond.
+ *
+ * Remise à `auto` avant chaque mesure : sans ça, `scrollHeight` ne redescend
+ * jamais, et le champ resterait à la taille de son plus long brouillon.
+ */
+function ajusterHauteur() {
+  dom.prompt.style.setProperty("height", "auto");
+  dom.prompt.style.setProperty("height", `${Math.min(dom.prompt.scrollHeight, 200)}px`);
 }
 
 function decider(approvalId, allow) {
@@ -942,12 +981,14 @@ function peindre(complet = false) {
 
 function dessiner() {
   dom.title.textContent = state.title;
-  dom.presence.textContent = state.present.join(" · ") || "personne";
+  dessinerPorteur();
+  dessinerPresents();
   dessinerHote();
   dessinerCode();
   dessinerJeton();
   dessinerApprobations();
   dessinerActions();
+  dessinerPied();
 
   const bas = dom.transcript.scrollHeight - dom.transcript.scrollTop - dom.transcript.clientHeight < 80;
   for (const turnId of dirty) {
@@ -964,26 +1005,109 @@ function dessiner() {
   if (bas) dom.transcript.scrollTop = dom.transcript.scrollHeight;
 }
 
+/** La vignette de quelqu'un d'après son étiquette, avec son nom au survol. */
+function vignetteDe(etiquette, classe = "vignette") {
+  const el = vignette(
+    { label: etiquette, avatar_url: state.avatars[etiquette] || null },
+    classe,
+  );
+  // Le nom au survol plutôt qu'à côté : sur une ligne de trois photos, l'écrire
+  // en clair coûterait la place qu'on cherchait justement à gagner.
+  el.dataset.nom = etiquette;
+  return el;
+}
+
+/**
+ * Qui a la parole, dans la barre.
+ *
+ * C'est l'information que tout le monde consulte, à la différence du panneau
+ * latéral qui ne sert qu'à qui héberge — d'où sa place ici, et non là-bas.
+ */
+function dessinerPorteur() {
+  const f = state.floor;
+  if (!f.holder) {
+    replace(dom.porteur, elem("span", "porteur-vide", "personne n'a la parole"));
+    return;
+  }
+  const mien = f.holder === state.me.label;
+  replace(
+    dom.porteur,
+    vignetteDe(f.holder, "vignette petite"),
+    elem("span", "porteur-nom", mien ? "vous" : f.holder),
+    elem("span", `porteur-etat ${f.state}`, f.state === "generating" ? "répond" : "a la parole"),
+  );
+}
+
+/** Combien de photos avant de compter le reste. */
+const PRESENTS_VISIBLES = 3;
+
+/**
+ * Les présents, en pile de photos.
+ *
+ * Trois au plus, puis un compteur : une ligne qui s'allonge avec le nombre de
+ * personnes finirait par pousser le reste de la barre hors de l'écran, et c'est
+ * précisément dans les salons pleins que la barre doit rester lisible.
+ */
+function dessinerPresents() {
+  const montres = state.present.slice(0, PRESENTS_VISIBLES);
+  const reste = state.present.length - montres.length;
+  replace(dom.presents, ...montres.map((qui) => vignetteDe(qui, "vignette petite")));
+  if (reste > 0) {
+    dom.presents.appendChild(elem("span", "vignette petite reste", `+${reste}`));
+  }
+}
+
+/** Le pied du composeur : le modèle en cours et ce qu'on a consommé. */
+function dessinerPied() {
+  dom.modele.textContent = state.modele || "";
+  const { entree, sortie } = state.jetons;
+  const total = entree + sortie;
+  dom.jetons.textContent = total ? `${millers(total)} jetons` : "";
+  dom.jetons.title = total
+    ? `${millers(entree)} en entrée, ${millers(sortie)} en sortie, depuis l'ouverture de cette page.`
+    : "";
+}
+
+/** 12345 → « 12,3 k ». Un compteur qui compte les unités ne se lit pas. */
+function millers(n) {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(1).replace(".", ",")} k`;
+  return `${(n / 1_000_000).toFixed(1).replace(".", ",")} M`;
+}
+
+/**
+ * Un tour : la demande de quelqu'un, puis ce que Claude en fait.
+ *
+ * Deux messages et non un bloc : ils n'ont pas le même auteur. Celui de la
+ * personne porte sa photo, celui de Claude la sienne — et le nom n'apparaît
+ * qu'au survol de la photo, parce qu'il se répète à chaque message alors que
+ * l'image suffit à reconnaître qui parle.
+ */
 function dessinerTour(t) {
   const bloc = elem("article", "tour");
   bloc.id = `tour-${t.id}`;
 
-  const entete = elem("header", "auteur");
-  entete.appendChild(elem("span", "pseudo", t.author || "?"));
-  bloc.appendChild(entete);
+  if (t.prompt) {
+    bloc.appendChild(
+      message(vignetteDe(t.author || "?"), replace(elem("div", "bulle-texte"), renderMarkdown(t.prompt))),
+    );
+  }
 
-  if (t.prompt) bloc.appendChild(replace(elem("div", "prompt"), renderMarkdown(t.prompt)));
-
-  for (const [, outil] of t.tools) bloc.appendChild(dessinerOutil(outil));
+  const reponse = elem("div", "message-corps");
+  for (const [, outil] of t.tools) reponse.appendChild(dessinerOutil(outil));
 
   const corps = t.text + t.partial;
-  if (corps) bloc.appendChild(replace(elem("div", "reponse"), renderMarkdown(corps)));
-  else if (t.thinking) bloc.appendChild(elem("div", "reflexion", "réflexion…"));
+  if (corps) reponse.appendChild(replace(elem("div", "bulle-texte"), renderMarkdown(corps)));
+  else if (t.thinking) reponse.appendChild(elem("div", "reflexion", "réflexion…"));
+  if (reponse.childElementCount) bloc.appendChild(message(vignetteClaude(), reponse, "de-claude"));
 
   if (t.ended) {
     const bits = [];
     if (t.ended.interrupted) bits.push(`interrompu (${t.ended.terminal_reason || "?"})`);
     if (t.ended.cost_usd != null) bits.push(`≈ $${Number(t.ended.cost_usd).toFixed(4)}`);
+    const u = t.ended.usage || {};
+    const jetons = (u.input_tokens || 0) + (u.output_tokens || 0);
+    if (jetons) bits.unshift(`${millers(jetons)} jetons`);
     if (bits.length) {
       const pied = elem("footer", "fin", bits.join(" · "));
       // Le SDK chiffre toujours les jetons, abonnement ou pas. Un montant nu
@@ -998,6 +1122,20 @@ function dessinerTour(t) {
     }
   }
   return bloc;
+}
+
+/** Une ligne de conversation : la photo à gauche, le contenu à droite. */
+function message(portrait, contenu, classe = "") {
+  const ligne = elem("div", `message ${classe}`);
+  ligne.append(portrait, contenu);
+  return ligne;
+}
+
+/** Claude n'a pas de compte, donc pas de photo : un monogramme suffit. */
+function vignetteClaude() {
+  const el = elem("span", "vignette claude", "C");
+  el.dataset.nom = "Claude";
+  return el;
 }
 
 function dessinerOutil(outil) {
@@ -1111,27 +1249,14 @@ function signalerDemandes(f) {
   state.signalees = new Set(demandeurs);
 }
 
+/**
+ * Les demandes de parole en attente, dans le panneau.
+ *
+ * Le porteur, lui, est dans la barre : c'est ce que tout le monde consulte,
+ * alors que trancher une demande ne concerne que qui anime le salon.
+ */
 function dessinerJeton() {
   const f = state.floor;
-  const mien = f.holder === state.me.label;
-
-  // Le pseudo du porteur d'abord, en clair : c'est la question que se pose qui
-  // regarde ce panneau. L'état de la machine ne fait que la préciser.
-  replace(
-    dom.floor,
-    elem("strong", `porteur ${f.holder ? "" : "vide"}`, f.holder || "personne"),
-    elem("span", `etat ${f.state}`, {
-      open: " — personne n'a la parole",
-      held: mien ? " — c'est à vous" : " — rédige",
-      generating: mien ? " — votre tour tourne" : " — tour en cours",
-    }[f.state] || ` — ${f.state}`),
-  );
-  if (f.deferred) {
-    dom.floor.appendChild(
-      elem("span", "differe", ` · ${f.deferred} prendra la parole à la fin du tour`),
-    );
-  }
-
   const peutAccorder = peut(Capability.FLOOR_GRANT);
   replace(
     dom.requests,
@@ -1153,6 +1278,11 @@ function dessinerJeton() {
       return li;
     }),
   );
+  if (f.deferred) {
+    dom.requests.appendChild(
+      elem("li", "differe", `${f.deferred} prendra la parole à la fin du tour`),
+    );
+  }
 }
 
 /**
@@ -1245,10 +1375,13 @@ function dessinerActions() {
       f.state === "generating" && (mien || peut(Capability.STOP))],
   ];
 
+  // Sous la zone de saisie, comme les suggestions du composeur dont ce dessin
+  // s'inspire : ce sont les gestes qu'on fait *autour* d'un message, au même
+  // endroit et sans quitter le clavier des yeux.
   replace(
     dom.actions,
     ...boutons.map(([libelle, message, data, actif]) => {
-      const b = elem("button", "bouton", libelle);
+      const b = elem("button", "pastille", libelle);
       // Grisé, pas caché : voir qu'une action existe et qu'on n'y a pas droit
       // vaut mieux que de découvrir plus tard qu'elle existait.
       b.disabled = !actif;
@@ -1265,7 +1398,18 @@ function dessinerActions() {
   const aLaMain = mien && f.state === "held";
 
   dom.prompt.disabled = !peutEcrire || !aLaMain;
-  dom.send.disabled = dom.prompt.disabled || !heberge;
+  // Le bouton d'envoi devient bouton d'arrêt pendant une génération : c'est le
+  // même endroit, et c'est le seul geste qu'on veuille faire à ce moment-là.
+  const enCours = f.state === "generating";
+  const coupable = enCours && (mien || peut(Capability.STOP));
+  dom.send.classList.toggle("arret", coupable);
+  dom.send.setAttribute("aria-label", coupable ? "Interrompre" : "Envoyer");
+  dom.send.disabled = coupable ? false : dom.prompt.disabled || !heberge;
+  // Les pièces jointes ne traversent pas encore le relais : le bouton reste
+  // visible et dit pourquoi, plutôt que de disparaître sans explication.
+  dom.joindre.disabled = true;
+  dom.joindre.title = "Les pièces jointes ne sont pas encore acheminées jusqu'à l'agent.";
+  dom["ouvrir-cote"].hidden = !peut(Capability.SETTINGS) && !accorde;
   dom.prompt.placeholder = !peutEcrire
     ? "Lecture seule"
     : !heberge
@@ -1282,7 +1426,7 @@ function dessinerActions() {
 /**
  * L'état de la connexion, écrit et coloré.
  *
- * La pastille porte l'information ; le mot est là pour qui ne distingue pas la
+ * Le voyant porte l'information ; le mot est là pour qui ne distingue pas la
  * couleur. Les deux viennent du même appel, donc ils ne peuvent pas se
  * contredire.
  */

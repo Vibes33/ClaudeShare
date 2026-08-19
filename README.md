@@ -577,6 +577,29 @@ le pool de connexions. Deux règles à son dépôt :
   depuis notre origine, il contournerait la CSP par une porte que nous aurions
   nous-mêmes ouverte.
 
+### Le salon
+
+La conversation prend toute la largeur. Le panneau de réglages — hébergement,
+code, demandes de parole, approbations d'outil — se pose **par-dessus**, à la
+demande : il ne sert qu'à qui anime le salon, et l'amputer en permanence pour
+tout le monde serait payer un affichage permanent pour un usage occasionnel.
+
+Ce que tout le monde consulte est dans la barre : qui a la parole, et qui est
+là. Les présents s'y montrent en pile de trois photos au plus, puis un compteur
+— une ligne qui s'allonge avec le nombre de personnes finirait par pousser le
+reste hors de l'écran, et c'est dans les salons pleins que la barre doit rester
+lisible.
+
+Sous la zone de saisie, les gestes qui entourent un message : demander,
+prendre, rendre ou retirer la parole. Le bouton d'envoi devient bouton d'arrêt
+pendant une génération : même place, et c'est le seul geste qu'on veuille faire
+à ce moment-là.
+
+**Ce qui n'est pas encore là :** les pièces jointes ne traversent pas le relais
+(le bouton le dit au survol plutôt que de disparaître), et le modèle est
+*affiché* sans pouvoir être choisi — le changer demanderait de le faire voyager
+jusqu'à l'agent, qui ouvre la session.
+
 ## Approbation d'outil
 
 `can_use_tool` est une coroutine : elle peut donc attendre la décision de

@@ -58,6 +58,7 @@ async def serve_socket(
     websocket: WebSocket,
     room: Room,
     who: str,
+    avatar: str | None = None,
     *,
     capabilities: Callable[[], frozenset[str]],
     priority: Callable[[], int] = lambda: 0,
@@ -79,7 +80,7 @@ async def serve_socket(
         # Présence enregistrée avant l'instantané, pour qu'un client s'y voie
         # lui-même. La trame `presence` que ça déclenche est mise en file dans
         # l'abonnement et arrivera juste après.
-        await room.joined(who)
+        await room.joined(who, avatar)
         # Un salon inoccupé revient à qui l'anime. La graine posée au montage ne
         # suffit pas : le départ du porteur libère le jeton — et c'est
         # nécessaire, sinon un onglet fermé confisquerait la parole — mais le

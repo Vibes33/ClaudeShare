@@ -76,6 +76,10 @@ class Room:
         #: Pseudos actuellement connectés. Une même personne peut avoir plusieurs
         #: onglets, d'où le comptage.
         self._present: dict[str, int] = {}
+        #: Photo de profil par étiquette présente. Transportée à côté de la
+        #: présence, et non dedans : la liste des présents est lue par la TUI,
+        #: qui n'affiche pas d'image et n'a pas à connaître ce champ.
+        self._avatars: dict[str, str] = {}
         self._audit: list[AuditRecord] = []
         self._turn: asyncio.Task[Any] | None = None
         #: L'agent qui héberge, ou son absence. Un objet plutôt qu'un `None` :
@@ -146,8 +150,10 @@ class Room:
 
     # -------------------------------------------------------------- présence
 
-    async def joined(self, who: str) -> None:
+    async def joined(self, who: str, avatar: str | None = None) -> None:
         self._present[who] = self._present.get(who, 0) + 1
+        if avatar:
+            self._avatars[who] = avatar
         if self._present[who] == 1:
             await self._announce()
 
@@ -188,9 +194,23 @@ class Room:
     def present(self) -> list[str]:
         return sorted(self._present)
 
+    @property
+    def avatars(self) -> dict[str, str]:
+        """Les photos des seules personnes présentes.
+
+        Filtré ici plutôt qu'au départ de chacun : une étiquette peut revenir,
+        et garder son image évite de la redemander à chaque reconnexion.
+        """
+        return {qui: url for qui, url in self._avatars.items() if qui in self._present}
+
     async def _announce(self) -> None:
         await self.broker.publish(
-            self.id, envelope(ServerMessage.PRESENCE, self.id, {"present": self.present})
+            self.id,
+            envelope(
+                ServerMessage.PRESENCE,
+                self.id,
+                {"present": self.present, "avatars": self.avatars},
+            )
         )
 
     async def announce_agent(self) -> None:
@@ -227,6 +247,7 @@ class Room:
                 "truncated": rejeu.truncated,
                 "partials": self.log.partials(),
                 "present": self.present,
+                "avatars": self.avatars,
                 "busy": self.agent.busy,
                 "session_id": self.agent.session_id or self.session_id,
                 # Qui héberge, et depuis quel dossier. Un salon sans agent
