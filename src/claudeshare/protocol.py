@@ -54,6 +54,11 @@ class ClientMessage(StrEnum):
     #: Tranche une demande d'approbation d'outil (`room.tools.approve`).
     TOOL_APPROVE = "tool.approve"
 
+    #: Dit quelque chose aux autres participants (`room.chat`). Ne part
+    #: jamais à Claude : c'est une conversation parallèle, et la confondre avec
+    #: un prompt ferait payer un tour à qui voulait juste demander la parole.
+    CHAT_SEND = "chat.send"
+
     #: Change le modèle ou l'intensité de réflexion de la session
     #: (`room.settings`). Une intention comme les autres : c'est l'agent, chez
     #: lui, qui l'applique — ou pas.

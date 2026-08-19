@@ -357,6 +357,18 @@ class Room:
         self._turn = asyncio.create_task(run())
         return Submission(started=True)
 
+    async def say(self, who: str, texte: str) -> None:
+        """Dit quelque chose aux humains du salon.
+
+        Ne touche ni au jeton de parole ni à l'agent : c'est une conversation
+        parallèle, qui doit rester possible **pendant** qu'un tour tourne — sinon
+        elle ne servirait à rien, puisque c'est justement le moment où l'on veut
+        se dire quelque chose sans couper la réponse.
+        """
+        await self._on_event(
+            Event(type=EventType.CHAT_MESSAGE, author=who, data={"text": texte})
+        )
+
     async def configure(
         self, *, who: str, model: str | None = None, effort: str | None = None
     ) -> None:

@@ -67,6 +67,14 @@ const state = {
   signalees: new Set(),
   //: Dernier prompt envoyé, rendu à son auteur si la parole lui manque.
   brouillon: "",
+  //: Ce que montre la colonne de gauche : « salons » ou « discussion ».
+  onglet: "salons",
+  //: La discussion du salon, dans l'ordre d'arrivée. Vidée en changeant de
+  //: salon — c'est la conversation d'un salon, pas la nôtre.
+  chat: [],
+  //: Messages arrivés pendant qu'on regardait la liste des salons. Comptés et
+  //: non seulement signalés : « 3 » dit s'il faut aller voir tout de suite.
+  chatNonLus: 0,
   //: Vrai pendant le rejeu d'un instantané. Ce qui s'est passé avant qu'on
   //: arrive n'est pas une nouvelle : sans ce drapeau, revenir dans un salon
   //: rejouerait en fanfare les demandes de parole de la séance d'avant.
@@ -86,7 +94,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     "transcript", "composer", "prompt", "send", "requests", "host", "code",
     "titre-connexion", "barre", "porteur", "presents", "ouvrir-cote", "cote",
     "saisie", "joindre", "modele", "jetons", "quota", "fil", "salons-lat",
-    "choix-modele", "choix-effort",
+    "choix-modele", "choix-effort", "onglet-salons", "onglet-discussion",
+    "liste-salons", "discussion", "chat", "chat-champ", "cote-poignee",
     "approvals", "toasts", "actions",
   ]) {
     dom[id] = document.getElementById(id);
@@ -96,6 +105,18 @@ document.addEventListener("DOMContentLoaded", async () => {
   dom.prompt.addEventListener("input", ajusterHauteur);
   menu(dom["choix-modele"], panneauModele);
   menu(dom["choix-effort"], panneauEffort);
+  dom["onglet-salons"].addEventListener("click", () => montrer("salons"));
+  dom["onglet-discussion"].addEventListener("click", () => montrer("discussion"));
+  dom["chat-champ"].addEventListener("keydown", (e) => {
+    // Même convention que la saisie principale : Entrée envoie, Maj+Entrée
+    // passe à la ligne. Deux champs voisins qui n'obéiraient pas à la même
+    // touche seraient une source d'erreur permanente.
+    if (e.key !== "Enter" || e.shiftKey) return;
+    e.preventDefault();
+    dire();
+  });
+  dom["chat-champ"].addEventListener("input", () => hauteurChat());
+  installerRedimensionnement();
   // `passive: false` : sans lui le navigateur refuse le `preventDefault`, et la
   // page défilerait *en plus* de la conversation.
   window.addEventListener("wheel", molette, { passive: false });
@@ -128,6 +149,122 @@ document.addEventListener("DOMContentLoaded", async () => {
   setInterval(majSalons, SONDAGE_MS);
   window.addEventListener("focus", majSalons);
 });
+
+// ------------------------------------------------- taille du panneau d'hôte
+
+//: Bornes du panneau de réglages. Le minimum n'est pas décoratif : sous cette
+//: largeur, le code du salon et ses deux boutons ne tiennent plus sur une ligne
+//: et le panneau devient illisible avant d'être petit.
+const COTE_MIN = { l: 260, h: 200 };
+//: Marge gardée au bord de la fenêtre, pour que le panneau reste attrapable.
+const COTE_MARGE = 24;
+const COTE_TAILLE = "claudeshare.cote";
+
+function tailleCote() {
+  try {
+    const lu = JSON.parse(localStorage.getItem(COTE_TAILLE) || "null");
+    if (lu && typeof lu.l === "number" && typeof lu.h === "number") return lu;
+  } catch {
+    /* rien : on repartira de la taille par défaut. */
+  }
+  return null;
+}
+
+/**
+ * Applique une taille au panneau, en la ramenant dans la fenêtre.
+ *
+ * Le bornage est refait à chaque application et non seulement à la saisie : une
+ * taille choisie sur un grand écran est relue telle quelle sur un portable, et
+ * un panneau plus large que la fenêtre n'a plus de poignée à attraper.
+ */
+function appliquerTailleCote(taille, { garder = false } = {}) {
+  if (!taille) return;
+  const l = Math.round(
+    Math.max(COTE_MIN.l, Math.min(taille.l, window.innerWidth - COTE_MARGE)),
+  );
+  const h = Math.round(
+    Math.max(COTE_MIN.h, Math.min(taille.h, window.innerHeight - COTE_MARGE * 4)),
+  );
+  dom.cote.style.setProperty("width", `${l}px`);
+  dom.cote.style.setProperty("height", `${h}px`);
+  // On enregistre ce qui a été **demandé**, pas ce qui a été borné : sinon un
+  // passage sur un petit écran rétrécirait définitivement le panneau.
+  if (garder) {
+    try {
+      localStorage.setItem(COTE_TAILLE, JSON.stringify(taille));
+    } catch {
+      /* la taille vivra le temps de la session, et c'est tout. */
+    }
+  }
+  return { l, h };
+}
+
+/**
+ * Rend le panneau redimensionnable : à la poignée, au pincement, au clavier.
+ *
+ * Trois entrées pour un seul état, parce qu'elles ne servent pas les mêmes
+ * gens : la poignée à la souris, le pincement au pavé tactile, les flèches à
+ * qui n'utilise pas de pointeur.
+ */
+function installerRedimensionnement() {
+  const poignee = dom["cote-poignee"];
+  let depart = null;
+
+  poignee.addEventListener("pointerdown", (e) => {
+    const boite = dom.cote.getBoundingClientRect();
+    depart = { x: e.clientX, y: e.clientY, l: boite.width, h: boite.height };
+    // La capture est ce qui rend le glissement fiable : sans elle, sortir du
+    // curseur de la poignée — ce qui arrive dès le premier pixel — enverrait
+    // les mouvements à l'élément survolé.
+    poignee.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+
+  poignee.addEventListener("pointermove", (e) => {
+    if (!depart) return;
+    // Le panneau est ancré à droite : aller vers la gauche l'élargit.
+    appliquerTailleCote(
+      { l: depart.l + (depart.x - e.clientX), h: depart.h + (e.clientY - depart.y) },
+      { garder: true },
+    );
+  });
+
+  for (const fin of ["pointerup", "pointercancel"]) {
+    poignee.addEventListener(fin, () => {
+      depart = null;
+    });
+  }
+
+  poignee.addEventListener("keydown", (e) => {
+    const pas = { ArrowLeft: [24, 0], ArrowRight: [-24, 0], ArrowUp: [0, -24], ArrowDown: [0, 24] }[e.key];
+    if (!pas) return;
+    e.preventDefault();
+    const boite = dom.cote.getBoundingClientRect();
+    appliquerTailleCote({ l: boite.width + pas[0], h: boite.height + pas[1] }, { garder: true });
+  });
+
+  // Le pincement d'un pavé tactile arrive au navigateur comme une molette avec
+  // `ctrlKey`. Sans `preventDefault`, il zoomerait la page entière — et
+  // `passive: false` est ce qui donne le droit de le refuser.
+  dom.cote.addEventListener(
+    "wheel",
+    (e) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      const boite = dom.cote.getBoundingClientRect();
+      const facteur = Math.exp(-e.deltaY * 0.01);
+      appliquerTailleCote(
+        { l: boite.width * facteur, h: boite.height * facteur },
+        { garder: true },
+      );
+    },
+    { passive: false },
+  );
+
+  // Une taille choisie sur un grand écran doit rentrer sur un petit.
+  window.addEventListener("resize", () => appliquerTailleCote(tailleCote()));
+  appliquerTailleCote(tailleCote());
+}
 
 //: Intervalle du sondage des autres salons. Assez lent pour ne rien coûter,
 //: assez court pour qu'une pastille apparaisse pendant qu'on lit.
@@ -865,8 +1002,13 @@ function fermer() {
   // à l'écran, à décrire un salon qu'on venait de quitter.
   replace(dom.porteur);
   replace(dom.presents);
-  replace(dom["salons-lat"]);
+  replace(dom["liste-salons"]);
+  replace(dom.chat);
   replace(dom.quota);
+  // La discussion appartient au salon, pas à nous : la garder ferait lire les
+  // messages des uns sous le titre des autres.
+  state.chat = [];
+  state.chatNonLus = 0;
   // Les blocs de code redeviennent copiables : le refus appartenait au salon
   // qu'on vient de quitter, et l'oublier ici le ferait suivre dans le suivant.
   autoriserCopie(true);
@@ -1079,6 +1221,15 @@ function evenement(type, d) {
       state.floor = d;
       if (d.holder === state.me.label) state.queued = null;
       break;
+    case EventType.CHAT_MESSAGE:
+      state.chat.push({ author: d.author || "?", text: d.text || "" });
+      // Compté seulement si c'est nouveau **et** qu'on regarde ailleurs. Le
+      // rejeu, lui, restitue une conversation qu'on n'a pas manquée : la
+      // compter en non-lue ferait clignoter la colonne à chaque reconnexion.
+      if (!state.rejeu && state.onglet !== "discussion" && d.author !== state.me.label) {
+        state.chatNonLus += 1;
+      }
+      break;
     case EventType.SESSION_READY:
       state.modele = d.model || state.modele;
       break;
@@ -1170,7 +1321,9 @@ function peindre(complet = false) {
 
 function dessiner() {
   dom.title.textContent = state.title;
+  dessinerOnglets();
   dessinerSalonsLat();
+  dessinerChat();
   dessinerPorteur();
   dessinerPresents();
   dessinerHote();
@@ -1403,6 +1556,115 @@ function panneauEffort(panneau, fermerMenu) {
  * Une pastille sur ceux où Claude a répondu depuis votre dernier passage. Le
  * salon ouvert n'en porte jamais : on est en train de le lire.
  */
+/**
+ * Change ce que montre la colonne de gauche.
+ *
+ * Les deux panneaux existent déjà dans la page ; on ne fait que les découvrir.
+ * Les reconstruire à chaque bascule perdrait la position de lecture de la
+ * discussion, et le brouillon en cours de frappe avec.
+ */
+function montrer(onglet) {
+  state.onglet = onglet;
+  if (onglet === "discussion") {
+    state.chatNonLus = 0;
+    dessinerOnglets();
+    dessinerChat();
+    // Au bas de la discussion, et le curseur dans le champ : on vient de
+    // cliquer pour dire quelque chose.
+    dom.chat.scrollTop = dom.chat.scrollHeight;
+    dom["chat-champ"].focus();
+    return;
+  }
+  peindre();
+}
+
+/** Les deux boutons collés, et lequel est enfoncé. */
+function dessinerOnglets() {
+  const discute = state.onglet === "discussion";
+  dom["salons-lat"].classList.toggle("discute", discute);
+  dom["liste-salons"].hidden = discute;
+  dom.discussion.hidden = !discute;
+
+  for (const [bouton, actif] of [
+    [dom["onglet-salons"], !discute],
+    [dom["onglet-discussion"], discute],
+  ]) {
+    bouton.classList.toggle("actif", actif);
+    bouton.setAttribute("aria-selected", actif ? "true" : "false");
+  }
+
+  // Le compte, pas seulement la pastille : « 3 » dit s'il faut aller voir tout
+  // de suite, un point ne dit que « quelque chose ».
+  replace(dom["onglet-discussion"], elem("span", "", "Discussion"));
+  if (state.chatNonLus) {
+    dom["onglet-discussion"].appendChild(
+      elem("span", "compteur", String(Math.min(state.chatNonLus, 99))),
+    );
+  }
+}
+
+/**
+ * La discussion du salon.
+ *
+ * Les messages consécutifs d'une même personne sont regroupés sous une seule
+ * en-tête : dans une colonne étroite, répéter le nom à chaque ligne mange la
+ * moitié de la place pour ne rien apprendre.
+ */
+function dessinerChat() {
+  const suivre =
+    dom.chat.scrollHeight - dom.chat.scrollTop - dom.chat.clientHeight < 40;
+
+  replace(dom.chat);
+  if (!state.chat.length) {
+    dom.chat.appendChild(
+      elem("li", "vide", "Rien encore. Ce qui s'écrit ici ne part pas à Claude."),
+    );
+  }
+
+  let precedent = null;
+  for (const message of state.chat) {
+    const li = elem("li", `dit${message.author === precedent ? " suite" : ""}`);
+    if (message.author !== precedent) {
+      const tete = elem("div", "dit-tete");
+      tete.append(
+        vignetteDe(message.author, "vignette petite"),
+        elem("span", "dit-nom", message.author === state.me.label ? "vous" : message.author),
+      );
+      li.appendChild(tete);
+    }
+    // `renderMarkdown` et non du texte brut : c'est le même rendu que le reste,
+    // et il ne construit jamais de balisage depuis une chaîne.
+    li.appendChild(replace(elem("div", "dit-corps"), renderMarkdown(message.text)));
+    dom.chat.appendChild(li);
+    precedent = message.author;
+  }
+
+  const peutDire = peut(Capability.CHAT);
+  dom["chat-champ"].disabled = !peutDire;
+  dom["chat-champ"].placeholder = peutDire
+    ? "Écrire aux autres…"
+    : "Vous ne pouvez pas écrire ici";
+  if (suivre) dom.chat.scrollTop = dom.chat.scrollHeight;
+}
+
+/** Envoie un message à la discussion du salon. Jamais à Claude. */
+function dire() {
+  const texte = dom["chat-champ"].value.trim();
+  if (!texte) return;
+  emettre(ClientMessage.CHAT_SEND, { text: texte });
+  dom["chat-champ"].value = "";
+  hauteurChat();
+}
+
+/** Le champ de discussion grandit avec son contenu, jusqu'à un plafond. */
+function hauteurChat() {
+  dom["chat-champ"].style.setProperty("height", "auto");
+  dom["chat-champ"].style.setProperty(
+    "height",
+    `${Math.min(dom["chat-champ"].scrollHeight, 140)}px`,
+  );
+}
+
 function dessinerSalonsLat() {
   const vu = vus();
   const entrees = state.rooms.map((r) => {
@@ -1420,8 +1682,7 @@ function dessinerSalonsLat() {
   });
 
   replace(
-    dom["salons-lat"],
-    elem("h2", "", "Vos salons"),
+    dom["liste-salons"],
     ...(entrees.length ? entrees : [elem("p", "vide", "Aucun salon.")]),
   );
 }

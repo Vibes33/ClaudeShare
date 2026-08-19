@@ -25,6 +25,7 @@ export const ClientMessage = Object.freeze({
   FLOOR_REVOKE: "floor.revoke",
   FLOOR_PREEMPT: "floor.preempt",
   TOOL_APPROVE: "tool.approve",
+  CHAT_SEND: "chat.send",
   SESSION_CONFIGURE: "session.configure",
   PING: "ping",
 });
@@ -54,6 +55,7 @@ export const EventType = Object.freeze({
   TOOL_APPROVAL_REQUESTED: "tool.approval_requested",
   TOOL_APPROVAL_RESOLVED: "tool.approval_resolved",
   FLOOR_CHANGED: "floor.changed",
+  CHAT_MESSAGE: "chat.message",
   MEMBER_JOINED: "member.joined",
   RATE_LIMIT: "rate_limit",
 });
@@ -64,6 +66,7 @@ export const EventType = Object.freeze({
  */
 export const Capability = Object.freeze({
   READ: "room.read",
+  CHAT: "room.chat",
   PROPOSE: "room.propose",
   SPEAK: "room.speak",
   TOOLS_APPROVE: "room.tools.approve",

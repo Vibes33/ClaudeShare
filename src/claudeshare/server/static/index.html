@@ -63,10 +63,24 @@
   <main id="rooms" hidden></main>
 
   <main id="room" hidden>
-    <!-- Vos autres salons, à portée de clic. Une pastille s'y allume quand
-         Claude a répondu ailleurs pendant qu'on lisait ici : sans elle, la
-         seule façon de le savoir serait d'y retourner voir. -->
-    <aside id="salons-lat" aria-label="Vos salons"></aside>
+    <!-- La colonne de gauche a deux usages, et deux boutons collés pour en
+         changer : vos autres salons — avec une pastille sur ceux où Claude a
+         répondu pendant qu'on lisait ici — et la discussion entre les personnes
+         présentes, qui se tient à côté de Claude sans lui coûter un tour. -->
+    <aside id="salons-lat" aria-label="Vos salons">
+      <div id="onglets" class="groupe-boutons" role="tablist">
+        <button id="onglet-salons" type="button" role="tab">Salons</button>
+        <button id="onglet-discussion" type="button" role="tab">Discussion</button>
+      </div>
+      <div id="liste-salons" role="tabpanel" aria-labelledby="onglet-salons"></div>
+      <div id="discussion" role="tabpanel" aria-labelledby="onglet-discussion" hidden>
+        <ol id="chat" aria-live="polite"></ol>
+        <div id="chat-saisie">
+          <textarea id="chat-champ" rows="1" maxlength="2000"
+                    placeholder="Écrire aux autres…"></textarea>
+        </div>
+      </div>
+    </aside>
 
     <!-- La conversation et ce qu'on y écrit : une colonne, qui garde sa largeur
          de lecture quel que soit ce qui l'entoure. -->
@@ -115,6 +129,11 @@
     <!-- Le panneau ne sert qu'à qui héberge : caché derrière un bouton, il se
          pose par-dessus plutôt que d'amputer la conversation en permanence. -->
     <aside id="cote" hidden>
+      <!-- La poignée est en bas à **gauche** : le panneau est ancré à droite,
+           donc une poignée en bas à droite — celle que `resize: both` impose —
+           l'agrandirait vers l'extérieur de la fenêtre. -->
+      <div id="cote-poignee" role="separator" aria-label="Redimensionner le panneau"
+           tabindex="0"></div>
       <h2>Hébergement</h2>
       <p id="host"></p>
 

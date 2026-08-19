@@ -48,6 +48,12 @@ class EventType(StrEnum):
     #: une trame perdue ne les laisse pas désynchronisées.
     FLOOR_CHANGED = "floor.changed"
 
+    # --- discussion entre participants ---
+    #: Un message adressé aux humains du salon, pas à Claude. Durable : arriver
+    #: en cours de route sans voir ce qui vient d'être dit rendrait la
+    #: discussion incompréhensible.
+    CHAT_MESSAGE = "chat.message"
+
     # --- vie du salon ---
     #: Quelqu'un est entré. Durable : le propriétaire doit pouvoir constater
     #: après coup qui est arrivé par où, et un code qui circule trop se repère

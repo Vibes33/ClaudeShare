@@ -44,13 +44,15 @@ def membership(grants: list[str] | None = None, revokes: list[str] | None = None
 
 
 def test_le_role_seul_donne_ses_capacites():
+    # `lecteur` lit et discute : regarder sans pouvoir dire un mot aux autres
+    # participants n'est pas ce qu'on entend par « inviter quelqu'un ».
     caps = resolve(role("lecteur"), membership())
-    assert caps == {str(Capability.READ)}
+    assert caps == {str(Capability.READ), str(Capability.CHAT)}
 
 
 def test_un_grant_ajoute_au_role():
     caps = resolve(role("lecteur"), membership(grants=[str(Capability.SPEAK)]))
-    assert caps == {str(Capability.READ), str(Capability.SPEAK)}
+    assert caps == {str(Capability.READ), str(Capability.CHAT), str(Capability.SPEAK)}
 
 
 def test_un_revoke_retire_du_role():

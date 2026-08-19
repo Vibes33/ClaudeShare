@@ -18,6 +18,12 @@ class Capability(StrEnum):
 
     #: Voir la conversation et le flux en direct.
     READ = "room.read"
+    #: Écrire dans la discussion du salon — entre humains, à côté de Claude.
+    #: Distincte de `SPEAK`, et c'est tout l'intérêt : on se parle sans avoir la
+    #: parole, et pendant qu'un autre l'a. Accordée à tous les rôles livrés
+    #: d'origine, y compris `lecteur` : quelqu'un qu'on a invité à regarder doit
+    #: pouvoir dire pourquoi il regarde.
+    CHAT = "room.chat"
     #: Soumettre une proposition de prompt (mode pilote).
     PROPOSE = "room.propose"
     #: Envoyer directement à Claude.
@@ -52,6 +58,7 @@ ROLE_TEMPLATES: dict[str, tuple[Capability, ...]] = {
     "proprietaire": tuple(Capability),
     "moderateur": (
         Capability.READ,
+        Capability.CHAT,
         Capability.PROPOSE,
         Capability.SPEAK,
         Capability.TOOLS_APPROVE,
@@ -63,11 +70,12 @@ ROLE_TEMPLATES: dict[str, tuple[Capability, ...]] = {
     ),
     "ecrivain": (
         Capability.READ,
+        Capability.CHAT,
         Capability.PROPOSE,
         Capability.SPEAK,
         Capability.STOP,
     ),
-    "lecteur": (Capability.READ,),
+    "lecteur": (Capability.READ, Capability.CHAT),
 }
 
 #: Rôle du créateur d'un salon.

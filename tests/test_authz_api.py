@@ -78,7 +78,7 @@ def test_un_lecteur_voit_la_liste_des_membres(harness: Harness, client):
     ).json()
     assert {m["handle"] for m in membres} == {"alice", "bob"}
     lecteur = next(m for m in membres if m["handle"] == "bob")
-    assert lecteur["capabilities"] == [str(Capability.READ)]
+    assert set(lecteur["capabilities"]) == {str(Capability.READ), str(Capability.CHAT)}
 
 
 def test_la_trace_d_audit_est_reservee(harness: Harness, client):
@@ -316,7 +316,12 @@ def test_un_lecteur_ne_peut_pas_ecrire(harness: Harness, client):
         f"/ws/rooms/{room}", headers=harness.auth(harness.token(bob))
     ) as ws:
         snapshot = greet(ws)
-        assert snapshot["data"]["capabilities"] == [str(Capability.READ)]
+        # Il discute avec le salon, il n'écrit pas à Claude. Les deux droits
+        # sont distincts, et c'est précisément ce que ce test garde.
+        assert set(snapshot["data"]["capabilities"]) == {
+            str(Capability.READ),
+            str(Capability.CHAT),
+        }
         ws.send_json(send())
         assert until(ws, "error")["data"]["code"] == "forbidden"
 
@@ -408,7 +413,7 @@ def test_un_membre_sans_aucun_droit_est_ferme(harness: Harness, client):
     harness.join(room, bob, role="lecteur")
     client.patch(
         f"/api/rooms/{room}/members/{bob}",
-        json={"revokes": [str(Capability.READ)]},
+        json={"revokes": [str(Capability.READ), str(Capability.CHAT)]},
         headers=harness.auth(harness.token(alice)),
     )
 

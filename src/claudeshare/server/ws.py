@@ -47,6 +47,11 @@ logger = logging.getLogger(__name__)
 
 MAX_PROMPT_CHARS = 32_000
 
+#: Un message de discussion n'est pas un prompt : il se lit dans un panneau
+#: étroit, à côté de la conversation. La limite est là pour que le panneau reste
+#: un panneau, pas pour économiser des octets.
+MAX_CHAT_CHARS = 2_000
+
 #: Intentions acceptées par connexion. Un participant en envoie quelques-unes
 #: par minute ; cette limite ne gêne que le client en boucle, qui occuperait
 #: sinon la boucle du salon pour tout le monde. Par connexion et non par
@@ -256,6 +261,16 @@ async def _pump_up(
                     cible = who
                 await _report(websocket, room, await room.grant_floor(cible, immediate=True))
 
+            case ClientMessage.CHAT_SEND:
+                # `room.chat`, et non `room.speak` : on se parle sans avoir la
+                # parole, et pendant qu'un autre l'a.
+                if str(Capability.CHAT) not in capabilities():
+                    await websocket.send_json(
+                        error(room.id, "forbidden", "vous ne pouvez pas écrire ici")
+                    )
+                    continue
+                await _handle_chat(websocket, room, who, data)
+
             case ClientMessage.SESSION_CONFIGURE:
                 # `room.settings` et rien d'autre : le modèle et l'intensité
                 # décident de ce que coûte chaque tour, et c'est l'abonnement de
@@ -329,6 +344,22 @@ async def _handle_prompt(
         refus = error(room.id, issue.reason, _EXPLICATIONS.get(issue.reason, ""))
         refus["data"].update(room.floor.view())
         await websocket.send_json(refus)
+
+
+async def _handle_chat(
+    websocket: WebSocket, room: Room, who: str, data: dict[str, Any]
+) -> None:
+    """Transmet un message de discussion, ou dit pourquoi il ne part pas."""
+    texte = data.get("text")
+    if not isinstance(texte, str) or not texte.strip():
+        await websocket.send_json(error(room.id, "empty_message", "message vide"))
+        return
+    if len(texte) > MAX_CHAT_CHARS:
+        await websocket.send_json(
+            error(room.id, "message_too_long", f"maximum {MAX_CHAT_CHARS} caractères")
+        )
+        return
+    await room.say(who, texte.strip())
 
 
 async def _handle_configure(
