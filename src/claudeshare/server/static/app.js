@@ -565,6 +565,10 @@ function connecter() {
   socket.addEventListener("close", (e) => {
     state.socket = null;
     if (e.code === 4401) return afficherConnexion();
+    // Fermeture voulue — on a quitté le salon. Annoncer une reconnexion
+    // laisserait la barre promettre le retour d'une connexion que personne
+    // n'attend, et le titre du salon quitté avec elle.
+    if (!state.roomId) return statut("hors ligne");
     if (e.code === 4404 || e.code === 4403) {
       statut("accès refusé");
       toast("Ce salon n'existe pas, ou vous n'y avez plus accès.");
@@ -578,15 +582,28 @@ function connecter() {
   });
 }
 
+/**
+ * Quitte le salon courant.
+ *
+ * La barre est remise à zéro ici, et pas seulement à l'affichage de la liste :
+ * un titre de salon et un état de connexion qui survivent au départ font croire
+ * qu'on y est encore.
+ */
 function fermer() {
+  state.title = "";
+  dom.title.textContent = "";
   if (state.socket) {
     const socket = state.socket;
     state.socket = null;
-    // Le gestionnaire `close` relancerait une connexion : on le neutralise en
-    // effaçant le salon courant avant de fermer.
-    state.roomId = null;
     socket.close();
   }
+  // Sans condition, et dans cet ordre. Le gestionnaire `close` relancerait une
+  // connexion : effacer le salon courant le neutralise. Et l'état est remis à
+  // zéro qu'il y ait eu une socket ou non — au retour d'un salon dont la
+  // connexion avait déjà échoué, la barre restait sur « reconnexion… », à
+  // promettre le retour d'un lien que plus personne n'attendait.
+  state.roomId = null;
+  statut("hors ligne");
 }
 
 function emettre(type, data = {}) {
