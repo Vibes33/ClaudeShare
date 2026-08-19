@@ -180,7 +180,10 @@ démarrer** : le dépôt serait proposé par l'interface puis rejeté une fois l
 jeton collé, ce qui fait découvrir l'empêchement après avoir sorti son secret.
 
 L'image contient déjà ce qu'il faut — le CLI Claude Code est embarqué dans la
-roue de `claude-agent-sdk`, et `bubblewrap` est installé pour son bac à sable.
+roue de `claude-agent-sdk`, et son bac à sable Linux a ses deux dépendances :
+`bubblewrap` pour l'espace de noms, `socat` pour le relais qui applique la liste
+d'autorisation de domaines. S'il en manque une, le CLI refuse de démarrer en la
+nommant, plutôt que d'exécuter du shell sans isolation.
 Les profils vivent dans `/state/agents`, sur le volume : la session Claude et le
 dossier de travail de chacun survivent au redéploiement.
 

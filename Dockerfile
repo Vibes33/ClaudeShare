@@ -14,9 +14,11 @@
 #
 # Ce que les agents gérés ajoutent :
 #
-# - `bubblewrap`, dont le bac à sable Linux du CLI a besoin. Sans lui, le
-#   réglage `failIfUnavailable` fait **échouer le tour** au lieu de l'exécuter
-#   sans isolation — bruyant, donc réparable.
+# - `bubblewrap` **et `socat`**, dont le bac à sable Linux du CLI a besoin tous
+#   les deux : bubblewrap pour l'espace de noms, socat pour le relais réseau
+#   qui applique la liste d'autorisation de domaines. Il manquait le second, et
+#   le CLI refusait de démarrer en le nommant — `failIfUnavailable` fait
+#   échouer bruyamment plutôt que d'exécuter du shell sans isolation.
 # - `git` et `ripgrep`, que l'agent utilise constamment.
 #
 # ⚠ Un conteneur, un seul utilisateur système. Tous les profils y tournent sous
@@ -25,12 +27,12 @@
 
 FROM python:3.12-slim-bookworm AS base
 
-# `bubblewrap` pour le bac à sable du CLI, `git` et `ripgrep` pour l'agent.
-# Aucun n'est utile au relais seul, mais les séparer en deux images ferait
-# diverger deux Dockerfile pour quelques mégaoctets.
+# `bubblewrap` et `socat` pour le bac à sable du CLI, `git` et `ripgrep` pour
+# l'agent. Aucun n'est utile au relais seul, mais les séparer en deux images
+# ferait diverger deux Dockerfile pour quelques mégaoctets.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates bubblewrap git ripgrep \
+        ca-certificates bubblewrap socat git ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.21 /uv /usr/local/bin/uv
