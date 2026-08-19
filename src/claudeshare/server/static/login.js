@@ -108,6 +108,7 @@ export function titre(texte) {
   for (const noeud of [contour, trace, couleur]) noeud.textContent = texte;
 
   racine.append(defs, contour, trace, couleur);
+  tracerPuisSolidifier(trace);
 
   // Le masque suit le pointeur. En pourcentages du cadre et non en pixels :
   // le SVG est mis à l'échelle, donc une position en pixels serait fausse dès
@@ -121,6 +122,29 @@ export function titre(texte) {
   racine.addEventListener("pointerleave", () => racine.classList.remove("survole"));
 
   return racine;
+}
+
+/**
+ * Retire le motif de tirets une fois le tracé terminé.
+ *
+ * L'animation dessine le contour en décalant `stroke-dashoffset`. Le motif doit
+ * pour cela être plus long que le contour, sinon il se répète et il manque des
+ * morceaux de lettres — c'est ce qui coupait le S de « ClaudeShare ». Or la
+ * longueur d'un contour de texte **ne se mesure pas** en SVG : `getTotalLength`
+ * n'existe que pour les formes géométriques, et une police de repli changerait
+ * le résultat de toute façon.
+ *
+ * Plutôt que de parier sur une valeur, on la rend sans effet à l'arrivée :
+ * `stroke-dasharray: 0` désactive le pointillé, donc le contour est entier quoi
+ * qu'il arrive. Le pari ne porte plus que sur l'aspect des quatre secondes
+ * d'animation, où un manque ne se voit pas.
+ */
+function tracerPuisSolidifier(trace) {
+  trace.addEventListener(
+    "animationend",
+    () => trace.style.setProperty("stroke-dasharray", "0"),
+    { once: true },
+  );
 }
 
 /**
