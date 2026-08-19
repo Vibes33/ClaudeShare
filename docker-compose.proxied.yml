@@ -1,0 +1,32 @@
+# Derrière une entrée déjà en place — tunnel, reverse proxy, ingress maison.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.deploy.yml \
+#                  -f docker-compose.proxied.yml up -d --build
+#
+# La surcouche de déploiement suppose qu'on part de zéro : elle installe Caddy
+# et lui confie le TLS. Quand quelque chose termine déjà le TLS devant — un
+# tunnel Cloudflare monté à la main, un nginx du serveur, l'ingress d'un
+# hébergeur — ce Caddy serait un second terminateur pour rien, et sa demande de
+# certificat échouerait faute de recevoir le trafic.
+#
+# Ce fichier garde donc tout le reste du déploiement — Postgres, Redis,
+# migrations, cookies `Secure`, `X-Forwarded-*` — et se contente de republier le
+# port sur la boucle locale, là où l'entrée existante ira le chercher.
+#
+# ⚠ Sur la boucle locale, **et pas ailleurs**. La surcouche pose
+# `CLAUDESHARE_TRUSTED_PROXIES=*`, qui signifie « je crois l'en-tête
+# `X-Forwarded-For` de qui me parle ». C'est exact tant que seul le proxy peut
+# joindre ce port ; publié sur `0.0.0.0`, n'importe qui se déclarerait l'adresse
+# de son choix et la limitation de débit ne vaudrait plus rien.
+
+services:
+  claudeshare:
+    ports:
+      - "127.0.0.1:${CLAUDESHARE_PORT:-8765}:8765"
+
+  # Rien à terminer ici : le TLS est déjà fait devant. Zéro réplique plutôt
+  # qu'une suppression — Compose ne sait pas retirer un service hérité d'un
+  # fichier précédent, et le laisser tourner accaparerait 80 et 443.
+  caddy:
+    deploy:
+      replicas: 0

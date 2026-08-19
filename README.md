@@ -164,6 +164,28 @@ joindre le port, n'importe qui peut se déclarer l'adresse qu'il veut. Les deux
 erreurs sont symétriques, d'où l'avertissement au démarrage quand on écoute hors
 de la boucle locale sans annoncer de TLS.
 
+### Derrière une entrée déjà en place
+
+Quand le TLS est déjà terminé devant — un tunnel monté à la main, un nginx du
+serveur, l'ingress d'un hébergeur — Caddy n'a plus rien à faire : ce serait un
+second terminateur, et sa demande de certificat échouerait faute de recevoir le
+trafic.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.deploy.yml \
+               -f docker-compose.proxied.yml up -d --build
+```
+
+Tout le reste du déploiement est conservé — Postgres, Redis, migrations, cookies
+`Secure`, `X-Forwarded-*`. Seul change le point d'entrée : le port revient sur
+`127.0.0.1:8765`, là où l'entrée existante ira le chercher.
+
+**Sur la boucle locale, et pas ailleurs.** La surcouche pose
+`CLAUDESHARE_TRUSTED_PROXIES=*`, c'est-à-dire « je crois l'en-tête
+`X-Forwarded-For` de qui me parle ». C'est exact tant que seul le proxy peut
+joindre ce port ; publié sur `0.0.0.0`, n'importe qui se déclarerait l'adresse de
+son choix et la limitation de débit ne vaudrait plus rien.
+
 ### Entrer par un tunnel plutôt que par Caddy
 
 Caddy suppose qu'on peut frapper à votre porte : un nom qui résout vers votre
