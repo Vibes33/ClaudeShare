@@ -800,8 +800,19 @@ function dessinerTour(t) {
   if (t.ended) {
     const bits = [];
     if (t.ended.interrupted) bits.push(`interrompu (${t.ended.terminal_reason || "?"})`);
-    if (t.ended.cost_usd != null) bits.push(`$${Number(t.ended.cost_usd).toFixed(4)}`);
-    if (bits.length) bloc.appendChild(elem("footer", "fin", bits.join(" · ")));
+    if (t.ended.cost_usd != null) bits.push(`≈ $${Number(t.ended.cost_usd).toFixed(4)}`);
+    if (bits.length) {
+      const pied = elem("footer", "fin", bits.join(" · "));
+      // Le SDK chiffre toujours les jetons, abonnement ou pas. Un montant nu
+      // se lit comme une facture : sur abonnement il n'en est pas une, et
+      // laisser croire le contraire ferait douter de l'identifiant utilisé.
+      if (t.ended.cost_usd != null) {
+        pied.title =
+          "Valeur des jetons de ce tour. Facturé à l'usage seulement si " +
+          "l'hôte a déposé une clé API ; sur abonnement, c'est une estimation.";
+      }
+      bloc.appendChild(pied);
+    }
   }
   return bloc;
 }
