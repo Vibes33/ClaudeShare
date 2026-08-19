@@ -490,11 +490,21 @@ La version précédente servait le premier arrivé : `request` accordait le jeto
 dès qu'il était libre, et comme envoyer le libérait, la main repartait à qui
 soumettait le plus vite. Le salon n'avait pas d'animateur, il avait un réflexe.
 
-**Le créateur du salon a la parole au montage.** La désignation initiale
-n'ajoute aucun droit — elle se rend, se retire et se réattribue comme toute
-autre. Sans elle, un salon neuf naîtrait sans porteur et son propriétaire devrait
-se donner la parole avant d'écrire la première ligne, dans un salon où il est
-encore seul.
+**Un salon inoccupé revient à qui l'anime.** Qui a `room.floor.grant` prend la
+parole en arrivant, si personne ne la tient et si personne n'en a fait la
+demande. Sans cette règle, le propriétaire devait se donner la parole avant
+d'écrire la première ligne — puis **recommencer à chaque rechargement de page**,
+puisque le départ du porteur libère le jeton alors que le salon, lui, reste
+monté.
+
+Les deux conditions comptent autant que la règle : arriver ne doit pas doubler
+quelqu'un qui attend une décision, ni donner la parole à qui n'a pas le droit de
+se l'accorder. Un écrivain qui entre dans un salon vide demande, comme partout
+ailleurs.
+
+Cette règle s'applique à l'arrivée et non au montage du salon : désigner au
+montage confierait le jeton à un propriétaire peut-être absent, que personne
+d'autre ne pourrait alors remplacer.
 
 **Le porteur garde la main entre deux tours.** La parole est une désignation,
 pas un ticket à usage unique : il enchaîne ses prompts jusqu'à ce qu'on la lui

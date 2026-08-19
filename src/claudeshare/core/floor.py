@@ -116,24 +116,12 @@ class Floor:
     donnerait l'illusion qu'on peut l'appeler d'ailleurs.
     """
 
-    def __init__(
-        self,
-        *,
-        holder: str | None = None,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        """`holder` désigne qui a la parole au départ — le créateur du salon.
-
-        Sans ça, un salon neuf naît sans porteur et son propriétaire doit se
-        donner la parole avant d'écrire la première ligne, dans un salon où il
-        est encore seul. La désignation initiale n'ajoute aucun droit : elle se
-        retire, se rend et se réattribue comme n'importe quelle autre.
-        """
+    def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
         # Horloge monotone : elle ne sert plus qu'à dater les demandes pour les
         # ordonner, mais une correction NTP réordonnerait une file en cours.
         self._clock = clock
-        self._state = FloorState.HELD if holder else FloorState.OPEN
-        self._holder: str | None = holder
+        self._state = FloorState.OPEN
+        self._holder: str | None = None
         #: Attribué pendant une génération : prendra la main à la fin du tour.
         self._deferred: str | None = None
         #: Le porteur perd la main à la fin du tour en cours — retrait demandé

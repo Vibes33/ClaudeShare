@@ -43,7 +43,7 @@ from .api.roles import build_roles_router
 from .api.credentials import build_credentials_router
 from .api.rooms import build_rooms_router
 from .auth.cli import build_cli_router
-from .auth.identity import SessionSigner, owner_label
+from .auth.identity import SessionSigner
 from .auth.oauth import ProviderConfig, build_oauth
 from .auth.routes import build_auth_router
 from .context import ServerContext
@@ -287,13 +287,7 @@ def create_app(
             if record is None or record.archived:
                 await websocket.close(code=4404)
                 return
-            detached = (
-                record.id,
-                record.title,
-                record.workspace,
-                record.session_id,
-                owner_label(session, record),
-            )
+            detached = (record.id, record.title, record.workspace, record.session_id)
 
         live = await _ensure_live(ctx, detached)
         try:
@@ -341,13 +335,7 @@ def create_app(
                 record = session.get(Room, room_id)
                 if record is None or record.archived:
                     return None
-                detached = (
-                    record.id,
-                    record.title,
-                    record.workspace,
-                    record.session_id,
-                    owner_label(session, record),
-                )
+                detached = (record.id, record.title, record.workspace, record.session_id)
             return await _ensure_live(ctx, detached)
 
         async def retenir(room_id: str, session_id: str) -> None:
@@ -496,17 +484,15 @@ async def _ensure_live(ctx: ServerContext, detached: tuple):
     liste de présents — de quoi lire et se coordonner, même quand personne
     n'héberge.
     """
-    room_id, title, _workspace, session_id, proprietaire = detached
+    room_id, title, _workspace, session_id = detached
     existing = ctx.rooms.get(room_id)
     if existing is not None:
         return existing
 
-    # Le créateur a la parole au montage. Un salon monté sans porteur oblige son
-    # propriétaire à se la donner avant d'écrire la première ligne — et le
-    # premier salon qu'on crée est un salon où l'on est seul.
-    live = ctx.rooms.create(
-        room_id, title=title, session_id=session_id, holder=proprietaire
-    )
+    # Monté sans porteur : c'est l'arrivée de qui anime le salon qui lui donne
+    # la parole, pas le montage. Désigner ici confierait le jeton à un
+    # propriétaire peut-être absent, et personne d'autre ne pourrait le prendre.
+    live = ctx.rooms.create(room_id, title=title, session_id=session_id)
     await live.start()
     ctx._started.add(room_id)
     return live

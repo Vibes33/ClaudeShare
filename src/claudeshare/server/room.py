@@ -51,8 +51,6 @@ class Room:
         title: str = "",
         session_id: str | None = None,
         floor: Floor | None = None,
-        #: Qui a la parole au montage. Le créateur du salon, en pratique.
-        holder: str | None = None,
         store: LogStore | None = None,
     ) -> None:
         self.id = room_id
@@ -64,7 +62,7 @@ class Room:
         # C'est ce qu'on veut pour les tests et une session locale jetable.
         self.log = EventLog(room_id=room_id, store=store)
         self.broker = broker
-        self.floor = floor or Floor(holder=holder)
+        self.floor = floor or Floor()
         #: Dernier état du jeton annoncé au salon. Sert à ne diffuser que les
         #: vrais changements — voir `_apply`.
         self._floor_signature = self.floor.signature

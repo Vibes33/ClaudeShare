@@ -199,17 +199,6 @@ def revoke_token(session: Session, token: ApiToken) -> None:
 # --------------------------------------------------------------- salons
 
 
-def owner_label(session: Session, room: Room) -> str | None:
-    """Le nom du créateur du salon, tel que le jeton de parole le désigne.
-
-    `None` si le compte a disparu : le salon se monte alors sans porteur plutôt
-    que d'échouer, et n'importe qui ayant `room.floor.grant` peut redistribuer
-    la parole.
-    """
-    createur = session.get(User, room.created_by)
-    return createur.label if createur else None
-
-
 def seed_roles(session: Session, room: Room) -> dict[str, Role]:
     """Crée les rôles livrés d'origine dans un salon neuf."""
     roles = {}

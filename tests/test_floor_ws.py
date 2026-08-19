@@ -88,6 +88,52 @@ def test_le_createur_parle_dans_son_salon_sans_rien_reclamer(harness: Harness, c
         assert expect(a, "turn.started")
 
 
+def test_revenir_dans_un_salon_inoccupe_rend_la_parole_a_qui_l_anime(harness: Harness, client):
+    """Le cas qui bloquait pour de bon : recharger sa page.
+
+    Le départ du porteur libère le jeton — nécessaire, sinon un onglet fermé
+    confisquerait la parole. Mais le salon reste monté : au retour, son
+    propriétaire retrouvait un salon sans porteur et devait se redonner la
+    parole à chaque visite.
+    """
+    alice = harness.user("alice")
+    room = harness.room(alice, workspace="a")
+
+    with connect(client, harness, room, alice) as a:
+        assert greet(a)["data"]["floor"]["holder"] == "alice"
+    # Sortie du `with` : Alice s'en va, le jeton retombe à personne.
+    assert salon(harness, room).floor.holder is None
+
+    with connect(client, harness, room, alice) as a:
+        assert greet(a)["data"]["floor"]["holder"] == "alice"
+
+
+def test_revenir_ne_double_pas_une_demande_en_attente(harness: Harness, client):
+    """Arriver ne doit pas passer devant quelqu'un qui attend une décision."""
+    alice, bob = harness.user("alice"), harness.user("bob")
+    room = harness.room(alice, workspace="a")
+    harness.join(room, bob, role="ecrivain")
+
+    with connect(client, harness, room, bob) as b:
+        greet(b)
+        b.send_json(trame(ClientMessage.FLOOR_REQUEST))
+        expect(b, "queued")
+
+        with connect(client, harness, room, alice) as a:
+            jeton = greet(a)["data"]["floor"]
+            assert jeton["holder"] is None, "la demande de bob attend toujours"
+            assert [r["who"] for r in jeton["requests"]] == ["bob"]
+
+
+def test_un_ecrivain_qui_arrive_ne_prend_pas_la_parole(harness: Harness, client):
+    alice, bob = harness.user("alice"), harness.user("bob")
+    room = harness.room(alice, workspace="a")
+    harness.join(room, bob, role="ecrivain")
+
+    with connect(client, harness, room, bob) as b:
+        assert greet(b)["data"]["floor"]["holder"] is None
+
+
 def test_demander_la_parole_reste_possible_a_qui_peut_l_accorder(harness: Harness, client):
     """Un modérateur qui souhaite la main sans l'arracher au porteur.
 
@@ -120,8 +166,8 @@ def test_envoyer_sans_la_parole_est_refuse(harness: Harness, client):
         b.send_json(send("et moi ?"))
         refus = expect(b, "error")
         assert refus["data"]["code"] == "not_holder"
-        # La parole n'a pas changé de mains pour autant.
-        assert salon(harness, room).floor.holder == "alice"
+        # Et personne ne l'a obtenue au passage : un envoi n'est pas une demande.
+        assert salon(harness, room).floor.holder is None
 
 
 def test_une_demande_n_accorde_rien_et_se_voit(harness: Harness, client):
@@ -136,8 +182,10 @@ def test_une_demande_n_accorde_rien_et_se_voit(harness: Harness, client):
 
         b.send_json(trame(ClientMessage.FLOOR_REQUEST))
         # Le propriétaire l'apprend sans avoir rien demandé, et garde la main
-        # tant qu'il n'a rien décidé.
-        vue = expect(a, "floor.changed")["data"]
+        # tant qu'il n'a rien décidé. Filtré sur la demande : son arrivée à lui
+        # a déjà produit un état, et prendre la première trame venue
+        # attraperait celui-là.
+        vue = floor_where(a, lambda d: d["requests"])["data"]
         assert [r["who"] for r in vue["requests"]] == ["bob"]
         assert vue["holder"] == "alice"
 
@@ -186,7 +234,7 @@ def test_un_ecrivain_ne_peut_pas_accorder_la_parole(harness: Harness, client):
         greet(b)
         b.send_json(trame(ClientMessage.FLOOR_GRANT, who="bob"))
         assert expect(b, "error")["data"]["code"] == "forbidden"
-        assert salon(harness, room).floor.holder == "alice"
+        assert salon(harness, room).floor.holder is None
 
 
 def test_retirer_la_parole(harness: Harness, client):

@@ -226,15 +226,19 @@ def test_la_reconnexion_ne_renvoie_que_le_manquant(harness: Harness, client):
         frames += collect(ws, "floor.changed")
         dernier = max(f["seq"] for f in frames if f["seq"] is not None)
 
-    with client.websocket_connect(f"/ws/rooms/{room}", headers=headers) as ws:
+    # La reprise est vérifiée avec **bob**, pas avec la propriétaire : arriver
+    # dans un salon inoccupé quand on peut accorder la parole la prend, ce qui
+    # est un vrai événement de plus. Le mesurer ici mélangerait deux règles,
+    # alors que ce test ne parle que du rejeu.
+    bob = harness.user("bob")
+    harness.join(room, bob, role="ecrivain")
+    entete_bob = harness.auth(harness.token(bob))
+
+    with client.websocket_connect(f"/ws/rooms/{room}", headers=entete_bob) as ws:
         snapshot = greet(ws, dernier)
         assert snapshot["data"]["events"] == [], "rien de neuf depuis ce seq"
 
-    bob = harness.user("bob")
-    harness.join(room, bob)
-    with client.websocket_connect(
-        f"/ws/rooms/{room}", headers=harness.auth(harness.token(bob))
-    ) as ws:
+    with client.websocket_connect(f"/ws/rooms/{room}", headers=entete_bob) as ws:
         types = [e["type"] for e in greet(ws, 0)["data"]["events"]]
         assert "turn.started" in types, "un arrivant tardif reçoit l'historique"
 

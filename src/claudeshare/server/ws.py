@@ -80,6 +80,24 @@ async def serve_socket(
         # lui-même. La trame `presence` que ça déclenche est mise en file dans
         # l'abonnement et arrivera juste après.
         await room.joined(who)
+        # Un salon inoccupé revient à qui l'anime. La graine posée au montage ne
+        # suffit pas : le départ du porteur libère le jeton — et c'est
+        # nécessaire, sinon un onglet fermé confisquerait la parole — mais le
+        # salon, lui, reste monté. Le propriétaire qui recharge sa page
+        # retrouvait donc un salon où plus personne n'a la main, dans lequel il
+        # devait se redonner la parole à chaque visite.
+        #
+        # Conditionné à `room.floor.grant` et à l'absence de demande en attente :
+        # arriver ne doit ni doubler quelqu'un qui attend une décision, ni
+        # donner la parole à qui n'a pas le droit de se l'accorder.
+        if (
+            str(Capability.FLOOR_GRANT) in capabilities()
+            and room.floor.holder is None
+            and room.floor.deferred is None
+            and not room.floor.requests
+        ):
+            await room.grant_floor(who)
+
         snapshot = room.snapshot(last_seq)
         snapshot["data"]["capabilities"] = sorted(capabilities())
         # Son propre nom, tel que le salon le désigne. Le jeton de parole
