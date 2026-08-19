@@ -164,6 +164,33 @@ joindre le port, n'importe qui peut se déclarer l'adresse qu'il veut. Les deux
 erreurs sont symétriques, d'où l'avertissement au démarrage quand on écoute hors
 de la boucle locale sans annoncer de TLS.
 
+### Entrer par un tunnel plutôt que par Caddy
+
+Caddy suppose qu'on peut frapper à votre porte : un nom qui résout vers votre
+machine, et les ports 80 et 443 ouverts. Trois situations l'interdisent, souvent
+réunies — une box qu'on ne veut pas percer, une IP résidentielle qui change et
+qu'on préfère ne pas publier, un CGNAT où aucune redirection n'est possible.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.deploy.yml \
+               -f docker-compose.tunnel.yml up -d --build
+```
+
+`cloudflared` remplace alors Caddy : au lieu d'attendre des connexions, il en
+ouvre une vers Cloudflare, qui termine le TLS et lui repasse le trafic. Aucun
+port ouvert, aucun certificat à renouveler, et l'adresse de la machine ne
+paraît nulle part.
+
+Côté Cloudflare, dans Zero Trust → Networks → Tunnels : créer un tunnel, relever
+son jeton dans `CLOUDFLARE_TUNNEL_TOKEN`, et déclarer un nom d'hôte public
+pointant sur `http://claudeshare:8765` — le nom du service sur le réseau
+Compose, joint par l'intérieur.
+
+L'application reste réglée comme derrière n'importe quel proxy : `--behind-proxy`
+et `CLAUDESHARE_PUBLIC_HTTPS=true`, que la surcouche de déploiement pose déjà.
+Sans eux, elle verrait l'adresse du tunnel pour tout le monde et la limitation de
+débit deviendrait un seau unique et partagé.
+
 ### Déployer avec les agents gérés
 
 Le montage « tout sur un serveur » : personne n'installe rien, chacun dépose son

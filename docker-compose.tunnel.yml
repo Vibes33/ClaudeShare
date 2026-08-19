@@ -1,0 +1,43 @@
+# Entrée par tunnel Cloudflare, à la place de Caddy.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.deploy.yml \
+#                  -f docker-compose.tunnel.yml up -d --build
+#
+# Pourquoi ce troisième fichier plutôt qu'un réglage dans le deuxième : les deux
+# entrées ne diffèrent pas par une option mais par qui termine le TLS, et donc
+# par les services présents. Caddy obtient un certificat parce que le monde
+# frappe à sa porte ; le tunnel, lui, n'a aucune porte — c'est une sortie que
+# `cloudflared` ouvre vers Cloudflare, et le certificat vit chez eux.
+#
+# Ce montage vaut pour trois situations, souvent réunies :
+#
+# - **derrière une box**, sans possibilité — ou sans envie — d'ouvrir 80 et 443 ;
+# - **sur une IP résidentielle**, qui change et qu'on préfère ne pas publier ;
+# - **derrière un CGNAT**, où aucune redirection de port n'est même possible.
+#
+# Ce qu'il faut avoir fait côté Cloudflare, dans Zero Trust → Networks → Tunnels :
+# créer un tunnel, relever son jeton, et lui donner un nom d'hôte public pointant
+# sur le service `http://claudeshare:8765`. Le nom du service est celui du réseau
+# Compose : le tunnel parle à l'application par le réseau interne, jamais par
+# l'extérieur.
+
+services:
+  # Caddy n'a plus de rôle : ce serait un second terminateur TLS devant celui de
+  # Cloudflare. On le met à zéro réplique plutôt que de le supprimer — Compose ne
+  # sait pas retirer un service hérité d'un fichier précédent, et le laisser
+  # tourner publierait 80 et 443 pour rien.
+  caddy:
+    deploy:
+      replicas: 0
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    # `--no-autoupdate` : une mise à jour décidée par l'image au milieu d'une
+    # génération couperait le flux. Les montées de version passent par un
+    # `docker compose pull`, quand on regarde.
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: "${CLOUDFLARE_TUNNEL_TOKEN:?jeton de tunnel requis — Zero Trust → Networks → Tunnels}"
+    depends_on:
+      - claudeshare
+    restart: unless-stopped
