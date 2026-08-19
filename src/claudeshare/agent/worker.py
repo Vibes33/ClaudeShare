@@ -32,6 +32,9 @@ import contextlib
 import json
 import logging
 import platform
+import re
+import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -69,10 +72,15 @@ class Hosted:
         session_id: str | None = None,
         client_factory: Any = None,
         confine: Path | None = None,
+        fetch: Any = None,
     ) -> None:
         self.room_id = room_id
         self.workspace = workspace
         self._send = send
+        #: Comment aller chercher une pièce jointe sur le relais. Injecté plutôt
+        #: que câblé : c'est le démon qui détient l'adresse et le jeton, et les
+        #: tests n'ont pas de relais à interroger.
+        self._fetch = fetch
         #: Niveau de confiance du tour en cours, posé par le relais et appliqué
         #: par le hook à chaque appel d'outil.
         self._trust = TrustLevel.READER
@@ -144,8 +152,9 @@ class Hosted:
 
         async def jouer() -> None:
             try:
+                prompt = await self._deposer(turn_id, data.get("attachments") or [])
                 await self.agent.run_turn(
-                    str(data.get("prompt") or ""),
+                    prompt + str(data.get("prompt") or ""),
                     author=str(data.get("author") or "?"),
                     turn_id=turn_id,
                 )
@@ -165,6 +174,51 @@ class Hosted:
 
         self._turn = asyncio.create_task(jouer())
 
+    async def _deposer(self, turn_id: str, pieces: list[dict[str, Any]]) -> str:
+        """Écrit les pièces jointes du tour, et renvoie le préambule du prompt.
+
+        Elles atterrissent **dans le dossier de travail**, sous
+        `.claudeshare/pieces-jointes/<tour>/`. C'est la seule place où la session
+        puisse les lire : le bac à sable la confine à ce dossier, et un fichier
+        déposé ailleurs serait invisible pour elle. Un sous-dossier par tour,
+        parce que deux personnes qui joignent chacune `capture.png` dans le même
+        salon ne doivent pas s'écraser l'une l'autre.
+
+        Une pièce qui ne peut pas être récupérée n'annule pas le tour : la
+        question posée vaut souvent d'être traitée sans, et un tour perdu pour
+        un octet manquant serait un mauvais échange. Ce qui manque est **dit**
+        dans le prompt, jamais passé sous silence.
+        """
+        if not pieces or self._fetch is None:
+            return ""
+
+        dossier = self.workspace / ".claudeshare" / "pieces-jointes" / turn_id
+        lignes: list[str] = []
+        for piece in pieces[:MAX_PIECES]:
+            aid, nom = str(piece.get("id") or ""), str(piece.get("name") or "")
+            # Revalidé ici, alors que le relais l'a déjà fait. C'est cette
+            # machine-ci qui a quelque chose à perdre si un nom devient un
+            # chemin : la défense tourne là où est le risque.
+            if not IDENTIFIANT.match(aid) or not NOM_PIECE.match(nom) or ".." in nom:
+                lignes.append(f"- (pièce jointe au nom refusé : {nom[:40]!r})")
+                continue
+            try:
+                octets = await self._fetch(self.room_id, aid)
+                dossier.mkdir(parents=True, exist_ok=True)
+                (dossier / nom).write_bytes(octets)
+            except Exception as exc:  # noqa: BLE001 — toute panne se dit, aucune n'annule
+                logger.warning("pièce jointe %s indisponible : %s", aid, exc)
+                lignes.append(f"- (pièce jointe « {nom} » non récupérée)")
+                continue
+            lignes.append(f"- .claudeshare/pieces-jointes/{turn_id}/{nom}")
+
+        _balayer_pieces(self.workspace)
+        entete = "\n".join(lignes)
+        return (
+            "Pièces jointes de ce message, déposées dans le dossier de travail :\n"
+            f"{entete}\n\n"
+        )
+
     async def aclose(self) -> None:
         # Les demandes en vol d'abord : une promesse non tenue empêcherait le
         # tour de se terminer, et donc le drainage d'aboutir.
@@ -183,6 +237,46 @@ def _texte(valeur: Any) -> str | None:
     d'intensité.
     """
     return None if valeur is None else str(valeur)
+
+
+#: Bornes reprises du relais. Redites ici parce que cette machine ne fait pas
+#: confiance à ce qui lui arrive : c'est elle qui écrit sur son propre disque.
+MAX_PIECES = 5
+IDENTIFIANT = re.compile(r"^[0-9a-f]{16}$")
+NOM_PIECE = re.compile(r"^[^\W_][\w .\-'(),+@]{0,79}$")
+
+#: Au-delà, les dossiers de pièces jointes d'anciens tours sont retirés. Long,
+#: parce qu'ils sont dans le dossier de quelqu'un : effacer vite ce qu'on a
+#: déposé chez les gens est une surprise désagréable.
+DUREE_PIECES_S = 7 * 24 * 3600
+
+#: Miroir de la limite du relais. Un plafond de lecture, et non une confiance :
+#: c'est ce qui empêche une réponse inattendue de remplir la mémoire ici.
+MAX_OCTETS_PIECE = 10_000_000
+
+
+def _balayer_pieces(workspace: Path) -> None:
+    """Retire les dépôts d'anciens tours. Uniquement les nôtres.
+
+    Restreint au dossier que nous créons et aux noms que nous fabriquons : rien
+    de ce que quelqu'un aurait rangé là ne ressemble à un identifiant de tour,
+    et c'est cette forme-là qui décide, pas l'emplacement seul.
+    """
+    racine = workspace / ".claudeshare" / "pieces-jointes"
+    if not racine.is_dir():
+        return
+    limite = time.time() - DUREE_PIECES_S
+    for dossier in racine.iterdir():
+        try:
+            if not dossier.is_dir() or not re.match(r"^[0-9a-f]{12}$", dossier.name):
+                continue
+            if dossier.stat().st_mtime >= limite:
+                continue
+            for fichier in dossier.iterdir():
+                fichier.unlink(missing_ok=True)
+            dossier.rmdir()
+        except OSError:  # noqa: PERF203 — un dossier qui bouge sous nos pieds n'est pas une erreur
+            continue
 
 
 class Worker:
@@ -219,6 +313,28 @@ class Worker:
         self._client_factory = client_factory
         self._socket: Any = None
         self._backoff = RECONNECT_MIN_S
+
+    async def _piece_jointe(self, room_id: str, aid: str) -> bytes:
+        """Récupère une pièce jointe sur le relais.
+
+        `urllib` dans un fil plutôt qu'un client HTTP asynchrone : l'agent n'a
+        pas d'autre appel HTTP à passer, et tirer une dépendance de plus pour
+        une requête par pièce jointe serait cher payé. Le fil évite de bloquer
+        la boucle pendant le transfert.
+        """
+        url = f"{self.base_url}/api/rooms/{room_id}/attachments/{aid}"
+        requete = urllib.request.Request(  # noqa: S310 — schéma fixé par `base_url`
+            url, headers={"Authorization": f"Bearer {self._token}"}
+        )
+
+        def lire() -> bytes:
+            with urllib.request.urlopen(requete, timeout=60) as reponse:  # noqa: S310
+                return reponse.read(MAX_OCTETS_PIECE + 1)
+
+        octets = await asyncio.to_thread(lire)
+        if len(octets) > MAX_OCTETS_PIECE:
+            raise ValueError("pièce jointe plus lourde qu'annoncé")
+        return octets
 
     @property
     def url(self) -> str:
@@ -303,6 +419,7 @@ class Worker:
             session_id=str(data.get("session_id") or "") or None,
             client_factory=self._client_factory,
             confine=self.confine,
+            fetch=self._piece_jointe,
         )
         try:
             await salon.start()

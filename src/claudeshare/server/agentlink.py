@@ -102,7 +102,14 @@ class AgentLink:
 
     # --------------------------------------------------------------- amont
 
-    async def run_turn(self, prompt: str, *, author: str, trust: TrustLevel) -> None:
+    async def run_turn(
+        self,
+        prompt: str,
+        *,
+        author: str,
+        trust: TrustLevel,
+        attachments: list[dict[str, Any]] | None = None,
+    ) -> None:
         """Fait exécuter un tour par l'agent, et attend qu'il rende la main.
 
         L'attente est indispensable : c'est elle qui permet au salon de libérer
@@ -127,6 +134,10 @@ class AgentLink:
                 "prompt": prompt,
                 "author": author,
                 "trust": str(trust),
+                # Des descriptions, pas des octets : l'agent ira les chercher
+                # lui-même. Une socket de contrôle n'a pas à porter dix mégaoctets
+                # pendant qu'elle sert aussi à interrompre un tour.
+                "attachments": attachments or [],
             }
         )
 
@@ -252,7 +263,9 @@ class AbsentAgent:
     def view(self) -> dict[str, Any]:
         return {"connected": False, "host": None, "workspace": "", "session_id": None}
 
-    async def run_turn(self, prompt: str, *, author: str, trust: Any) -> None:
+    async def run_turn(
+        self, prompt: str, *, author: str, trust: Any, attachments: Any = None
+    ) -> None:
         raise NoAgentError("aucun agent n'héberge ce salon")
 
     async def interrupt(self) -> bool:

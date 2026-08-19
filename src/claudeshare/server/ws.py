@@ -67,6 +67,7 @@ async def serve_socket(
     *,
     capabilities: Callable[[], frozenset[str]],
     priority: Callable[[], int] = lambda: 0,
+    attachments: Callable[[list[str]], list[dict[str, Any]]] = lambda _ids: [],
 ) -> None:
     """Sert une connexion jusqu'à sa fermeture.
 
@@ -114,7 +115,7 @@ async def serve_socket(
 
         downstream = asyncio.create_task(_pump_down(websocket, subscription))
         try:
-            await _pump_up(websocket, room, who, capabilities, priority)
+            await _pump_up(websocket, room, who, capabilities, priority, attachments)
         except WebSocketDisconnect:
             pass
         finally:
@@ -166,6 +167,7 @@ async def _pump_up(
     who: str,
     capabilities: Callable[[], frozenset[str]],
     priority: Callable[[], int],
+    attachments: Callable[[list[str]], list[dict[str, Any]]],
 ) -> None:
     """Socket → intentions traitées par le salon."""
     debit = RateLimiter(WS_RATE)
@@ -197,7 +199,9 @@ async def _pump_up(
                         error(room.id, "forbidden", "vous n'avez pas le droit d'écrire ici")
                     )
                     continue
-                await _handle_prompt(websocket, room, who, data, caps, priority())
+                await _handle_prompt(
+                    websocket, room, who, data, caps, priority(), attachments
+                )
 
             case ClientMessage.FLOOR_REQUEST:
                 if str(Capability.SPEAK) not in capabilities():
@@ -314,6 +318,7 @@ async def _handle_prompt(
     data: dict[str, Any],
     caps: frozenset[str],
     priority: int,
+    attachments: Callable[[list[str]], list[dict[str, Any]]],
 ) -> None:
     prompt = data.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
@@ -325,11 +330,28 @@ async def _handle_prompt(
         )
         return
 
+    # Les pièces jointes sont résolues **avant** de toucher au jeton : échouer
+    # ici renvoie un message utile, alors qu'une pièce manquante découverte chez
+    # l'agent laisserait un tour parti pour rien.
+    ids = data.get("attachments") or []
+    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+        await websocket.send_json(error(room.id, "bad_message", "`attachments` invalide"))
+        return
+    try:
+        pieces = attachments(ids)
+    except ValueError as exc:
+        await websocket.send_json(error(room.id, "bad_attachment", str(exc)))
+        return
+
     from ..core.permissions import trust_level
 
     try:
         issue = await room.submit(
-            prompt, author=who, trust=trust_level(caps), priority=priority
+            prompt,
+            author=who,
+            trust=trust_level(caps),
+            priority=priority,
+            attachments=pieces,
         )
     except NoAgentError as exc:
         # Le salon existe et se lit, mais personne ne l'exécute. Un message

@@ -312,6 +312,7 @@ class Room:
         author: str,
         trust: TrustLevel = TrustLevel.WRITER,
         priority: int = 0,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> Submission:
         """Lance un tour, ou met la personne en file.
 
@@ -346,7 +347,9 @@ class Room:
                 # Le niveau de confiance voyage avec le tour : c'est l'agent qui
                 # l'applique, sur la machine qui a quelque chose à perdre si un
                 # invité obtient un outil de trop.
-                await self.agent.run_turn(prompt, author=author, trust=trust)
+                await self.agent.run_turn(
+                    prompt, author=author, trust=trust, attachments=attachments or []
+                )
             except Exception:
                 logger.exception("le tour a échoué dans %s", self.id)
             finally:

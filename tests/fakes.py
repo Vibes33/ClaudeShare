@@ -120,7 +120,15 @@ class LocalAgent:
     protocole.
     """
 
-    def __init__(self, room, client, *, who: str = "hôte", workspace: str | None = None) -> None:
+    def __init__(
+        self,
+        room,
+        client,
+        *,
+        who: str = "hôte",
+        workspace: str | None = None,
+        attachments: Path | None = None,
+    ) -> None:
         import tempfile
 
         from claudeshare.agent.worker import Worker
@@ -152,6 +160,22 @@ class LocalAgent:
             client_factory=self._bind,
         )
         self._boucle: asyncio.Task | None = None
+
+        if attachments is not None:
+            # Le démon va normalement chercher ses pièces jointes en HTTP, sur
+            # une adresse qui n'existe pas ici. On court-circuite le transport
+            # — et lui seul : la recherche du fichier reste celle du relais,
+            # avec sa validation d'identifiant. La route HTTP, elle, a ses
+            # propres tests.
+            from claudeshare.server.api.attachments import _fichier
+
+            async def recuperer(room_id: str, aid: str) -> bytes:
+                chemin = _fichier(attachments, room_id, aid)
+                if chemin is None:
+                    raise FileNotFoundError(aid)
+                return chemin.read_bytes()
+
+            self.worker._piece_jointe = recuperer
 
     # -------------------------------------------------------- le transport
 

@@ -67,8 +67,15 @@ const state = {
   signalees: new Set(),
   //: Dernier prompt envoyé, rendu à son auteur si la parole lui manque.
   brouillon: "",
+  //: Pièces jointes du prochain message. Déposées tout de suite, envoyées
+  //: seulement avec le prompt : un fichier qui ne partirait qu'au clic ferait
+  //: attendre l'envoi, et découvrir un refus au pire moment.
+  pieces: [],
   //: Ce que montre la colonne de gauche : « salons » ou « discussion ».
   onglet: "salons",
+  //: Colonne de gauche repliée ? Relu du navigateur au démarrage : c'est un
+  //: réglage d'écran, et le redemander à chaque visite serait une corvée.
+  replie: false,
   //: La discussion du salon, dans l'ordre d'arrivée. Vidée en changeant de
   //: salon — c'est la conversation d'un salon, pas la nôtre.
   chat: [],
@@ -95,7 +102,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     "titre-connexion", "barre", "porteur", "presents", "ouvrir-cote", "cote",
     "saisie", "joindre", "modele", "jetons", "quota", "fil", "salons-lat",
     "choix-modele", "choix-effort", "onglet-salons", "onglet-discussion",
-    "liste-salons", "discussion", "chat", "chat-champ", "cote-poignee",
+    "liste-salons", "discussion", "chat", "chat-champ", "cote-poignee", "replier",
+    "pieces",
     "approvals", "toasts", "actions",
   ]) {
     dom[id] = document.getElementById(id);
@@ -105,6 +113,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   dom.prompt.addEventListener("input", ajusterHauteur);
   menu(dom["choix-modele"], panneauModele);
   menu(dom["choix-effort"], panneauEffort);
+  dom.replier.addEventListener("click", () => replier(!state.replie));
+  menu(dom.joindre, panneauJoindre);
   dom["onglet-salons"].addEventListener("click", () => montrer("salons"));
   dom["onglet-discussion"].addEventListener("click", () => montrer("discussion"));
   dom["chat-champ"].addEventListener("keydown", (e) => {
@@ -117,6 +127,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   dom["chat-champ"].addEventListener("input", () => hauteurChat());
   installerRedimensionnement();
+  replier(replieMemorise());
   // `passive: false` : sans lui le navigateur refuse le `preventDefault`, et la
   // page défilerait *en plus* de la conversation.
   window.addEventListener("wheel", molette, { passive: false });
@@ -149,6 +160,41 @@ document.addEventListener("DOMContentLoaded", async () => {
   setInterval(majSalons, SONDAGE_MS);
   window.addEventListener("focus", majSalons);
 });
+
+// ------------------------------------------------- colonne de gauche repliée
+
+const COTE_REPLIE = "claudeshare.replie";
+
+/**
+ * Replie ou déplie la colonne de gauche.
+ *
+ * Repliée, elle est retirée de la mise en page et non seulement rétrécie : une
+ * colonne de zéro pixel garde ses marges et son bord, et la conversation ne
+ * gagne alors pas tout à fait la largeur qu'on venait de lui donner.
+ */
+function replier(replie) {
+  state.replie = replie;
+  dom["salons-lat"].hidden = replie;
+  dom.replier.classList.toggle("replie", replie);
+  dom.replier.setAttribute("aria-pressed", replie ? "true" : "false");
+  dom.replier.setAttribute(
+    "aria-label",
+    replie ? "Afficher la colonne des salons" : "Replier la colonne des salons",
+  );
+  try {
+    localStorage.setItem(COTE_REPLIE, replie ? "1" : "");
+  } catch {
+    /* le pli vivra le temps de la session. */
+  }
+}
+
+function replieMemorise() {
+  try {
+    return localStorage.getItem(COTE_REPLIE) === "1";
+  } catch {
+    return false;
+  }
+}
 
 // ------------------------------------------------- taille du panneau d'hôte
 
@@ -1002,6 +1048,7 @@ function fermer() {
   // à l'écran, à décrire un salon qu'on venait de quitter.
   replace(dom.porteur);
   replace(dom.presents);
+  dom.replier.hidden = true;
   replace(dom["liste-salons"]);
   replace(dom.chat);
   replace(dom.quota);
@@ -1009,6 +1056,10 @@ function fermer() {
   // messages des uns sous le titre des autres.
   state.chat = [];
   state.chatNonLus = 0;
+  // Déposées pour un salon, et ne valant que là : leur identifiant n'a pas de
+  // sens ailleurs, et le relais les balaiera.
+  state.pieces = [];
+  replace(dom.pieces);
   // Les blocs de code redeviennent copiables : le refus appartenait au salon
   // qu'on vient de quitter, et l'oublier ici le ferait suivre dans le suivant.
   autoriserCopie(true);
@@ -1273,12 +1324,168 @@ function erreur(d) {
 
 // ------------------------------------------------------------- intentions
 
+// ------------------------------------------------------------ pièces jointes
+
+//: Autant que le relais en accepte par tour. Redit ici pour refuser le
+//: sixième fichier **avant** de le téléverser plutôt qu'après.
+const MAX_PIECES = 5;
+//: Même chose pour le poids : un refus après trois minutes d'envoi est un
+//: refus qui arrive trop tard.
+const MAX_OCTETS_PIECE = 10_000_000;
+
+/**
+ * Le menu du bouton « + ».
+ *
+ * Deux entrées pour un seul mécanisme : c'est le même sélecteur de fichier, avec
+ * un filtre différent. Séparer les deux évite d'ouvrir une fenêtre qui propose
+ * tout le disque à quelqu'un qui cherchait une capture d'écran.
+ */
+function panneauJoindre(panneau, fermerMenu) {
+  panneau.appendChild(elem("div", "menu-titre", "Joindre"));
+  for (const [libelle, accept] of [
+    ["Photo ou image…", "image/*"],
+    ["Fichier…", ""],
+  ]) {
+    panneau.appendChild(
+      entreeMenu(libelle, {
+        onClick: () => {
+          fermerMenu();
+          choisirFichiers(accept);
+        },
+      }),
+    );
+  }
+  panneau.appendChild(
+    elem("p", "menu-note",
+      "Le fichier est déposé dans le dossier de travail de l'hôte, "
+      + "sous .claudeshare/, et son chemin est donné à Claude."),
+  );
+}
+
+/**
+ * Ouvre le sélecteur de fichiers.
+ *
+ * L'`<input>` est créé, utilisé, puis jeté. Le garder dans la page ferait un
+ * élément dont l'état survit à l'envoi : reprendre le même fichier deux fois de
+ * suite ne déclencherait alors pas d'événement `change` la seconde fois.
+ */
+function choisirFichiers(accept) {
+  const champ = elem("input", "cache");
+  champ.type = "file";
+  champ.multiple = true;
+  if (accept) champ.accept = accept;
+  champ.addEventListener("change", () => {
+    for (const fichier of champ.files || []) joindre(fichier);
+  });
+  champ.click();
+}
+
+/** Ajoute un fichier et lance son dépôt. */
+function joindre(fichier) {
+  if (state.pieces.length >= MAX_PIECES) {
+    return toast(`Maximum ${MAX_PIECES} pièces jointes par message.`);
+  }
+  if (fichier.size > MAX_OCTETS_PIECE) {
+    return toast(`« ${fichier.name} » dépasse ${MAX_OCTETS_PIECE / 1_000_000} Mo.`);
+  }
+  const piece = { nom: fichier.name, taille: fichier.size, id: null, erreur: "" };
+  state.pieces.push(piece);
+  dessinerPieces();
+  deposerPiece(piece, fichier);
+}
+
+/**
+ * Dépose une pièce jointe sur le relais.
+ *
+ * Le nom voyage dans un en-tête et le contenu dans le corps — un seul fichier
+ * par requête, donc rien à découper. L'en-tête est encodé : un nom accentué
+ * dans un en-tête HTTP n'est pas transmissible tel quel.
+ */
+async function deposerPiece(piece, fichier) {
+  const salon = state.roomId;
+  const reponse = await post_brut(`/api/rooms/${salon}/attachments`, fichier, {
+    "X-Nom-Fichier": encodeURIComponent(fichier.name),
+  });
+  // On a pu changer de salon pendant le dépôt : la pièce n'appartient plus à
+  // l'écran qu'on regarde.
+  if (state.roomId !== salon || !state.pieces.includes(piece)) return;
+
+  if (!reponse.ok) {
+    piece.erreur = motif(reponse);
+    toast(`« ${piece.nom} » refusé : ${piece.erreur}`);
+  } else {
+    piece.id = reponse.data.id;
+    piece.nom = reponse.data.name;
+  }
+  dessinerPieces();
+}
+
+async function post_brut(url, corps, headers) {
+  const res = await fetch(url, { method: "POST", body: corps, headers });
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    data = null;
+  }
+  return { ok: res.ok, status: res.status, data };
+}
+
+function retirerPiece(piece) {
+  state.pieces = state.pieces.filter((p) => p !== piece);
+  dessinerPieces();
+}
+
+/** Les vignettes de pièces jointes, au-dessus du texte. */
+function dessinerPieces() {
+  replace(
+    dom.pieces,
+    ...state.pieces.map((piece) => {
+      const etat = piece.erreur ? " rate" : piece.id ? "" : " envoi";
+      const el = elem("span", `piece${etat}`);
+      el.append(
+        elem("span", "piece-nom", piece.nom),
+        elem("span", "piece-taille", piece.erreur || (piece.id ? octets(piece.taille) : "envoi…")),
+      );
+      const oter = elem("button", "piece-oter", "×");
+      oter.type = "button";
+      oter.setAttribute("aria-label", `Retirer ${piece.nom}`);
+      oter.addEventListener("click", () => retirerPiece(piece));
+      el.appendChild(oter);
+      return el;
+    }),
+  );
+}
+
+/** 240000 → « 240 ko ». Les octets nus ne se lisent pas. */
+function octets(n) {
+  if (n < 1000) return `${n} o`;
+  if (n < 1_000_000) return `${Math.round(n / 1000)} ko`;
+  return `${(n / 1_000_000).toFixed(1).replace(".", ",")} Mo`;
+}
+
 /** Envoie, ou interrompt si un tour est en cours — le bouton est le même. */
 function envoyer() {
   if (dom.send.classList.contains("arret")) return emettre(ClientMessage.STREAM_STOP);
   const texte = dom.prompt.value.trim();
   if (!texte) return;
-  emettre(ClientMessage.PROMPT_SEND, { prompt: texte });
+
+  // Une pièce encore en vol ou refusée : on ne part pas sans elle. Envoyer
+  // quand même donnerait à Claude un message qui parle d'un fichier absent.
+  if (state.pieces.some((p) => !p.id)) {
+    return toast(
+      state.pieces.some((p) => p.erreur)
+        ? "Retirez la pièce jointe refusée avant d'envoyer."
+        : "Une pièce jointe est encore en cours d'envoi.",
+    );
+  }
+
+  emettre(ClientMessage.PROMPT_SEND, {
+    prompt: texte,
+    attachments: state.pieces.map((p) => p.id),
+  });
+  state.pieces = [];
+  dessinerPieces();
   // Vidé tout de suite pour que l'envoi se voie, mais gardé de côté : si le
   // salon répond `queued`, on le remet dans le champ (voir `appliquer`).
   state.brouillon = texte;
@@ -1321,6 +1528,7 @@ function peindre(complet = false) {
 
 function dessiner() {
   dom.title.textContent = state.title;
+  dom.replier.hidden = false;
   dessinerOnglets();
   dessinerSalonsLat();
   dessinerChat();
@@ -2027,10 +2235,13 @@ function dessinerActions() {
   dom.send.classList.toggle("arret", coupable);
   dom.send.setAttribute("aria-label", coupable ? "Interrompre" : "Envoyer");
   dom.send.disabled = coupable ? false : dom.prompt.disabled || !heberge;
-  // Les pièces jointes ne traversent pas encore le relais : le bouton reste
-  // visible et dit pourquoi, plutôt que de disparaître sans explication.
-  dom.joindre.disabled = true;
-  dom.joindre.title = "Les pièces jointes ne sont pas encore acheminées jusqu'à l'agent.";
+  // Joindre, c'est écrire : même condition que le champ de saisie. Un fichier
+  // déposé sans pouvoir l'envoyer resterait en attente d'un tour qui ne
+  // viendrait pas.
+  dom.joindre.disabled = dom.prompt.disabled || !heberge;
+  dom.joindre.title = dom.joindre.disabled
+    ? "Prenez la parole dans un salon hébergé pour joindre un fichier."
+    : "Joindre un fichier ou une image";
   dom["ouvrir-cote"].hidden = !peut(Capability.SETTINGS) && !accorde;
   dom.prompt.placeholder = !peutEcrire
     ? "Lecture seule"

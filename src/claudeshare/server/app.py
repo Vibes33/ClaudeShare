@@ -38,6 +38,7 @@ from ..core.workspace import ensure_root
 from ..db.eventstore import DatabaseLogStore
 from ..db.models import Room, User
 from ..db.session import Database, Schema, default_url
+from .api.attachments import build_attachments_router, resoudre as resoudre_pieces
 from .api.invites import build_invites_router, build_redeem_router
 from .api.profile import build_avatar_router, build_profile_router
 from .api.members import build_members_router
@@ -287,6 +288,10 @@ def create_app(
     avatars = root / "avatars"
     app.include_router(build_profile_router(ctx, avatars))
     app.include_router(build_avatar_router(avatars))
+    # Les pièces jointes vivent à côté des avatars, sous la racine d'état :
+    # des octets qu'on relit tels quels, qui n'ont rien à faire dans la base.
+    pieces_jointes = root / "attachments"
+    app.include_router(build_attachments_router(ctx, pieces_jointes))
     app.include_router(build_rooms_router(ctx))
     app.include_router(build_members_router(ctx))
     app.include_router(build_roles_router(ctx))
@@ -374,6 +379,9 @@ def create_app(
                 # effet sans reconnexion.
                 capabilities=lambda: _capabilities_of(ctx, room_id, principal.user_id),
                 priority=lambda: _priority_of(ctx, room_id, principal.user_id),
+                # Le WebSocket ne connaît pas le disque : on lui passe de quoi
+                # résoudre des identifiants de pièces jointes, et rien de plus.
+                attachments=lambda ids: resoudre_pieces(pieces_jointes, room_id, ids),
             )
         finally:
             ctx.remember_session(room_id)

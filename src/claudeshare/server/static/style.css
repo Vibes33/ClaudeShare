@@ -302,6 +302,21 @@ h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; colo
 }
 /* Le point de la marque n'annonce rien : il tient lieu de logo, là où un mot
    seul flotterait dans la pilule. */
+/* Le bouton qui replie la colonne. Le panneau plein bascule d'un côté à
+   l'autre du trait : l'icône dit ce que l'on obtiendra, pas ce que l'on a. */
+#replier {
+  width: 30px; height: 30px; flex: 0 0 auto; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--doux); background: none; cursor: pointer;
+  border: 1px solid transparent; border-radius: 9px;
+  transition: color 0.16s, background 0.16s, border-color 0.16s;
+}
+#replier:hover { color: var(--texte); background: rgb(255 255 255 / 0.07); border-color: var(--verre-bord); }
+#replier:focus-visible { outline: 2px solid rgb(255 255 255 / 0.5); outline-offset: 2px; }
+#replier svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.6; }
+#replier svg .plein { fill: currentColor; stroke: none; opacity: 0.75; }
+#replier.replie svg { transform: scaleX(-1); }
+
 #marque-point {
   width: 9px; height: 9px; border-radius: 50%;
   background: linear-gradient(180deg, #e8e8e8, #6f6f6f);
@@ -838,6 +853,35 @@ select.saisie { flex: 0 0 auto; }
    vide se lirait « rien consommé ». Celui-ci est pointillé. */
 .anneau.inconnu .anneau-piste { stroke-dasharray: 2 3; }
 .quota-part { color: var(--doux); font-size: 0.74rem; font-variant-numeric: tabular-nums; }
+
+/* --- les pièces jointes du prochain message ----------------------------- */
+
+#pieces { display: flex; flex-wrap: wrap; gap: 0.4rem; padding: 0.7rem 0.9rem 0; }
+#pieces:empty { display: none; }
+
+.piece {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  max-width: 18rem; padding: 0.25rem 0.3rem 0.25rem 0.6rem;
+  font-size: 0.78rem; color: var(--doux);
+  background: rgb(255 255 255 / 0.05);
+  border: 1px solid var(--verre-bord); border-radius: 100px;
+}
+.piece-nom {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--texte);
+}
+.piece-taille { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+/* En cours d'envoi : la vignette existe déjà, mais elle ne promet rien. */
+.piece.envoi { opacity: 0.6; }
+.piece.rate { border-color: rgb(240 113 120 / 0.5); }
+.piece.rate .piece-taille { color: var(--erreur); }
+.piece-oter {
+  flex: 0 0 auto; width: 18px; height: 18px; padding: 0;
+  font: inherit; font-size: 0.9rem; line-height: 1;
+  color: var(--doux); background: none; border: none; border-radius: 100px;
+  cursor: pointer;
+}
+.piece-oter:hover { color: var(--texte); background: rgb(255 255 255 / 0.1); }
 
 #joindre {
   width: 30px; height: 30px; flex: 0 0 auto; padding: 0;

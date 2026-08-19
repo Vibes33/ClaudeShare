@@ -44,6 +44,15 @@
       <span id="marque-point"></span>
       <span>ClaudeShare</span>
     </a>
+    <!-- Replier la colonne de gauche. Dans la barre et non dans la colonne :
+         un bouton qui disparaît avec ce qu'il referme ne se rouvre plus. -->
+    <button id="replier" type="button" aria-label="Replier la colonne des salons" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="3" y="4" width="18" height="16" rx="2.5"/>
+        <path d="M9.5 4v16"/>
+        <path class="plein" d="M5.5 4h4v16h-4z"/>
+      </svg>
+    </button>
     <span id="title"></span>
     <!-- Qui a la parole : dans la barre, et non dans le panneau latéral. C'est
          l'information que tout le monde consulte, alors que le panneau ne sert
@@ -96,6 +105,9 @@
                les regarde en écrivant — c'est à ce moment qu'on veut savoir qui
                lira. -->
           <div id="presents"></div>
+          <!-- Les pièces jointes du prochain message. Au-dessus du texte : on
+               veut les voir en écrivant, pas les découvrir après l'envoi. -->
+          <div id="pieces"></div>
           <textarea id="prompt" rows="1" placeholder="Écrire à Claude…"></textarea>
           <div id="saisie-pied">
             <!-- L'avancement de la fenêtre de cinq heures, peint par app.js :

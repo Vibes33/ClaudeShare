@@ -203,7 +203,7 @@ def harness(tmp_path: Path, monkeypatch) -> Harness:
 
     def create(self, room_id: str, **kwargs):
         room = original_create(self, room_id, **kwargs)
-        agent = LocalAgent(room, fake)
+        agent = LocalAgent(room, fake, attachments=tmp_path / "workspaces" / "attachments")
         attaches[room_id] = agent
         if reglage["auto"]:
             room.schedule(agent.attach())
