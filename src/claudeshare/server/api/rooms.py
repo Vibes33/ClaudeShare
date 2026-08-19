@@ -113,7 +113,24 @@ def build_rooms_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
             record, _ = create_room(
                 session, title=payload.title, workspace=payload.workspace, owner=owner
             )
-            return _room_view(record)
+            # Créer un salon, c'est vouloir qu'il tourne : le formulaire le
+            # promet déjà — « votre agent l'exécutera ». Laisser un second clic
+            # entre la promesse et le fait ne produisait qu'un salon inerte de
+            # plus, affiché « aucun agent » alors que l'agent est connecté.
+            #
+            # On note l'**intention**, pas l'état : si l'agent n'est pas encore
+            # là, il se verra pousser ce salon en arrivant, sans qu'on y
+            # revienne. Voir `Room.autohost`.
+            record.autohost = True
+            vue = _room_view(record)
+            user_id, room_id = principal.user_id, record.id
+            dossier = record.workspace
+
+        # Hors session : l'ordre part sur la socket du démon, et une base
+        # ouverte n'a rien à faire ouverte pendant un aller-retour réseau.
+        if (daemon := ctx.daemons.get(user_id)) is not None:
+            await daemon.host(room_id, dossier or daemon.base)
+        return vue
 
     @router.get("/{room_id}")
     @requires(Capability.READ)

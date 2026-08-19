@@ -232,3 +232,55 @@ def test_seuls_ses_propres_salons_sont_repris(harness: Harness, client):
 
     assert _a_heberger(harness.ctx, alice) == [(room, "/chez/alice")]
     assert _a_heberger(harness.ctx, bob) == []
+
+
+# ------------------------------------------- créer, c'est vouloir héberger
+
+
+def test_creer_un_salon_note_l_intention_de_l_heberger(harness: Harness, client):
+    """« Vous en serez propriétaire, et votre agent l'exécutera » est une
+    promesse du formulaire. Un salon né inerte la démentait."""
+    alice = harness.user("alice")
+    entete = harness.auth(harness.token(alice))
+
+    room = client.post("/api/rooms", json={"title": "T", "workspace": "/w"}, headers=entete)
+    assert room.status_code == 201
+
+    assert salon_en_base(harness, room.json()["id"]).autohost is True
+
+
+def test_un_salon_cree_part_aussitot_a_l_agent_deja_connecte(harness: Harness, client):
+    """Le cas courant : l'agent est là, le salon doit tourner sans second clic."""
+    from claudeshare.protocol import PROTOCOL_VERSION, AgentMessage
+
+    alice = harness.user("alice")
+    entete = harness.auth(harness.token(alice))
+
+    with client.websocket_connect("/ws/agent", headers=entete) as agent:
+        agent.send_json(
+            {
+                "v": PROTOCOL_VERSION,
+                "type": str(AgentMessage.AGENT_HELLO),
+                "data": {"base": "/defaut"},
+            }
+        )
+        attendre_demon(harness, alice)
+        cree = client.post(
+            "/api/rooms", json={"title": "T", "workspace": "/w"}, headers=entete
+        )
+        ordre = agent.receive_json()
+
+    assert ordre["type"] == str(AgentMessage.RUN_HOST)
+    assert ordre["data"]["room_id"] == cree.json()["id"]
+    assert ordre["data"]["workspace"] == "/w"
+
+
+def test_sans_agent_la_creation_passe_quand_meme(harness: Harness, client):
+    """Créer un salon ne doit pas dépendre d'un agent : l'intention attend, et
+    l'agent se la verra pousser en arrivant."""
+    alice = harness.user("alice")
+    entete = harness.auth(harness.token(alice))
+
+    assert client.post(
+        "/api/rooms", json={"title": "T", "workspace": "/w"}, headers=entete
+    ).status_code == 201
