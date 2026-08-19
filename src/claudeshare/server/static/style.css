@@ -45,8 +45,198 @@ h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; colo
 
 /* ------------------------------------------------------------- connexion */
 
-#login { max-width: 30rem; margin: 15vh auto; padding: 0 1.5rem; text-align: center; }
-#providers { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 1.5rem; }
+/* --------------------------------------------------------------- connexion */
+
+/* Noir franc, quel que soit le thème du système. Les variables de la page —
+   `--fond` bascule en clair — ne s'appliquent pas ici : c'est un écran à part,
+   et un titre qui se révèle au curseur n'existe que sur du noir. */
+#login {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2.5rem;
+  background: #000;
+  padding: 0 1.5rem;
+}
+
+#titre-connexion {
+  width: min(46rem, 92vw);
+  /* Le rapport du `viewBox` (300 × 100). Le fixer évite que le SVG se calcule
+     une hauteur d'après son contenu et saute d'une taille à l'autre au premier
+     rendu. */
+  aspect-ratio: 3 / 1;
+}
+
+#providers { display: flex; flex-direction: column; align-items: center; gap: 0.8rem; }
+#providers .vide { color: #666; font-size: 0.9rem; }
+
+/* -------------------------------------------- titre à révélation (SVG) */
+
+.revele { user-select: none; display: block; width: 100%; height: 100%; }
+
+.revele .trait {
+  fill: transparent;
+  font-family: Helvetica, Arial, sans-serif;
+  font-size: 4.5rem;
+  font-weight: 700;
+  stroke-width: 0.3;
+}
+
+/* La couleur du trait est posée par calque, et **jamais** sur `.trait` : en
+   SVG, une déclaration CSS l'emporte sur l'attribut de présentation. Une règle
+   commune `stroke: #262626` repeindrait donc en gris le calque coloré, dont le
+   dégradé est porté par son attribut `stroke`. L'effet disparaît alors sans que
+   rien ne signale pourquoi. */
+.revele .survol,
+.revele .trace { stroke: #262626; }
+.revele .peint { stroke: url(#degradeTitre); }
+
+/* Le contour de survol : présent en permanence, révélé par l'opacité. Le
+   monter et le démonter ferait clignoter le texte à chaque entrée du curseur. */
+.revele .survol { opacity: 0; transition: opacity 0.3s; }
+.revele.survole .survol { opacity: 0.7; }
+
+/* Le tracé d'ouverture. `1000` est la longueur arbitraire de l'original :
+   plus grande que le contour, donc le trait part entièrement caché. */
+.revele .trace {
+  stroke-dasharray: 1000;
+  stroke-dashoffset: 1000;
+  animation: tracer 4s ease-in-out forwards;
+}
+
+@keyframes tracer {
+  to { stroke-dashoffset: 0; }
+}
+
+/* Une animation de 4 s au chargement n'a rien d'essentiel : qui demande moins
+   de mouvement voit le titre déjà tracé. */
+@media (prefers-reduced-motion: reduce) {
+  .revele .trace { animation: none; stroke-dashoffset: 0; }
+}
+
+/* ------------------------------------------------ bouton « métal liquide » */
+
+/* Rotation du liseré. Déclarée en `@property` pour qu'un angle soit
+   interpolable : sans typage, un navigateur anime `--angle` par bonds. */
+@property --angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+.metal {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 46px;
+  padding: 0 1.6rem;
+  border-radius: 100px;
+  text-decoration: none;
+  isolation: isolate;
+  overflow: hidden;
+  /* La pile d'ombres de l'original : un cerne net, puis quatre nappes de plus
+     en plus larges. C'est ce dégradé d'ombres qui décolle le bouton du fond. */
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.3),
+    0 36px 14px 0 rgb(0 0 0 / 0.02),
+    0 20px 12px 0 rgb(0 0 0 / 0.08),
+    0 9px 9px 0 rgb(0 0 0 / 0.12),
+    0 2px 5px 0 rgb(0 0 0 / 0.15);
+  transition: box-shadow 0.15s cubic-bezier(0.4, 0, 0.2, 1), transform 0.15s ease;
+}
+
+.metal:hover {
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.4),
+    0 12px 6px 0 rgb(0 0 0 / 0.05),
+    0 8px 5px 0 rgb(0 0 0 / 0.1),
+    0 4px 4px 0 rgb(0 0 0 / 0.15),
+    0 1px 2px 0 rgb(0 0 0 / 0.2);
+}
+
+.metal:active { transform: translateY(1px) scale(0.98); }
+
+/* Le liseré tourne, il ne signale donc rien au clavier. Sur un fond noir, un
+   contour par défaut se voit mal : celui-ci est explicite et décollé. */
+.metal:focus-visible { outline: 2px solid #d6d6d6; outline-offset: 3px; }
+
+/* Le liseré. L'original le peint par un shader WebGL ; ici c'est un dégradé
+   conique en rotation, dont les arrêts serrés font les reflets d'un métal
+   brossé. Il occupe tout le bouton et n'en dépasse que de deux pixels, la
+   pastille noire recouvrant le reste. */
+.metal-liseré {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  background: conic-gradient(
+    from var(--angle),
+    #4a4a4a, #cfcfcf, #6f6f6f, #ffffff, #8a8a8a,
+    #3d3d3d, #b9c3cc, #5a5a5a, #e8e8e8, #4a4a4a
+  );
+  animation: tourner 6s linear infinite;
+}
+
+.metal:hover .metal-liseré { animation-duration: 3.6s; }
+.metal:active .metal-liseré { animation-duration: 1.5s; }
+
+@keyframes tourner {
+  to { --angle: 360deg; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .metal-liseré { animation: none; }
+}
+
+/* La pastille : deux pixels à l'intérieur du liseré, d'où le `inset`. */
+.metal-fond {
+  position: absolute;
+  inset: 2px;
+  z-index: 2;
+  border-radius: 100px;
+  background: linear-gradient(180deg, #202020 0%, #000000 100%);
+  transition: box-shadow 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.metal:active .metal-fond {
+  box-shadow: inset 0 2px 4px rgb(0 0 0 / 0.4), inset 0 1px 2px rgb(0 0 0 / 0.3);
+}
+
+.metal-texte {
+  position: relative;
+  z-index: 3;
+  font-size: 14px;
+  font-weight: 400;
+  color: #8a8a8a;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 0.5);
+  white-space: nowrap;
+  transition: color 0.3s;
+}
+
+.metal:hover .metal-texte { color: #d6d6d6; }
+
+/* L'onde au clic, partant du point touché. */
+.metal-onde {
+  position: absolute;
+  left: var(--x);
+  top: var(--y);
+  z-index: 3;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 0.35);
+  pointer-events: none;
+  animation: onde 0.6s ease-out forwards;
+}
+
+@keyframes onde {
+  from { transform: translate(-50%, -50%) scale(0); opacity: 0.6; }
+  to { transform: translate(-50%, -50%) scale(4); opacity: 0; }
+}
 
 /* ----------------------------------------------------------------- barre */
 

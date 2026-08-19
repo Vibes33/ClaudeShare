@@ -13,6 +13,7 @@
 
 import { ClientMessage, ServerMessage, EventType, Capability, frame } from "./protocol.js";
 import { renderMarkdown, elem, replace } from "./render.js";
+import { monterConnexion } from "./login.js";
 
 //: Repli de reconnexion. Croît jusqu'à ce plafond pour ne pas marteler un
 //: serveur qui redémarre, tout en restant assez court pour qu'un réveil de
@@ -61,6 +62,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   for (const id of [
     "app", "login", "providers", "rooms", "room", "title", "status", "who",
     "transcript", "composer", "prompt", "send", "floor", "requests", "presence", "host", "code",
+    "titre-connexion",
     "approvals", "toasts", "actions",
   ]) {
     dom[id] = document.getElementById(id);
@@ -127,14 +129,7 @@ async function afficherConnexion() {
   dom.app.hidden = true;
   dom.login.hidden = false;
   const { providers } = (await json("/auth/providers")) || { providers: [] };
-  replace(
-    dom.providers,
-    ...providers.map((p) => {
-      const a = elem("a", "bouton", `Se connecter avec ${p}`);
-      a.href = `/auth/${p}`;
-      return a;
-    }),
-  );
+  monterConnexion({ titre: dom["titre-connexion"], providers: dom.providers }, providers, "Share");
   if (!providers.length) {
     dom.providers.appendChild(
       elem("p", "vide", "Aucun fournisseur OAuth n'est configuré sur ce serveur."),

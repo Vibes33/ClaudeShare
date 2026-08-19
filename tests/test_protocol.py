@@ -99,7 +99,12 @@ def test_les_imports_pointent_sur_des_exports_reels():
         source = code(module)
         for noms, cible in IMPORT.findall(source):
             exportes = set(EXPORT.findall(code(STATIC / cible)))
-            demandes = {n.strip() for n in noms.split(",") if n.strip()}
+            # `x as y` est un import valide : c'est `x` qui doit exister à la
+            # source. Sans ce découpage, le garde-fou refuserait du code correct
+            # — et l'issue serait de renoncer aux alias pour lui plaire.
+            demandes = {
+                n.strip().split(" as ")[0].strip() for n in noms.split(",") if n.strip()
+            }
             manquants = demandes - exportes
             assert not manquants, f"{module.name} importe de {cible} : {sorted(manquants)}"
 

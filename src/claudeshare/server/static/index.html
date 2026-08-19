@@ -27,9 +27,11 @@
 </head>
 <body>
 
+<!-- L'écran de connexion est peint par `login.js` : le titre est un SVG à trois
+     calques, que seul du code peut assembler. Les conteneurs sont ici pour que
+     la mise en page existe avant le premier rendu. -->
 <section id="login" hidden>
-  <h1>ClaudeShare</h1>
-  <p>Une session Claude Code partagée. Connectez-vous pour rejoindre vos salons.</p>
+  <div id="titre-connexion"></div>
   <div id="providers"></div>
 </section>
 
