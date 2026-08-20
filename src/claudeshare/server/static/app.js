@@ -2698,36 +2698,63 @@ function ligneMembre(membre, gere) {
   }
   li.appendChild(etiquettes);
 
-  if (gere && !soi) {
-    menu(identite, (panneau, fermer) => panneauMembre(panneau, fermer, membre),
-         { classe: "popover" });
-  } else {
-    identite.disabled = true;
-  }
+  // Cliquable pour tout le monde, y compris soi-même. Le désactiver sur sa
+  // propre ligne rendait la fonction invisible dans un salon où l'on est seul :
+  // il n'y avait alors personne sur qui cliquer, et rien ne disait pourquoi.
+  // C'est le **contenu** du panneau qui s'adapte, pas la possibilité de l'ouvrir.
+  menu(identite, (panneau, fermer) => panneauMembre(panneau, fermer, membre, gere, soi),
+       { classe: "popover" });
   return li;
 }
 
 /**
  * Le panneau d'une personne : ses rôles, puis ce qu'on peut lui faire.
  *
+ * Trois formes selon qui regarde qui. Sur soi-même, les rôles se règlent — le
+ * serveur refuse ce qui doit l'être, à commencer par se retirer d'un salon dont
+ * on est le dernier propriétaire — mais l'expulsion et l'exclusion ne sont pas
+ * proposées : la seconde est refusée par l'API, et la première est un départ,
+ * pas un geste d'administration.
+ *
  * Les actions sont en bas et séparées par un filet : expulser et exclure ne se
  * défont pas d'un clic, et les poser au milieu des rôles — qui se cochent et se
  * décochent sans conséquence — les rendrait trop faciles à atteindre.
  */
-function panneauMembre(panneau, fermer, membre) {
+function panneauMembre(panneau, fermer, membre, gere, soi) {
   const tete = elem("div", "menu-tete");
   tete.append(
     vignette({ label: membre.label, avatar_url: null }, "vignette grande"),
-    elem("span", "menu-nom", membre.label),
+    elem("span", "menu-nom", soi ? `${membre.label} (vous)` : membre.label),
     elem("span", "menu-handle", `@${membre.handle}`),
   );
   panneau.append(tete, elem("hr", "menu-trait"));
+
+  if (!gere) {
+    // Sans le droit de gérer les membres, le panneau reste utile : il dit ce
+    // que la personne porte. Le griser aurait été moins clair que le montrer.
+    panneau.appendChild(elem("div", "menu-titre", "Rôles"));
+    panneau.appendChild(rolesPortes(membre));
+    panneau.appendChild(
+      elem("p", "menu-note", "Il faut « Gérer les membres » pour les changer."),
+    );
+    return;
+  }
 
   panneau.appendChild(elem("div", "menu-titre", "Rôle principal"));
   panneau.appendChild(selecteurRole(membre));
 
   panneau.appendChild(elem("div", "menu-titre", "Rôles supplémentaires"));
   panneau.appendChild(listeRoles(membre));
+
+  if (soi) {
+    panneau.append(
+      elem("hr", "menu-trait"),
+      elem("p", "menu-note",
+        "On ne s'exclut pas soi-même, et un salon garde toujours au moins un "
+        + "propriétaire."),
+    );
+    return;
+  }
 
   panneau.append(elem("hr", "menu-trait"));
   panneau.append(
@@ -2739,6 +2766,22 @@ function panneauMembre(panneau, fermer, membre) {
       onClick: () => { fermer(); demanderExclusion(membre); },
     }),
   );
+}
+
+/** Les rôles portés, en lecture seule. */
+function rolesPortes(membre) {
+  const boite = elem("div", "listbox");
+  for (const nom of [membre.role, ...(membre.extra_roles || [])]) {
+    const el = elem("div", "listbox-item fige");
+    el.append(
+      elem("span", "listbox-marque", "✓"),
+      replace(elem("span", "listbox-texte"),
+        elem("span", "listbox-nom", nom),
+        elem("span", "listbox-detail", nom === membre.role ? "principal" : "supplément")),
+    );
+    boite.appendChild(el);
+  }
+  return boite;
 }
 
 /**
