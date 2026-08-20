@@ -363,11 +363,10 @@ def create_app(
 
             # Résolu dans la session déjà ouverte : en ouvrir une seconde ici
             # imbriquerait deux transactions SQLite sur le même moteur.
-            from ..core.permissions import resolve
-            from ..db.models import Role
+            from .authz import effective
 
             membership = membership_of(session, room_id, principal.user_id)
-            if not resolve(session.get(Role, membership.role_id), membership):
+            if not effective(session, membership):
                 await websocket.close(code=4403)  # membre sans aucun droit
                 return
 
@@ -553,15 +552,14 @@ def _capabilities_of(ctx: ServerContext, room_id: str, user_id: str) -> frozense
     Aucun cache : c'est ce qui rend la révocation immédiate. Le coût est une
     requête indexée par intention, négligeable devant un tour de modèle.
     """
-    from ..core.permissions import resolve
-    from ..db.models import Role
+    from .authz import effective
     from .auth.identity import membership_of
 
     with ctx.db.session() as session:
         membership = membership_of(session, room_id, user_id)
         if membership is None:
             return frozenset()
-        return resolve(session.get(Role, membership.role_id), membership)
+        return effective(session, membership)
 
 
 def _priority_of(ctx: ServerContext, room_id: str, user_id: str) -> int:

@@ -188,3 +188,35 @@ def test_declarer_une_base_anterieure_puis_la_migrer(tmp_path: Path):
 
     assert current(url) == head()
     assert Database(url, schema=Schema.NONE) is not None
+
+
+def test_les_migrations_recentes_supportent_un_schema_deja_cree(tmp_path):
+    """Le cas qui coince en local, et dont on ne sort pas tout seul.
+
+    Le schéma local vient de `create_all`, qui crée les **tables** manquantes
+    mais n'ajoute jamais de colonne. Une base locale mise à jour a donc déjà la
+    table `room_bans` — créée au démarrage — sans avoir
+    `memberships.extra_role_ids`. Le garde-fou de schéma renvoie alors vers
+    `claudeshare migrate` ; si celui-ci échoue sur une table déjà là, la
+    personne se retrouve devant deux outils qui se renvoient l'un à l'autre.
+    """
+    from sqlalchemy import create_engine, inspect
+
+    from alembic import command
+
+    from claudeshare.db.migrate import alembic_config, upgrade
+    from claudeshare.db.models import Base
+
+    url = f"sqlite:///{tmp_path / 'mixte.db'}"
+    moteur = create_engine(url)
+    # Tout le schéma d'aujourd'hui, sauf qu'Alembic n'en sait rien…
+    Base.metadata.create_all(moteur)
+    # …et la base se croit à une révision antérieure aux deux dernières.
+    command.stamp(alembic_config(url), "0006_room_chat")
+
+    upgrade(url)
+
+    colonnes = {c["name"] for c in inspect(moteur).get_columns("memberships")}
+    assert "extra_role_ids" in colonnes
+    assert inspect(moteur).has_table("room_bans")
+    moteur.dispose()

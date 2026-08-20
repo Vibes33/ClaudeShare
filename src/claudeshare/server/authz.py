@@ -75,7 +75,7 @@ def room_access(
         raise HTTPException(404, "salon inconnu")
 
     role = session.get(Role, membership.role_id)
-    capabilities = resolve(role, membership)
+    capabilities = effective(session, membership)
 
     if capability is not None:
         try:
@@ -86,6 +86,34 @@ def room_access(
     return RoomAccess(
         principal=principal, membership=membership, role=role, capabilities=capabilities
     )
+
+
+def roles_of(session: Session, membership: Membership) -> tuple[Role, list[Role]]:
+    """(rôle principal, rôles supplémentaires) d'une appartenance.
+
+    Les identifiants inconnus sont ignorés plutôt que d'échouer : un rôle
+    supprimé alors que quelqu'un le portait laisserait sinon cette personne
+    incapable d'ouvrir le salon, pour une ligne périmée qu'elle n'a pas écrite.
+    """
+    principal = session.get(Role, membership.role_id)
+    extras = [
+        role
+        for rid in (membership.extra_role_ids or ())
+        if (role := session.get(Role, rid)) is not None and role.room_id == membership.room_id
+    ]
+    return principal, extras
+
+
+def effective(session: Session, membership: Membership) -> frozenset[str]:
+    """Droits réels d'un membre, rôles supplémentaires compris.
+
+    **Le point de passage unique.** `resolve()` est pur et prend les rôles qu'on
+    lui donne ; appelé directement avec le seul rôle principal, il oublierait
+    les autres et refuserait des actions permises. Tout ce qui a une session
+    passe donc par ici.
+    """
+    principal, extras = roles_of(session, membership)
+    return resolve(principal, membership, extras)
 
 
 def owner_count(session: Session, room_id: str) -> int:

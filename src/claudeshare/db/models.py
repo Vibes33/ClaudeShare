@@ -146,7 +146,19 @@ class Membership(Base):
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: _uid("mbr"))
     room_id: Mapped[str] = mapped_column(ForeignKey("rooms.id", ondelete="CASCADE"))
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    #: Rôle **principal**. Il ancre deux choses que des rôles multiples
+    #: rendraient ambiguës : qui est propriétaire du salon — donc le compte
+    #: qu'on refuse de faire tomber à zéro — et ce que l'interface affiche en
+    #: premier. Les autres rôles s'ajoutent par-dessus.
     role_id: Mapped[str] = mapped_column(ForeignKey("roles.id"))
+    #: Rôles supplémentaires, par identifiant. Leurs capacités s'unissent à
+    #: celles du rôle principal, avant les ajustements individuels.
+    #:
+    #: Une liste JSON plutôt qu'une table de liaison : on ne cherche jamais
+    #: « qui porte ce rôle » autrement qu'en parcourant les membres d'un salon,
+    #: et une table de plus pour une liste de trois éléments lus avec leur
+    #: appartenance coûterait une jointure à chaque vérification de droit.
+    extra_role_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
     #: Ajustements individuels, appliqués par-dessus le rôle (étape 5).
     grants: Mapped[list[str]] = mapped_column(JSON, default=list)
     revokes: Mapped[list[str]] = mapped_column(JSON, default=list)

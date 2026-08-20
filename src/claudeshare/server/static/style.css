@@ -948,6 +948,65 @@ select.saisie { flex: 0 0 auto; }
 .membre-role { color: var(--doux); font-size: 0.78rem; font-family: var(--mono); }
 .membre .bouton { margin-left: 0; }
 
+/* La personne est un bouton : tout ce qui la concerne s'ouvre d'un clic
+   dessus, plutôt que de s'étaler sur sa ligne. */
+.membre-identite {
+  flex: 1; min-width: 9rem;
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.2rem 0.3rem; margin: -0.2rem -0.3rem;
+  font: inherit; text-align: left; color: inherit;
+  background: none; border: none; border-radius: 8px; cursor: pointer;
+}
+.membre-identite:hover:not(:disabled) { background: rgb(255 255 255 / 0.05); }
+.membre-identite:disabled { cursor: default; }
+.membre-identite:focus-visible { outline: 2px solid rgb(255 255 255 / 0.4); outline-offset: 2px; }
+
+.membre-roles { display: flex; flex-wrap: wrap; gap: 0.3rem; justify-content: flex-end; }
+.puce-role {
+  padding: 0.12rem 0.5rem; border-radius: 100px;
+  font-size: 0.72rem; font-family: var(--mono);
+  color: var(--doux); background: rgb(255 255 255 / 0.05);
+  border: 1px solid var(--verre-bord);
+}
+/* Le rôle principal se distingue des suppléments : c'est lui qui décide de la
+   propriété du salon, les autres ne font qu'ajouter. */
+.puce-role.principale { color: var(--texte); border-color: rgb(255 255 255 / 0.22); }
+
+/* --- le panneau d'une personne ------------------------------------------ */
+
+.menu.popover { width: min(22rem, calc(100vw - 2rem)); padding: 0.5rem; }
+.menu.popover .menu-tete { padding: 0.3rem 0.4rem 0.5rem; }
+
+/* La liste des rôles cumulables. Bornée en hauteur : au-delà d'une dizaine, le
+   panneau dépasserait la fenêtre et ses dernières entrées seraient hors de
+   portée. */
+.listbox {
+  max-height: 13rem; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 0.1rem;
+  padding: 0.15rem;
+  border: 1px solid var(--verre-bord); border-radius: 10px;
+  background: rgb(0 0 0 / 0.25);
+}
+.listbox .vide { padding: 0.5rem 0.6rem; font-size: 0.8rem; }
+.listbox-item {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.4rem 0.5rem; border-radius: 7px;
+  font: inherit; font-size: 0.84rem; text-align: left;
+  color: var(--doux); background: none; border: none; cursor: pointer;
+}
+.listbox-item:hover { color: var(--texte); background: rgb(255 255 255 / 0.06); }
+.listbox-item.coche { color: var(--texte); }
+.listbox-item:focus-visible { outline: 2px solid rgb(255 255 255 / 0.4); outline-offset: -2px; }
+/* La marque garde sa place même vide : sans largeur fixe, cocher une entrée
+   décalerait tout son texte d'un cran. */
+.listbox-marque { flex: 0 0 1rem; color: var(--accent); font-size: 0.9rem; }
+.listbox-texte { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 0.5rem; }
+.listbox-nom { font-family: var(--mono); font-size: 0.82rem; }
+.listbox-detail { margin-left: auto; color: var(--doux); font-size: 0.72rem; }
+
+.droit.fige { cursor: default; opacity: 0.65; }
+.droit.fige:hover { background: none; }
+
 .demandes { margin: 0; padding-left: 1.2rem; font-size: 0.88rem; }
 .demandes li { margin-bottom: 0.4rem; }
 .demandes .moi { font-weight: 600; }

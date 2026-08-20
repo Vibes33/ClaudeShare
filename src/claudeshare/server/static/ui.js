@@ -198,7 +198,7 @@ export function avecBulle(cible, titre, contenu) {
  * `contenu` reçoit le panneau et le referme : c'est l'appelant qui décide de ce
  * qu'on y met, ce module ne décide que du comportement.
  */
-export function menu(declencheur, contenu) {
+export function menu(declencheur, contenu, { classe = "" } = {}) {
   let panneau = null;
 
   const fermer = () => {
@@ -220,7 +220,7 @@ export function menu(declencheur, contenu) {
   };
 
   const ouvrir = () => {
-    panneau = elem("div", "menu");
+    panneau = elem("div", `menu ${classe}`);
     contenu(panneau, fermer);
     document.body.appendChild(panneau);
     declencheur.setAttribute("aria-expanded", "true");

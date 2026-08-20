@@ -223,6 +223,11 @@ const COTE_MIN = { l: 420, h: 300 };
 const COTE_MARGE = 24;
 const COTE_TAILLE = "claudeshare.cote";
 
+//: Taille d'ouverture, quand rien n'a encore été choisi. Assez large pour que
+//: la colonne des sections et une liste de membres cohabitent sans que rien ne
+//: se tronque, assez basse pour tenir sur un portable.
+const COTE_DEFAUT = { l: 1024, h: 608 };
+
 function tailleCote() {
   try {
     const lu = JSON.parse(localStorage.getItem(COTE_TAILLE) || "null");
@@ -230,7 +235,7 @@ function tailleCote() {
   } catch {
     /* rien : on repartira de la taille par défaut. */
   }
-  return null;
+  return COTE_DEFAUT;
 }
 
 /**
@@ -2647,41 +2652,159 @@ function vueMembres() {
 
   const liste = elem("div", "membres");
   for (const membre of state.membres) {
-    const li = elem("div", "membre");
-    li.appendChild(
-      vignette({ label: membre.label, avatar_url: null }, "vignette petite"),
-    );
-    const nom = elem("div", "membre-nom");
-    nom.append(
-      elem("strong", "", membre.label),
-      elem("span", "membre-handle", `@${membre.handle}`),
-    );
-    li.appendChild(nom);
-
-    const soi = membre.user_id === state.me.user_id;
-    if (gere && !soi) {
-      li.appendChild(selecteurRole(membre));
-      li.appendChild(
-        bouton("Expulser", { ton: "discret", onClick: () => expulser(membre) }),
-      );
-      li.appendChild(
-        bouton("Exclure", { ton: "danger", onClick: () => demanderExclusion(membre) }),
-      );
-    } else {
-      li.appendChild(elem("span", "membre-role", membre.role));
-    }
-    liste.appendChild(li);
+    liste.appendChild(ligneMembre(membre, gere));
   }
   cadre.appendChild(bloc("", liste));
 
   if (gere) {
     cadre.appendChild(
       elem("p", "cote-aide",
-        "Expulser retire du salon ; la personne peut revenir avec le code. "
+        "Cliquez sur quelqu'un pour ses rôles et les actions qui le concernent. "
+        + "Expulser retire du salon ; la personne peut revenir avec le code. "
         + "Exclure ferme aussi cette porte — voir « Exclusions »."),
     );
   }
   return cadre;
+}
+
+/**
+ * Une personne, et tout ce qui la concerne derrière un seul clic.
+ *
+ * Les rôles et les sanctions vivaient sur la ligne : trois contrôles par
+ * personne, et la ligne devenait illisible dès qu'on en cumulait. Ils passent
+ * dans un panneau attaché à la personne — on ne peut alors plus se tromper de
+ * cible, ce qui est la faute la plus coûteuse de cet écran.
+ */
+function ligneMembre(membre, gere) {
+  const li = elem("div", "membre");
+  const soi = membre.user_id === state.me.user_id;
+
+  const identite = elem("button", "membre-identite");
+  identite.type = "button";
+  identite.append(
+    vignette({ label: membre.label, avatar_url: null }, "vignette petite"),
+    replace(elem("div", "membre-nom"),
+      elem("strong", "", membre.label),
+      elem("span", "membre-handle", `@${membre.handle}`)),
+  );
+  li.appendChild(identite);
+
+  // Les rôles portés, principal puis suppléments. Les montrer sur la ligne
+  // évite d'ouvrir le panneau juste pour savoir qui est quoi.
+  const etiquettes = elem("div", "membre-roles");
+  etiquettes.appendChild(elem("span", "puce-role principale", membre.role));
+  for (const nom of membre.extra_roles || []) {
+    etiquettes.appendChild(elem("span", "puce-role", nom));
+  }
+  li.appendChild(etiquettes);
+
+  if (gere && !soi) {
+    menu(identite, (panneau, fermer) => panneauMembre(panneau, fermer, membre),
+         { classe: "popover" });
+  } else {
+    identite.disabled = true;
+  }
+  return li;
+}
+
+/**
+ * Le panneau d'une personne : ses rôles, puis ce qu'on peut lui faire.
+ *
+ * Les actions sont en bas et séparées par un filet : expulser et exclure ne se
+ * défont pas d'un clic, et les poser au milieu des rôles — qui se cochent et se
+ * décochent sans conséquence — les rendrait trop faciles à atteindre.
+ */
+function panneauMembre(panneau, fermer, membre) {
+  const tete = elem("div", "menu-tete");
+  tete.append(
+    vignette({ label: membre.label, avatar_url: null }, "vignette grande"),
+    elem("span", "menu-nom", membre.label),
+    elem("span", "menu-handle", `@${membre.handle}`),
+  );
+  panneau.append(tete, elem("hr", "menu-trait"));
+
+  panneau.appendChild(elem("div", "menu-titre", "Rôle principal"));
+  panneau.appendChild(selecteurRole(membre));
+
+  panneau.appendChild(elem("div", "menu-titre", "Rôles supplémentaires"));
+  panneau.appendChild(listeRoles(membre));
+
+  panneau.append(elem("hr", "menu-trait"));
+  panneau.append(
+    entreeMenu("Expulser du salon", {
+      onClick: () => { fermer(); expulser(membre); },
+    }),
+    entreeMenu("Exclure…", {
+      ton: "danger",
+      onClick: () => { fermer(); demanderExclusion(membre); },
+    }),
+  );
+}
+
+/**
+ * La liste des rôles cumulables, cochables une par une.
+ *
+ * Elle se redessine **sur place** après chaque changement : passer par le
+ * redessin du panneau refermerait le popover, et attribuer trois rôles
+ * demanderait alors trois allers-retours.
+ */
+function listeRoles(membre) {
+  const boite = elem("div", "listbox");
+  const portes = new Set(membre.extra_roles || []);
+
+  const peindre = () => {
+    replace(boite);
+    // Le rôle principal n'est pas cumulable avec lui-même, et « proprietaire »
+    // ne s'ajoute jamais en second : c'est le rôle principal qui désigne les
+    // propriétaires du salon.
+    const cumulables = state.roles.filter(
+      (r) => r.name !== membre.role && r.name !== "proprietaire",
+    );
+    if (!cumulables.length) {
+      boite.appendChild(elem("p", "vide", "Aucun autre rôle à ajouter."));
+      return;
+    }
+    for (const role of cumulables) {
+      const actif = portes.has(role.name);
+      const el = elem("button", `listbox-item${actif ? " coche" : ""}`);
+      el.type = "button";
+      el.append(
+        elem("span", "listbox-marque", actif ? "✓" : ""),
+        replace(elem("span", "listbox-texte"),
+          elem("span", "listbox-nom", role.name),
+          elem("span", "listbox-detail", detailRole(role))),
+      );
+      el.addEventListener("click", async () => {
+        const voulus = new Set(portes);
+        if (actif) voulus.delete(role.name);
+        else voulus.add(role.name);
+        const reponse = await post(
+          `/api/rooms/${state.roomId}/members/${membre.user_id}`,
+          { extra_roles: [...voulus] },
+          "PATCH",
+        );
+        if (!reponse.ok) return toast(motif(reponse));
+        // On recopie ce que le serveur a retenu, pas ce qu'on lui a demandé :
+        // il retire le rôle principal des suppléments, et l'ignorer ferait
+        // diverger l'affichage de la réalité au premier doublon.
+        membre.extra_roles = reponse.data.extra_roles;
+        membre.capabilities = reponse.data.capabilities;
+        portes.clear();
+        for (const nom of membre.extra_roles) portes.add(nom);
+        peindre();
+        chargerAdministration();
+      });
+      boite.appendChild(el);
+    }
+  };
+  peindre();
+  return boite;
+}
+
+/** Ce qu'un rôle apporte, en une ligne. */
+function detailRole(role) {
+  const n = (role.capabilities || []).length;
+  return n === 1 ? "1 droit" : `${n} droits`;
 }
 
 /** Le rôle d'une personne, changeable sur sa ligne. */
@@ -2709,6 +2832,7 @@ function selecteurRole(membre) {
       return toast(motif(reponse));
     }
     toast(`${membre.label} est maintenant ${choix.value}.`);
+    membre.role = choix.value;
     chargerAdministration();
   });
   return choix;
@@ -2791,20 +2915,37 @@ function editeurRole(role) {
   if (!neuf && role.builtin) tete.appendChild(elem("span", "role-marque", "d'origine"));
   el.appendChild(tete);
 
+  // Un rôle livré d'origine ne se modifie pas : c'est un socle commun, et le
+  // retoucher ferait que « lecteur » ne voudrait plus dire la même chose d'un
+  // salon à l'autre. Ses cases sont donc désactivées plutôt que cochables pour
+  // rien — une case qu'on décoche et qui revient au chargement suivant se lit
+  // comme une panne.
+  const fige = !neuf && role.builtin;
+
   const cases = elem("div", "droits");
   const coches = new Set(neuf ? [String(Capability.READ), String(Capability.CHAT)]
                               : role.capabilities || []);
   for (const cap of state.capacites) {
-    const etiquette = elem("label", "droit");
+    const etiquette = elem("label", `droit${fige ? " fige" : ""}`);
     const boite = elem("input", "");
     boite.type = "checkbox";
     boite.value = cap.name;
     boite.checked = coches.has(cap.name);
+    boite.disabled = fige;
     etiquette.append(boite, elem("span", "droit-nom", cap.label || cap.name));
     if (cap.description) etiquette.title = cap.description;
     cases.appendChild(etiquette);
   }
   el.appendChild(cases);
+
+  if (fige) {
+    el.appendChild(
+      elem("p", "cote-aide",
+        "Rôle livré d'origine : ses droits sont fixes. Pour un besoin "
+        + "particulier, créez un rôle et attribuez-le en plus."),
+    );
+    return el;
+  }
 
   const choisies = () =>
     [...cases.querySelectorAll("input:checked")].map((b) => b.value);
@@ -2829,32 +2970,34 @@ function editeurRole(role) {
     actions.appendChild(
       boutonChargement("Enregistrer", {
         onClick: async () => {
+          const titre = nom.value.trim();
+          if (!titre) return nom.focus();
+          // Le nom voyage avec : l'API remplace le rôle entier, et l'omettre
+          // ferait rejeter la requête pour un champ qu'on n'a pas touché.
           const reponse = await post(
             `/api/rooms/${state.roomId}/roles/${role.id}`,
-            { capabilities: choisies() },
+            { name: titre, capabilities: choisies() },
             "PATCH",
           );
           if (!reponse.ok) return toast(motif(reponse));
-          toast(`Rôle « ${role.name} » enregistré.`);
+          toast(`Rôle « ${titre} » enregistré.`);
           chargerAdministration();
         },
       }),
     );
-    if (!role.builtin) {
-      actions.appendChild(
-        bouton("Supprimer", {
-          ton: "danger",
-          onClick: async () => {
-            if (!confirm(`Supprimer le rôle « ${role.name} » ?`)) return;
-            const res = await fetch(`/api/rooms/${state.roomId}/roles/${role.id}`, {
-              method: "DELETE",
-            });
-            if (!res.ok) return toast("Suppression refusée — il est peut-être encore porté.");
-            chargerAdministration();
-          },
-        }),
-      );
-    }
+    actions.appendChild(
+      bouton("Supprimer", {
+        ton: "danger",
+        onClick: async () => {
+          if (!confirm(`Supprimer le rôle « ${role.name} » ?`)) return;
+          const res = await fetch(`/api/rooms/${state.roomId}/roles/${role.id}`, {
+            method: "DELETE",
+          });
+          if (!res.ok) return toast("Suppression refusée — il est peut-être encore porté.");
+          chargerAdministration();
+        },
+      }),
+    );
   }
   el.appendChild(actions);
   return el;

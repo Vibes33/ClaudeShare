@@ -23,6 +23,15 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    # Idempotente, et ce n'est pas de la coquetterie. En local, le schéma vient
+    # de `create_all`, qui crée les **tables** manquantes mais n'ajoute jamais de
+    # colonne. Une base locale mise à jour a donc déjà `room_bans` — créée au
+    # démarrage — mais pas `memberships.extra_role_ids`. Le garde-fou de schéma
+    # renvoie alors vers `claudeshare migrate`, qui échouerait ici sur une table
+    # déjà là, et laisserait la personne sans issue.
+    if sa.inspect(op.get_bind()).has_table("room_bans"):
+        return
+
     op.create_table(
         "room_bans",
         sa.Column("id", sa.String(40), primary_key=True),
@@ -57,5 +66,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if not sa.inspect(op.get_bind()).has_table("room_bans"):
+        return
     op.drop_index("ix_room_bans_room_id", table_name="room_bans")
     op.drop_table("room_bans")

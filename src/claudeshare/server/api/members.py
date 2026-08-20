@@ -11,12 +11,15 @@ from sqlalchemy import select
 from ...core.capabilities import OWNER_ROLE, Capability
 from ...core.permissions import Escalation, guard_authority, guard_delegation, resolve
 from ...db.models import Membership, Role, User
-from ..authz import owner_count, requires, room_access
+from ..authz import effective, owner_count, requires, roles_of, room_access
 from ..deps import require_principal
 
 
 class MemberUpdate(BaseModel):
     role: str | None = Field(default=None, max_length=64)
+    #: Rôles supplémentaires, par **nom**. Remplacent la liste entière : un
+    #: `PATCH` qui ajouterait ne permettrait jamais d'en retirer un.
+    extra_roles: list[str] | None = None
     #: Capacités accordées ou retirées à cette personne, par-dessus son rôle.
     grants: list[str] | None = None
     revokes: list[str] | None = None
@@ -24,16 +27,30 @@ class MemberUpdate(BaseModel):
     priority: int | None = Field(default=None, ge=-100, le=100)
 
 
-def member_view(membership: Membership, role: Role, user: User) -> dict[str, Any]:
+def member_view(
+    session, membership: Membership, role: Role, user: User
+) -> dict[str, Any]:
+    """Ce qu'une interface affiche d'un membre.
+
+    La session est prise en paramètre — plutôt que de calculer les droits chez
+    l'appelant — pour que les rôles supplémentaires soient toujours résolus. Un
+    appelant qui l'oublierait afficherait des droits qui ne sont pas ceux
+    appliqués, et un bouton grisé sans raison est pire qu'un bouton refusé.
+    """
+    _, extras = roles_of(session, membership)
     return {
         "user_id": user.id,
         "handle": user.handle,
         "label": user.label,
         "role": role.name,
+        #: Les rôles supplémentaires, par nom : c'est ce que l'interface montre,
+        #: et l'identifiant ne lui apprendrait rien.
+        "extra_roles": [r.name for r in extras],
+        "extra_role_ids": [r.id for r in extras],
         "grants": list(membership.grants or ()),
         "revokes": list(membership.revokes or ()),
         "priority": membership.priority,
-        "capabilities": sorted(resolve(role, membership)),
+        "capabilities": sorted(effective(session, membership)),
     }
 
 
@@ -47,6 +64,39 @@ def _guard(regle, mine, autres) -> None:
         regle(mine, autres)
     except Escalation as exc:
         raise HTTPException(403, str(exc)) from None
+
+
+def _resoudre_extras(
+    session, room_id: str, noms: list[str], principal: Role
+) -> list[str]:
+    """Traduit des noms de rôles en identifiants, en refusant ce qui n'a pas lieu.
+
+    Deux refus, et le second mérite d'être expliqué. Le rôle **propriétaire** ne
+    peut pas être un rôle supplémentaire : c'est le rôle principal qui décide
+    qui possède le salon, et donc le compte qu'on refuse de faire tomber à zéro.
+    L'autoriser en second rôle donnerait quelqu'un aux pleins pouvoirs sans
+    qu'il compte parmi les propriétaires — un salon pourrait alors se retrouver
+    sans propriétaire déclaré tout en ayant un administrateur de fait.
+    """
+    if not noms:
+        return []
+
+    voulus = sorted(set(noms))
+    if OWNER_ROLE in voulus:
+        raise HTTPException(
+            409,
+            f"« {OWNER_ROLE} » ne s'ajoute pas en second rôle — c'est le rôle "
+            "principal qui désigne les propriétaires du salon",
+        )
+
+    roles = {
+        r.name: r
+        for r in session.scalars(select(Role).where(Role.room_id == room_id))
+    }
+    if inconnus := [n for n in voulus if n not in roles]:
+        raise HTTPException(404, f"rôles inconnus : {', '.join(inconnus)}")
+    # Le rôle principal en double n'ajouterait rien et se lirait deux fois.
+    return [roles[n].id for n in voulus if roles[n].id != principal.id]
 
 
 def _validate_capabilities(values: list[str] | None) -> list[str]:
@@ -80,7 +130,7 @@ def build_members_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
                 .where(Membership.room_id == room_id)
                 .order_by(User.handle)
             ).all()
-            return [member_view(m, r, u) for m, r, u in rows]
+            return [member_view(session, m, r, u) for m, r, u in rows]
 
     @router.patch("/{user_id}")
     @requires(Capability.MEMBERS_MANAGE)
@@ -100,7 +150,7 @@ def build_members_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
                 raise HTTPException(404, "membre inconnu")
 
             current_role = session.get(Role, membership.role_id)
-            avant = resolve(current_role, membership)
+            avant = effective(session, membership)
             _guard(guard_authority, access.capabilities, avant)
 
             if payload.role is not None:
@@ -120,6 +170,11 @@ def build_members_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
                 membership.role_id = nouveau.id
                 current_role = nouveau
 
+            if payload.extra_roles is not None:
+                membership.extra_role_ids = _resoudre_extras(
+                    session, room_id, payload.extra_roles, current_role
+                )
+
             if payload.grants is not None:
                 membership.grants = _validate_capabilities(payload.grants)
             if payload.revokes is not None:
@@ -128,13 +183,13 @@ def build_members_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
                 membership.priority = payload.priority
 
             session.flush()
-            apres = resolve(current_role, membership)
+            apres = effective(session, membership)
             # Sur le **résultat**, pas sur le rôle demandé : ce qui compte est
             # l'état dans lequel on laisse la personne, `grants` compris.
             _guard(guard_delegation, access.capabilities, apres)
 
             user = session.get(User, user_id)
-            view = member_view(membership, current_role, user)
+            view = member_view(session, membership, current_role, user)
             perdues = avant - apres
             handle = user.handle
 
@@ -159,7 +214,7 @@ def build_members_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
                 raise HTTPException(404, "membre inconnu")
 
             role = session.get(Role, membership.role_id)
-            _guard(guard_authority, access.capabilities, resolve(role, membership))
+            _guard(guard_authority, access.capabilities, effective(session, membership))
 
             if role.name == OWNER_ROLE and owner_count(session, room_id) <= 1:
                 raise HTTPException(

@@ -188,6 +188,7 @@ async def _announce(ctx, room_id: str, membership_id: str) -> None:
         if fresh is None:
             return
         view = member_view(
+            session,
             fresh, session.get(Role, fresh.role_id), session.get(User, fresh.user_id)
         )
     await apply_live(ctx, room_id, view["handle"], view=view)
@@ -380,7 +381,7 @@ def build_invites_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
             )
             session.add(membership)
             session.flush()
-            view = member_view(membership, role, session.get(User, demande.user_id))
+            view = member_view(session, membership, role, session.get(User, demande.user_id))
 
         await apply_live(ctx, room_id, view["handle"], view=view)
         return {"status": "approved", "member": view}
@@ -448,7 +449,7 @@ def build_redeem_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
             )
             session.add(membership)
             session.flush()
-            view = member_view(membership, role, session.get(User, principal.user_id))
+            view = member_view(session, membership, role, session.get(User, principal.user_id))
             room_id = room.id
 
         await apply_live(ctx, room_id, view["handle"], view=view)

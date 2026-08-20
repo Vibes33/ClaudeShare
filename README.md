@@ -265,7 +265,12 @@ qui anime le salon, avec de quoi trancher sur place.
   ordre : accepter démarre une session Claude sur sa machine, dans ses fichiers,
   sur son abonnement.
 - **Rôles sur mesure** : créer un rôle, cocher ses droits, l'attribuer. Les
-  droits proposés viennent du serveur, avec leur explication.
+  droits proposés viennent du serveur, avec leur explication. Les quatre rôles
+  livrés d'origine sont un socle commun et ne se modifient pas.
+- **Plusieurs rôles par personne.** Un rôle principal — qui désigne les
+  propriétaires du salon — et autant de rôles supplémentaires qu'on veut, dont
+  les droits s'unissent. Un clic sur quelqu'un ouvre tout ce qui le concerne :
+  ses rôles à cocher, et les actions d'administration.
 - **Expulser et exclure.** Expulser retire du salon ; la personne revient avec
   le code. Exclure ferme aussi cette porte — définitivement ou pour un temps —
   et la liste des exclusions garde la trace, expirées comprises.
@@ -455,6 +460,12 @@ Quatre rôles sont **recopiés en base à la création** de chaque salon, ce qui
 permet le sur-mesure par salon — et impose une migration quand une capacité
 apparaît (voir `db/migrations/versions/0006_room_chat.py`).
 
+Une personne porte un **rôle principal** et autant de **rôles supplémentaires**
+qu'on lui en donne. Les droits s'unissent : un rôle en plus ne peut qu'accorder,
+jamais retirer — ce qu'on retire se retire nommément, par `revokes`. Le rôle
+`proprietaire` ne s'ajoute jamais en second : c'est le rôle principal qui
+désigne les propriétaires, donc le compte qu'on refuse de faire tomber à zéro.
+
 | Rôle | |
 |---|---|
 | `proprietaire` | tout |
@@ -462,8 +473,10 @@ apparaît (voir `db/migrations/versions/0006_room_chat.py`).
 | `ecrivain` | lit, discute, écrit, interrompt |
 | `lecteur` | lit et discute |
 
-La résolution est `(rôle ∪ grants) − revokes`, et `core/permissions.py` interdit
-l'escalade : on ne peut pas s'accorder ce qu'on n'a pas.
+La résolution est `(rôles ∪ grants) − revokes`, et `core/permissions.py` interdit
+l'escalade : on ne peut pas s'accorder ce qu'on n'a pas. Tout ce qui a une
+session passe par `authz.effective()` — `resolve()` est pur et ne voit que les
+rôles qu'on lui donne ; l'appeler directement oublierait les suppléments.
 
 ### Les trois couches de défense de l'agent
 
@@ -635,6 +648,7 @@ qu'une relecture rate :
 | `test_attachments.py` | qu'un nom de fichier devienne un chemin ailleurs |
 | `test_stats.py` | qu'un agrégat compte les tours d'un salon qui n'est pas le vôtre |
 | `test_bans.py` | qu'un exclu rentre par le code — et qu'un modérateur exclue le propriétaire |
+| `test_roles_cumules.py` | qu'un second rôle serve de chemin détourné vers l'escalade |
 
 Après un changement de modèle :
 

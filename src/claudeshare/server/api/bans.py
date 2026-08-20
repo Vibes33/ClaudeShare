@@ -29,10 +29,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from ...core.capabilities import OWNER_ROLE, Capability
-from ...core.permissions import resolve
 from ...db.models import Membership, Role, RoomBan, User
 from ..auth.identity import ban_actif
-from ..authz import owner_count, requires, room_access
+from ..authz import effective, owner_count, requires, room_access
 from ..deps import require_principal
 from .members import _guard, apply_live
 
@@ -126,7 +125,7 @@ def build_bans_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
             # ferme la porte avant qu'il n'entre, ou après qu'il est sorti.
             if membership is not None:
                 role = session.get(Role, membership.role_id)
-                _guard(_autorite, access.capabilities, resolve(role, membership))
+                _guard(_autorite, access.capabilities, effective(session, membership))
                 if role.name == OWNER_ROLE and owner_count(session, room_id) <= 1:
                     raise HTTPException(
                         409, "impossible d'exclure le dernier propriétaire du salon"

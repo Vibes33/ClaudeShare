@@ -45,16 +45,31 @@ class Escalation(PermissionError):
         super().__init__(f"{message} : {', '.join(surplus)}")
 
 
-def resolve(role: Role, membership: Membership) -> frozenset[str]:
-    """Capacités effectives d'un membre.
+def resolve(
+    role: Role, membership: Membership, extras: Iterable[Role] = ()
+) -> frozenset[str]:
+    """Capacités effectives d'un membre : `(rôles ∪ grants) − revokes`.
+
+    `extras` porte les rôles supplémentaires. Ils s'**unissent** au rôle
+    principal — un rôle en plus ne peut donc qu'ajouter des droits, jamais en
+    retirer. C'est ce qui rend le cumul lisible : on empile des permissions, et
+    ce qu'on retire se retire nommément, par `revokes`.
 
     Le propriétaire n'est pas soumis aux `revokes` : un ajustement malheureux ne
     doit pas pouvoir enfermer dehors la personne qui administre le salon.
+
+    **Paramètre par défaut vide, et c'est délibéré.** Un appel qui oublie les
+    rôles supplémentaires sous-estime les droits de quelqu'un : il refusera une
+    action permise, ce qui se remarque et se corrige. L'inverse — un défaut qui
+    les devinerait — accorderait en silence.
     """
-    if role.name == OWNER_ROLE:
+    roles = [role, *extras]
+    if any(r.name == OWNER_ROLE for r in roles):
         return frozenset(str(c) for c in Capability)
 
-    base = set(role.capabilities or ())
+    base: set[str] = set()
+    for r in roles:
+        base |= set(r.capabilities or ())
     return frozenset((base | set(membership.grants or ())) - set(membership.revokes or ()))
 
 

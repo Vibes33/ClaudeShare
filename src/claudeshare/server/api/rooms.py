@@ -83,14 +83,13 @@ def _room_view(
 
 def _caps(session, user_id: str, room_id: str) -> frozenset[str]:
     """Droits effectifs, pour décider quels boutons l'interface propose."""
-    from ...core.permissions import resolve
-    from ...db.models import Role
     from ..auth.identity import membership_of
+    from ..authz import effective
 
     membership = membership_of(session, room_id, user_id)
     if membership is None:
         return frozenset()
-    return resolve(session.get(Role, membership.role_id), membership)
+    return effective(session, membership)
 
 
 def build_rooms_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
