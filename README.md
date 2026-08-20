@@ -276,6 +276,9 @@ qui anime le salon, avec de quoi trancher sur place.
   messages, jeton de parole.
 - **Invitations** nominatives à durée de vie, ou **code de salon** à sept
   chiffres, rotatif et désactivable.
+- **Votre activité** : jetons, tours et valeur consommés sur trente jours, avec
+  un histogramme par jour. Agrégé sur les salons dont vous êtes membre — le
+  filtre est dans la requête, pas dans l'affichage.
 
 ---
 
@@ -558,6 +561,7 @@ pour laquelle ce fichier a le droit d'exister.
 | `server/ratelimit.py` | seau à jetons |
 | `server/api/rooms.py` | lister, créer, archiver, héberger |
 | `server/api/attachments.py` | dépôt et récupération des pièces jointes |
+| `server/api/stats.py` | activité par jour, agrégée sur ses propres salons |
 | `server/api/profile.py` | nom affiché et photo |
 | `server/api/credentials.py` | dépôt de l'identifiant Anthropic |
 | `server/api/members.py` · `roles.py` · `invites.py` | qui est là, avec quels droits |
@@ -618,6 +622,7 @@ qu'une relecture rate :
 | `test_authz_coverage.py` | qu'une route de salon oublie de déclarer sa capacité |
 | `test_floor.py` · `test_floor_ws.py` | que le jeton de parole se trompe de porteur |
 | `test_attachments.py` | qu'un nom de fichier devienne un chemin ailleurs |
+| `test_stats.py` | qu'un agrégat compte les tours d'un salon qui n'est pas le vôtre |
 
 Après un changement de modèle :
 

@@ -14,7 +14,7 @@
 import { ClientMessage, ServerMessage, EventType, Capability, frame } from "./protocol.js";
 import { renderMarkdown, elem, replace, autoriserCopie } from "./render.js";
 import { monterConnexion } from "./login.js";
-import { anneau, bouton, boutonChargement, aide, menu, entreeMenu } from "./ui.js";
+import { anneau, bouton, boutonChargement, aide, histogramme, menu, entreeMenu } from "./ui.js";
 
 //: Repli de reconnexion. Croît jusqu'à ce plafond pour ne pas marteler un
 //: serveur qui redémarre, tout en restant assez court pour qu'un réveil de
@@ -55,6 +55,9 @@ const state = {
   //: Mon propre démon, tel que `/api/agent` le décrit. Distinct de `agent`
   //: ci-dessus, qui décrit l'hôte du salon regardé — ce n'est pas toujours moi.
   demon: { connected: false, base: "", rooms: [], managed: { running: false } },
+  //: Activité des salons dont on est membre, jour par jour. Chargée après
+  //: l'accueil : elle décrit le passé, rien ne dépend d'elle.
+  stats: null,
   //: L'identifiant Anthropic déposé — son empreinte, jamais le secret.
   identifiant: { present: false, storable: false, managed: false },
   approvals: new Map(),
@@ -570,6 +573,9 @@ async function rafraichir() {
   state.rooms = (await json("/api/rooms")) || state.rooms;
   state.demon = (await json("/api/agent")) || state.demon;
   state.identifiant = (await json("/api/credential")) || state.identifiant;
+  // Remise à zéro, pas relue ici : `afficherSalons` la rechargera sans faire
+  // attendre l'accueil.
+  state.stats = null;
 }
 
 // ------------------------------------------------------------------ routage
@@ -593,7 +599,19 @@ function afficherSalons() {
   fermer();
   dom.room.hidden = true;
   dom.rooms.hidden = false;
-  replace(dom.rooms, carteSalons(), carteEntrer(), carteAgent());
+  replace(dom.rooms, carteSalons(), carteEntrer(), carteAgent(), carteStats());
+  // Chargée à part, et sans faire attendre le reste : l'accueil doit s'afficher
+  // même si l'agrégat est lent ou échoue.
+  if (state.stats === null) chargerStats();
+}
+
+/** Va chercher l'activité, puis redessine — si on est toujours sur l'accueil. */
+async function chargerStats() {
+  const stats = await json("/api/stats?days=30");
+  if (!stats || dom.rooms.hidden) return;
+  state.stats = stats;
+  const carte = document.getElementById("carte-stats");
+  if (carte) carte.replaceWith(carteStats());
 }
 
 /** Une carte du bento : un titre, une phrase, et ce qu'on y met. */
@@ -771,6 +789,74 @@ async function rejoindre(champ) {
 }
 
 /**
+ * Ce que vos salons ont consommé, jour par jour.
+ *
+ * Sous les trois autres et sur toute la largeur : c'est la seule carte qui ne
+ * demande aucune action. On la regarde en passant, on n'y va pas.
+ */
+function carteStats() {
+  const bloc = carte(
+    "carte-stats",
+    "Votre activité",
+    "Jetons consommés sur vos salons, sur trente jours",
+  );
+  bloc.id = "carte-stats";
+
+  const stats = state.stats;
+  if (!stats) {
+    bloc.appendChild(elem("p", "vide", "Chargement…"));
+    return bloc;
+  }
+  if (!stats.total_turns) {
+    bloc.appendChild(
+      elem("p", "vide", "Aucun tour sur cette période. Le graphique apparaîtra au premier."),
+    );
+    return bloc;
+  }
+
+  // Les totaux d'abord, le détail ensuite : c'est l'ordre dans lequel on les
+  // lit, et le graphique seul ne donne pas d'ordre de grandeur.
+  const chiffres = elem("div", "stats-chiffres");
+  for (const [valeur, libelle] of [
+    [millers(stats.total_tokens), "jetons"],
+    [String(stats.total_turns), stats.total_turns === 1 ? "tour" : "tours"],
+    // Le SDK chiffre toujours les jetons, abonnement ou pas. Le mot « valeur »
+    // plutôt que « coût » : sur abonnement ce n'est pas une facture.
+    [`$${Number(stats.total_cost_usd).toFixed(2)}`, "valeur"],
+  ]) {
+    const groupe = elem("div", "stat");
+    groupe.append(elem("strong", "stat-valeur", valeur), elem("span", "stat-nom", libelle));
+    chiffres.appendChild(groupe);
+  }
+  bloc.appendChild(chiffres);
+
+  bloc.appendChild(
+    histogramme(
+      stats.days.map((j) => ({ etiquette: jourCourt(j.date), valeur: j.tokens })),
+      { format: (n) => (n ? `${millers(n)} jetons` : "rien") },
+    ),
+  );
+
+  const bornes = elem("div", "histo-bornes");
+  bornes.append(
+    elem("span", "", jourCourt(stats.days[0].date)),
+    elem("span", "", "aujourd\u2019hui"),
+  );
+  bloc.appendChild(bornes);
+  return bloc;
+}
+
+/** « 2026-08-20 » → « 20 août ». Une date ISO ne se lit pas dans une infobulle. */
+function jourCourt(iso) {
+  const [a, m, j] = iso.split("-").map(Number);
+  return new Date(Date.UTC(a, m - 1, j)).toLocaleDateString("fr-FR", {
+    day: "numeric",
+    month: "short",
+    timeZone: "UTC",
+  });
+}
+
+/**
  * Votre agent : l'identifiant déposé, et le processus qui tourne.
  *
  * Deux faits distincts, et la carte les sépare. On peut avoir déposé un jeton
@@ -785,7 +871,13 @@ function carteAgent() {
     "Le processus qui exécute vos salons, avec votre abonnement",
   );
 
-  bloc.appendChild(voyantAgent());
+  // L'état du démon n'est montré que s'il peut en exister un. Tant qu'aucun
+  // identifiant n'est déposé, « connecté » et le dossier qu'il propose ne
+  // décrivent rien qu'on puisse encore utiliser — et le chemin interne du
+  // profil n'apprend rien à qui doit d'abord coller un jeton.
+  if (!state.identifiant.managed || state.identifiant.present) {
+    bloc.appendChild(voyantAgent());
+  }
 
   // Ce relais ne lance pas d'agents : la seule voie est la ligne de commande.
   // Le dire vaut mieux que de montrer un bouton qui refusera.
@@ -827,11 +919,13 @@ function voyantAgent() {
   const connecte = state.demon.connected;
   ligne.appendChild(elem("span", `voyant ${connecte ? "vive" : "eteinte"}`));
   ligne.appendChild(elem("strong", "", connecte ? "connecté" : "aucun agent"));
-  ligne.appendChild(
-    elem("span", "carte-sous", connecte
-      ? `dossier proposé : ${state.demon.base || "—"}`
-      : "Vos salons se lisent, mais n'exécutent rien."),
-  );
+  // Le dossier proposé n'est dit que quand c'est *votre* dossier. Sur un relais
+  // qui gère les agents, c'est un chemin interne de profil : il ne se choisit
+  // pas, ne se retient pas, et ne fait qu'occuper la ligne.
+  const detail = connecte
+    ? (state.identifiant.managed ? "" : `dossier proposé : ${state.demon.base || "—"}`)
+    : "Vos salons se lisent, mais n'exécutent rien.";
+  if (detail) ligne.appendChild(elem("span", "carte-sous", detail));
   return ligne;
 }
 

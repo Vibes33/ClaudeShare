@@ -327,3 +327,36 @@ export function anneau(fraction, { titre = "", taille = 20 } = {}) {
   boite.appendChild(racine);
   return boite;
 }
+
+/**
+ * Un histogramme de barres, dessiné en SVG.
+ *
+ * Deux choix qui décident du reste :
+ *
+ * - **une grille de `<div>` et non des `<rect>` positionnés.** Les barres se
+ *   placent par `flex`, donc elles se répartissent d'elles-mêmes quelle qu'en
+ *   soit la quantité, et le survol est celui d'un élément HTML ordinaire.
+ *   Un SVG demanderait de recalculer les abscisses à chaque redimensionnement.
+ * - **une hauteur en pourcentage du maximum.** Pas d'échelle absolue : ce
+ *   graphique répond à « quand ai-je travaillé », pas à « combien exactement »,
+ *   et le total est écrit en clair à côté.
+ *
+ * Un jour vide garde sa barre, réduite à un trait. La faire disparaître
+ * raconterait une régularité qui n'existe pas.
+ */
+export function histogramme(points, { format = String } = {}) {
+  const cadre = elem("div", "histo");
+  const sommet = Math.max(1, ...points.map((p) => p.valeur));
+
+  for (const point of points) {
+    const colonne = elem("div", "histo-colonne");
+    const barre = elem("div", `histo-barre${point.valeur ? "" : " vide"}`);
+    barre.style.setProperty("height", `${Math.max(2, (point.valeur / sommet) * 100)}%`);
+    // `title` plutôt qu'une bulle maison : c'est trente éléments, et une bulle
+    // par barre coûterait trente écouteurs pour ce que le navigateur fait seul.
+    colonne.title = `${point.etiquette} — ${format(point.valeur)}`;
+    colonne.appendChild(barre);
+    cadre.appendChild(colonne);
+  }
+  return cadre;
+}

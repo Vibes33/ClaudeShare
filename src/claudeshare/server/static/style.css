@@ -451,22 +451,60 @@ h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; colo
   /* La colonne des salons est la plus large : c'est la seule qui porte une
      liste, les deux autres portent des formulaires courts. */
   grid-template-columns: 1.15fr 1fr 1fr;
-  grid-template-rows: minmax(0, 1fr);
-  /* Les cartes épousent leur contenu, sauf celle des salons qui prend la
-     hauteur. Sans ça, les trois s'étirent et deux d'entre elles affichent
-     surtout du vide. */
-  align-items: start;
+  /* Deux rangées : les trois cartes d'action, puis l'activité en dessous.
+     La première a un plancher — sans lui, sa hauteur est celle de la plus
+     grande des trois, et la liste des salons se retrouve réduite à une fenêtre
+     de deux lignes qui *a l'air* tronquée bien plus qu'elle n'a l'air
+     défilable. Le plancher lui donne de quoi montrer qu'elle continue. */
+  grid-template-rows: minmax(min(24rem, 45vh), auto) auto;
+  /* `stretch`, et non `start` : les trois cartes de la première rangée prennent
+     la même hauteur. Épouser son contenu donnait trois cartes de tailles
+     différentes posées côte à côte, ce qui se lit comme un défaut d'alignement
+     plutôt que comme une différence de contenu. */
+  align-items: stretch;
+  /* `start`, et non le `stretch` par défaut. Sans lui, une grille de hauteur
+     bornée répartit sa hauteur entre ses rangées au lieu de les laisser à la
+     taille de leur contenu — et comme `.carte` porte `min-height: 0` pour que
+     la liste des salons défile chez elle, rien n'empêche alors une rangée de
+     passer sous son contenu. Empilées, les quatre cartes se retrouvaient
+     rabotées à la même hauteur, chacune débordant sous la suivante. */
+  align-content: start;
 }
+
+/* Sur toute la largeur, sous les autres : c'est la seule carte qui ne demande
+   aucune action, on la regarde en passant. */
+.carte-stats { grid-column: 1 / -1; }
 
 /* En dessous de trois colonnes confortables, les cartes s'empilent : un bento
    comprimé donne des colonnes où plus rien ne tient. */
 @media (max-width: 62rem) {
-  #rooms { grid-template-columns: 1fr; grid-template-rows: none; }
-  .carte-salons { max-height: 60vh; }
+  /* Empilées, les cartes reprennent leur hauteur naturelle et c'est la page qui
+     défile. `align-items: start` est nécessaire, et pas seulement esthétique :
+     `.carte` porte `min-height: 0` pour que la liste des salons défile chez
+     elle, ce qui autorise aussi une rangée à se réduire sous son contenu — les
+     cartes se retrouvaient alors tronquées les unes après les autres. */
+  #rooms { grid-template-columns: 1fr; grid-template-rows: none; align-items: start; }
+  /* Empilée, la liste des salons ne défile plus chez elle : c'est la page qui
+     défile, et deux zones de défilement imbriquées sur un écran étroit sont une
+     façon sûre de perdre le geste. Elle reprend donc sa hauteur naturelle, ce
+     qui suppose de lui rendre le minimum automatique que la mise en page large
+     lui retire. */
+  #rooms .carte-salons { align-self: start; min-height: auto; max-height: none; }
+  #rooms .salons-defile { overflow-y: visible; }
+  /* En une colonne, `grid-column: 1 / -1` ne veut plus rien dire de
+     particulier — mais le déclarer explicitement évite de dépendre du fait
+     qu'une seule colonne existe. */
+  .carte-stats { grid-column: 1; }
 }
 
 .carte {
-  display: flex; flex-direction: column; min-height: 0;
+  /* Pas de `min-height: 0` ici, et c'est une correction : il annule le minimum
+     automatique d'un élément de grille, donc il autorise une rangée à se
+     réduire sous son contenu quand la grille a une hauteur bornée. Les cartes
+     débordaient alors les unes sous les autres — visible seulement en colonne
+     unique, où elles sont quatre à se partager la hauteur. Seule la carte des
+     salons en a besoin, et elle se le donne. */
+  display: flex; flex-direction: column;
   padding: 1.2rem;
   border-radius: 18px;
   border: 1px solid var(--verre-bord);
@@ -481,7 +519,39 @@ h2 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; colo
 .carte-tete h2 { margin: 0; font-size: 1.05rem; font-weight: 600; }
 .carte-sous { margin: 0.2rem 0 0; color: var(--doux); font-size: 0.85rem; }
 
-.carte-salons { align-self: stretch; }
+.carte-salons { align-self: stretch; min-height: 0; }
+
+/* --- l'activité ---------------------------------------------------------- */
+
+.stats-chiffres { display: flex; flex-wrap: wrap; gap: 2rem; margin-bottom: 1.2rem; }
+.stat { display: flex; flex-direction: column; gap: 0.1rem; }
+.stat-valeur { font-size: 1.5rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.stat-nom { color: var(--doux); font-size: 0.78rem; }
+
+/* Les barres se répartissent par `flex` : rien à recalculer quand la fenêtre
+   change de largeur, et le survol est celui d'un élément ordinaire. */
+.histo {
+  display: flex; align-items: flex-end; gap: 3px;
+  height: 5.5rem; margin-bottom: 0.4rem;
+}
+.histo-colonne {
+  flex: 1; min-width: 0; height: 100%;
+  display: flex; align-items: flex-end;
+}
+.histo-barre {
+  width: 100%; border-radius: 3px 3px 1px 1px;
+  background: linear-gradient(180deg, var(--accent), rgb(122 162 247 / 0.35));
+  transition: filter 0.16s;
+}
+.histo-colonne:hover .histo-barre { filter: brightness(1.35); }
+/* Un jour sans rien garde son trait : le faire disparaître raconterait une
+   régularité qui n'existe pas. */
+.histo-barre.vide { background: rgb(255 255 255 / 0.1); }
+
+.histo-bornes {
+  display: flex; justify-content: space-between;
+  color: var(--doux); font-size: 0.74rem;
+}
 /* Le défilement appartient à la carte, pas à la page. */
 .salons-defile {
   flex: 1; min-height: 0; overflow-y: auto;

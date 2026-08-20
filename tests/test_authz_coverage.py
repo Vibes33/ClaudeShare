@@ -46,6 +46,11 @@ PUBLIQUES = {
     "/auth/cli/approve": "exige une session dans son corps, pas un droit de salon",
     "/": "page d'accueil du client web, servie à tout le monde",
     "/api/agent": "l'état de son propre démon, aucun salon en jeu",
+    # Agrégat de ses propres salons : la requête est filtrée sur l'appartenance,
+    # donc la barrière est dans le `WHERE`, pas dans une capacité. Exiger une
+    # capacité de salon n'aurait d'ailleurs pas de sens — la route en couvre
+    # plusieurs à la fois, avec des droits qui peuvent différer de l'un à l'autre.
+    "/api/stats": "ce que consomment les salons dont on est membre",
     # Son propre identifiant et son propre agent : personnels, hors périmètre
     # d'un salon. La barrière est l'identité, vérifiée dans le corps.
     "/api/credential": "son identifiant Anthropic, jamais relu",

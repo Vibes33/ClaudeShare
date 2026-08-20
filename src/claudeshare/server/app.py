@@ -45,6 +45,7 @@ from .api.members import build_members_router
 from .api.roles import build_roles_router
 from .api.credentials import build_credentials_router
 from .api.rooms import build_rooms_router
+from .api.stats import build_stats_router
 from .auth.cli import build_cli_router
 from .auth.identity import SessionSigner
 from .auth.oauth import ProviderConfig, build_oauth
@@ -293,6 +294,7 @@ def create_app(
     pieces_jointes = root / "attachments"
     app.include_router(build_attachments_router(ctx, pieces_jointes))
     app.include_router(build_rooms_router(ctx))
+    app.include_router(build_stats_router(ctx))
     app.include_router(build_members_router(ctx))
     app.include_router(build_roles_router(ctx))
     app.include_router(build_invites_router(ctx))
