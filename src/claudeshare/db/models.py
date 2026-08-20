@@ -159,6 +159,47 @@ class Membership(Base):
     role: Mapped[Role] = relationship()
 
 
+class RoomBan(Base):
+    """Une exclusion, avec ou sans échéance.
+
+    Séparée de l'appartenance, et c'est tout l'intérêt : retirer un membre
+    l'expulse, mais ne l'empêche pas de revenir par le code du salon dans la
+    minute. L'exclusion, elle, survit au départ — c'est une décision sur une
+    **personne**, pas un état de sa présence.
+
+    `until` à `None` veut dire définitif. Une échéance passée n'est pas effacée
+    d'office : la ligne reste pour que l'exclusion se lise après coup, et c'est
+    la lecture qui décide si elle s'applique encore. Effacer sur expiration
+    ferait disparaître l'histoire d'un salon avec ses sanctions.
+    """
+
+    __tablename__ = "room_bans"
+    __table_args__ = (UniqueConstraint("room_id", "user_id", name="uq_ban_room_user"),)
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: _uid("ban"))
+    room_id: Mapped[str] = mapped_column(ForeignKey("rooms.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    #: Fin de l'exclusion. `None` = définitive.
+    until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+    reason: Mapped[str] = mapped_column(String(500), default="")
+    #: Qui a décidé. Conservé même si le compte disparaît — d'où le `SET NULL`
+    #: plutôt qu'un `CASCADE` qui effacerait la sanction avec son auteur.
+    by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+    @property
+    def active(self) -> bool:
+        """L'exclusion s'applique-t-elle en ce moment ?"""
+        if self.until is None:
+            return True
+        echeance = self.until if self.until.tzinfo else self.until.replace(tzinfo=UTC)
+        return echeance > _now()
+
+
 class Invitation(Base):
     """Invitation nominative, éventuellement en attente d'une première connexion.
 

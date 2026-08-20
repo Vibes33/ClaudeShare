@@ -77,6 +77,17 @@ const state = {
   //: Colonne de gauche repliée ? Relu du navigateur au démarrage : c'est un
   //: réglage d'écran, et le redemander à chaque visite serait une corvée.
   replie: false,
+  //: Section ouverte dans le panneau d'administration.
+  section: "hebergement",
+  //: Ce que le panneau administre. Chargé à son ouverture, et non au montage du
+  //: salon : la plupart des gens ne l'ouvriront jamais.
+  membres: [],
+  roles: [],
+  capacites: [],
+  bans: [],
+  //: Empreinte de ce que le panneau affiche. Sans elle, le redessiner à chaque
+  //: image effacerait le texte en cours de frappe dans ses formulaires.
+  coteEmpreinte: "",
   //: La discussion du salon, dans l'ordre d'arrivée. Vidée en changeant de
   //: salon — c'est la conversation d'un salon, pas la nôtre.
   chat: [],
@@ -99,13 +110,14 @@ let frameRequested = false;
 document.addEventListener("DOMContentLoaded", async () => {
   for (const id of [
     "app", "login", "providers", "rooms", "room", "title", "status", "who",
-    "transcript", "composer", "prompt", "send", "requests", "host", "code",
+    "transcript", "composer", "prompt", "send",
+    "voile", "cote-rail", "cote-onglets", "cote-section", "cote-vue", "cote-fermer",
     "titre-connexion", "barre", "porteur", "presents", "ouvrir-cote", "cote",
     "saisie", "joindre", "modele", "jetons", "quota", "fil", "salons-lat",
     "choix-modele", "choix-effort", "onglet-salons", "onglet-discussion",
     "liste-salons", "discussion", "chat", "chat-champ", "cote-poignee", "replier",
     "pieces",
-    "approvals", "toasts", "actions",
+    "toasts", "actions",
   ]) {
     dom[id] = document.getElementById(id);
   }
@@ -134,9 +146,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   window.addEventListener("wheel", molette, { passive: false });
   // Le panneau du salon s'ouvre et se ferme par le même bouton, dont la croix
   // dit l'état courant.
-  dom["ouvrir-cote"].addEventListener("click", () => {
-    dom.cote.hidden = !dom.cote.hidden;
-    dom["ouvrir-cote"].classList.toggle("ouvert", !dom.cote.hidden);
+  dom["ouvrir-cote"].addEventListener("click", () => basculerCote(dom.cote.hidden));
+  dom["cote-fermer"].addEventListener("click", () => basculerCote(false));
+  // Le voile ferme au clic : c'est le geste qu'on fait sans y penser devant une
+  // fenêtre modale, et le refuser donne l'impression d'être coincé.
+  dom.voile.addEventListener("click", () => basculerCote(false));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !dom.cote.hidden) basculerCote(false);
   });
   dom.prompt.addEventListener("keydown", (e) => {
     // Entrée envoie, Maj+Entrée passe à la ligne. L'inverse surprend tout le
@@ -200,9 +216,9 @@ function replieMemorise() {
 // ------------------------------------------------- taille du panneau d'hôte
 
 //: Bornes du panneau de réglages. Le minimum n'est pas décoratif : sous cette
-//: largeur, le code du salon et ses deux boutons ne tiennent plus sur une ligne
-//: et le panneau devient illisible avant d'être petit.
-const COTE_MIN = { l: 260, h: 200 };
+//: largeur, la colonne des sections et le corps ne cohabitent plus, et le
+//: panneau devient illisible avant d'être petit.
+const COTE_MIN = { l: 420, h: 300 };
 //: Marge gardée au bord de la fenêtre, pour que le panneau reste attrapable.
 const COTE_MARGE = 24;
 const COTE_TAILLE = "claudeshare.cote";
@@ -230,7 +246,7 @@ function appliquerTailleCote(taille, { garder = false } = {}) {
     Math.max(COTE_MIN.l, Math.min(taille.l, window.innerWidth - COTE_MARGE)),
   );
   const h = Math.round(
-    Math.max(COTE_MIN.h, Math.min(taille.h, window.innerHeight - COTE_MARGE * 4)),
+    Math.max(COTE_MIN.h, Math.min(taille.h, window.innerHeight - COTE_MARGE)),
   );
   dom.cote.style.setProperty("width", `${l}px`);
   dom.cote.style.setProperty("height", `${h}px`);
@@ -269,9 +285,15 @@ function installerRedimensionnement() {
 
   poignee.addEventListener("pointermove", (e) => {
     if (!depart) return;
-    // Le panneau est ancré à droite : aller vers la gauche l'élargit.
+    // Le panneau est centré : il grandit **des deux côtés** à la fois, donc son
+    // bord droit ne se déplace que de la moitié de ce qu'on ajoute à sa largeur.
+    // Le facteur deux est ce qui fait suivre le coin sous le curseur ; sans lui,
+    // la poignée s'échappe de la main pendant le glissement.
     appliquerTailleCote(
-      { l: depart.l + (depart.x - e.clientX), h: depart.h + (e.clientY - depart.y) },
+      {
+        l: depart.l + 2 * (e.clientX - depart.x),
+        h: depart.h + 2 * (e.clientY - depart.y),
+      },
       { garder: true },
     );
   });
@@ -283,7 +305,7 @@ function installerRedimensionnement() {
   }
 
   poignee.addEventListener("keydown", (e) => {
-    const pas = { ArrowLeft: [24, 0], ArrowRight: [-24, 0], ArrowUp: [0, -24], ArrowDown: [0, 24] }[e.key];
+    const pas = { ArrowRight: [24, 0], ArrowLeft: [-24, 0], ArrowDown: [0, 24], ArrowUp: [0, -24] }[e.key];
     if (!pas) return;
     e.preventDefault();
     const boite = dom.cote.getBoundingClientRect();
@@ -1702,10 +1724,7 @@ function dessiner() {
   dessinerChat();
   dessinerPorteur();
   dessinerPresents();
-  dessinerHote();
-  dessinerCode();
-  dessinerJeton();
-  dessinerApprobations();
+  dessinerCote();
   dessinerActions();
   dessinerPied();
 
@@ -2219,75 +2238,7 @@ function texteDe(contenu) {
   return JSON.stringify(contenu, null, 2);
 }
 
-/**
- * Qui exécute. Un salon sans agent se lit mais n'exécute pas — c'est la
- * première chose à montrer, sinon un prompt qui ne part pas ressemble à une
- * panne alors qu'il manque juste quelqu'un pour lancer son agent.
- */
-function dessinerHote() {
-  const a = state.agent || {};
-  if (a.connected) {
-    replace(
-      dom.host,
-      elem("span", "etat", `hébergé par ${a.host || "?"}`),
-      ...(a.workspace ? [elem("span", "chemin", a.workspace)] : []),
-    );
-    if (peut(Capability.SETTINGS) && state.demon.connected) {
-      const arret = elem("button", "bouton", "Arrêter l'hébergement");
-      arret.addEventListener("click", () => commander("unhost", arret));
-      dom.host.appendChild(arret);
-    }
-    return;
-  }
-
-  replace(dom.host, elem("span", "etat absent", "aucun agent"));
-  if (!peut(Capability.SETTINGS)) {
-    dom.host.appendChild(
-      elem("span", "vide", "Le propriétaire doit héberger ce salon pour qu'il exécute."),
-    );
-    return;
-  }
-
-  if (!state.demon.connected) {
-    // Le démon n'est pas joignable : la seule action utile est de le lancer,
-    // et c'est la seule chose qui reste en ligne de commande. Une fois.
-    dom.host.appendChild(
-      elem("span", "vide", "Lancez votre agent une fois, sur votre machine :"),
-    );
-    dom.host.appendChild(elem("code", "commande", "claudeshare agent"));
-    return;
-  }
-
-  // Le démon est là : héberger devient un bouton, et le dossier un champ
-  // pré-rempli avec ce que la machine a proposé.
-  const dossier = elem("input", "titre");
-  dossier.type = "text";
-  dossier.value = state.agent.workspace || state.demon.base || "";
-  dossier.placeholder = "dossier sur votre machine";
-
-  const bouton = elem("button", "bouton", "Héberger ici");
-  bouton.addEventListener("click", () => commander("host", bouton, dossier.value));
-
-  dom.host.append(
-    elem("span", "vide", "Votre agent est connecté."),
-    dossier,
-    bouton,
-  );
-}
-
-/**
- * Demande au relais de transmettre un ordre à notre démon.
- *
- * La réponse ne dit que « l'ordre est parti » : la prise en charge réelle
- * arrive par une trame `agent`, parce qu'elle peut échouer sur la machine
- * (dossier absent, session refusée) et que c'est là qu'est le message utile.
- */
-async function commander(action, bouton, workspace = "") {
-  bouton.disabled = true;
-  const reponse = await post(`/api/rooms/${state.roomId}/${action}`, { workspace });
-  bouton.disabled = false;
-  if (!reponse.ok) toast(motif(reponse));
-}
+// ------------------------------------------- le panneau d'administration
 
 /**
  * Prévient qui décide qu'on lui demande la parole.
@@ -2313,83 +2264,341 @@ function signalerDemandes(f) {
 }
 
 /**
- * Les demandes de parole en attente, dans le panneau.
+ * Les sections du panneau, dans l'ordre où elles apparaissent.
  *
- * Le porteur, lui, est dans la barre : c'est ce que tout le monde consulte,
- * alors que trancher une demande ne concerne que qui anime le salon.
+ * Chacune déclare le droit qui la rend visible. Une section sans droit n'est
+ * pas grisée mais absente : contrairement aux boutons du salon, où voir ce
+ * qu'on ne peut pas faire renseigne, une rubrique vide d'un panneau
+ * d'administration ne fait qu'allonger la liste.
  */
-function dessinerJeton() {
-  const f = state.floor;
-  const peutAccorder = peut(Capability.FLOOR_GRANT);
-  replace(
-    dom.requests,
-    ...(f.requests || []).map((w) => {
-      const li = elem("li", w.who === state.me.label ? "moi" : "");
-      li.appendChild(
-        elem("span", "demandeur", `${w.who}${w.priority ? ` (priorité ${w.priority})` : ""}`),
-      );
-      // Accepter ou refuser se fait là où la demande se voit : obliger à viser
-      // un bouton ailleurs ferait perdre de vue **qui** on est en train de
-      // servir quand plusieurs attendent.
-      if (peutAccorder) {
-        const oui = elem("button", "bouton oui", "Accorder");
-        const non = elem("button", "bouton non", "Refuser");
-        oui.addEventListener("click", () => emettre(ClientMessage.FLOOR_GRANT, { who: w.who }));
-        non.addEventListener("click", () => emettre(ClientMessage.FLOOR_DENY, { who: w.who }));
-        li.append(oui, non);
-      }
-      return li;
-    }),
-  );
-  if (f.deferred) {
-    dom.requests.appendChild(
-      elem("li", "differe", `${f.deferred} prendra la parole à la fin du tour`),
-    );
+const SECTIONS = [
+  { id: "hebergement", titre: "Hébergement", droit: null, vue: vueHebergement },
+  { id: "code", titre: "Code du salon", droit: Capability.INVITE, vue: vueCode },
+  { id: "paroles", titre: "Demandes de parole", droit: null, vue: vueParoles, compte: comptePendantes },
+  { id: "membres", titre: "Membres", droit: Capability.READ, vue: vueMembres },
+  { id: "roles", titre: "Rôles", droit: Capability.ROLES_MANAGE, vue: vueRoles },
+  { id: "sanctions", titre: "Exclusions", droit: Capability.MEMBERS_MANAGE, vue: vueSanctions },
+];
+
+/** Ce qui attend une décision : les demandes de parole et les outils. */
+function comptePendantes() {
+  return (state.floor.requests || []).length + state.approvals.size;
+}
+
+function sectionsVisibles() {
+  return SECTIONS.filter((s) => !s.droit || peut(s.droit));
+}
+
+/** Ouvre ou ferme le panneau, et charge ce qu'il lui faut. */
+function basculerCote(ouvrir) {
+  dom.cote.hidden = !ouvrir;
+  dom.voile.hidden = !ouvrir;
+  dom["ouvrir-cote"].classList.toggle("ouvert", ouvrir);
+  dom["ouvrir-cote"].setAttribute("aria-expanded", ouvrir ? "true" : "false");
+  if (!ouvrir) return;
+
+  const visibles = sectionsVisibles();
+  if (!visibles.some((s) => s.id === state.section)) {
+    state.section = visibles.length ? visibles[0].id : "hebergement";
   }
+  // Rechargé à chaque ouverture : les rôles et les exclusions changent depuis
+  // d'autres écrans, et un panneau qui montre l'état d'il y a une heure ferait
+  // prendre des décisions sur du faux.
+  chargerAdministration();
+  state.coteEmpreinte = "";
+  dessinerCote();
+}
+
+function allerA(section) {
+  state.section = section;
+  state.coteEmpreinte = "";
+  dessinerCote();
+}
+
+/** Va chercher ce que le panneau administre, sans bloquer son affichage. */
+async function chargerAdministration() {
+  const salon = state.roomId;
+  const [membres, roles, capacites, bans] = await Promise.all([
+    peut(Capability.READ) ? json(`/api/rooms/${salon}/members`) : null,
+    peut(Capability.ROLES_MANAGE) ? json(`/api/rooms/${salon}/roles`) : null,
+    peut(Capability.ROLES_MANAGE) ? json(`/api/rooms/${salon}/roles/capabilities`) : null,
+    peut(Capability.MEMBERS_MANAGE) ? json(`/api/rooms/${salon}/bans`) : null,
+  ]);
+  if (state.roomId !== salon) return;
+  state.membres = membres || [];
+  state.roles = roles || [];
+  state.capacites = capacites || [];
+  state.bans = bans || [];
+  state.coteEmpreinte = "";
+  dessinerCote();
 }
 
 /**
- * Le code à sept chiffres. Montré à qui peut inviter, avec de quoi le changer.
+ * Dessine le panneau : le rail toujours, la vue seulement si elle a changé.
+ *
+ * La distinction n'est pas une optimisation. La vue contient des champs de
+ * saisie — le nom d'un rôle en cours de frappe, un motif d'exclusion — et
+ * `dessiner()` s'exécute à chaque image d'un tour en cours. La reconstruire
+ * sans condition effacerait ce qu'on est en train d'écrire, un caractère sur
+ * deux.
+ */
+function dessinerCote() {
+  if (dom.cote.hidden) return;
+  dessinerRail();
+
+  const empreinte = empreinteCote();
+  if (empreinte === state.coteEmpreinte) return;
+  state.coteEmpreinte = empreinte;
+
+  const section = SECTIONS.find((s) => s.id === state.section) || SECTIONS[0];
+  dom["cote-section"].textContent = section.titre;
+  replace(dom["cote-vue"], section.vue());
+}
+
+/** Ce qui, en changeant, justifie de reconstruire la vue. */
+function empreinteCote() {
+  const f = state.floor;
+  return [
+    state.section,
+    state.agent.connected, state.agent.host, state.agent.workspace,
+    state.demon.connected,
+    (f.requests || []).map((r) => r.who).join(","), f.holder, f.deferred, f.state,
+    state.approvals.size,
+    state.membres.length, state.roles.length, state.bans.length,
+    // Le contenu et pas seulement le nombre : changer le rôle de quelqu'un ne
+    // change pas la longueur de la liste.
+    state.membres.map((m) => `${m.user_id}:${m.role}`).join(","),
+    state.bans.map((b) => `${b.user_id}:${b.active}`).join(","),
+    state.roles.map((r) => `${r.name}:${(r.capabilities || []).length}`).join(","),
+  ].join("|");
+}
+
+/** La colonne des sections, avec le compte de ce qui attend. */
+function dessinerRail() {
+  replace(
+    dom["cote-onglets"],
+    ...sectionsVisibles().map((section) => {
+      const bouton = elem("button", `cote-onglet${section.id === state.section ? " actif" : ""}`);
+      bouton.type = "button";
+      bouton.appendChild(elem("span", "cote-onglet-nom", section.titre));
+      const compte = section.compte ? section.compte() : 0;
+      if (compte) bouton.appendChild(elem("span", "compteur", String(Math.min(compte, 99))));
+      bouton.addEventListener("click", () => allerA(section.id));
+      return bouton;
+    }),
+  );
+}
+
+/** Une rangée d'éléments. Assez fréquent pour mériter son raccourci. */
+function ligne(...enfants) {
+  return replace(elem("div", "ligne"), ...enfants);
+}
+
+/** Un bloc du panneau : un intertitre, puis ce qu'il contient. */
+function bloc(titre, ...enfants) {
+  const el = elem("section", "cote-bloc");
+  if (titre) el.appendChild(elem("h3", "cote-bloc-titre", titre));
+  el.append(...enfants);
+  return el;
+}
+
+// ------------------------------------------------------------ hébergement
+
+/**
+ * Qui exécute, et comment le changer.
+ *
+ * Un salon sans agent se lit mais n'exécute pas — c'est la première chose à
+ * montrer, sinon un prompt qui ne part pas ressemble à une panne alors qu'il
+ * manque juste quelqu'un pour lancer son agent.
+ */
+function vueHebergement() {
+  const cadre = document.createDocumentFragment();
+  const a = state.agent || {};
+  const regle = peut(Capability.SETTINGS);
+
+  const etat = elem("div", "hote-etat");
+  if (a.connected) {
+    etat.append(
+      elem("span", "voyant vive"),
+      elem("strong", "", `hébergé par ${a.host || "?"}`),
+    );
+    if (a.workspace) etat.appendChild(elem("code", "chemin", a.workspace));
+  } else {
+    etat.append(
+      elem("span", "voyant eteinte"),
+      elem("strong", "", "aucun agent"),
+      elem("span", "vide", regle
+        ? "Vos salons se lisent, mais n'exécutent rien."
+        : "Le propriétaire doit héberger ce salon pour qu'il exécute."),
+    );
+  }
+  cadre.appendChild(bloc("", etat));
+
+  if (!regle) return cadre;
+
+  if (a.connected && state.demon.connected) {
+    const arret = bouton("Arrêter l'hébergement", {
+      ton: "discret",
+      onClick: () => commander("unhost"),
+    });
+    cadre.appendChild(bloc("", arret));
+  } else if (!a.connected && state.demon.connected) {
+    // Le démon est là : héberger devient un bouton, et le dossier un champ
+    // pré-rempli avec ce que la machine a proposé.
+    const dossier = elem("input", "saisie");
+    dossier.type = "text";
+    dossier.value = a.workspace || state.demon.base || "";
+    dossier.placeholder = "dossier sur votre machine";
+    const prendre = bouton("Héberger ici", {
+      onClick: () => commander("host", dossier.value),
+    });
+    cadre.appendChild(bloc("Prendre en charge", dossier, ligne(prendre)));
+  } else if (!state.demon.connected) {
+    // Le démon n'est pas joignable : la seule action utile est de le lancer, et
+    // c'est la seule chose qui reste en ligne de commande. Une fois.
+    cadre.appendChild(
+      bloc("Prendre en charge",
+        elem("p", "vide", "Lancez votre agent une fois, sur votre machine :"),
+        elem("code", "commande", "claudeshare agent")),
+    );
+  }
+
+  // Confier à quelqu'un d'autre. Une **proposition** : accepter démarre une
+  // session Claude sur sa machine et consomme son abonnement.
+  const candidats = state.membres.filter(
+    (m) => m.user_id !== state.me.user_id
+      && (m.capabilities || []).includes(String(Capability.SETTINGS)),
+  );
+  const confier = elem("div", "ligne");
+  if (candidats.length) {
+    const choix = elem("select", "saisie");
+    for (const m of candidats) {
+      const option = elem("option", "", `${m.label} (@${m.handle})`);
+      option.value = m.user_id;
+      choix.appendChild(option);
+    }
+    confier.append(choix, boutonChargement("Proposer", { onClick: () => proposerHote(choix.value) }));
+  } else {
+    confier.appendChild(
+      elem("p", "vide",
+        "Personne d'autre n'a le droit d'héberger ce salon. Donnez d'abord un "
+        + "rôle qui le permet dans « Membres »."),
+    );
+  }
+  cadre.appendChild(
+    bloc("Confier à quelqu'un d'autre",
+      elem("p", "cote-aide",
+        "Une proposition, pas un ordre : accepter démarre une session Claude "
+        + "sur sa machine, dans ses fichiers, sur son abonnement."),
+      confier),
+  );
+  return cadre;
+}
+
+async function proposerHote(userId) {
+  const reponse = await post(`/api/rooms/${state.roomId}/host/offer`, { user_id: userId });
+  if (!reponse.ok) return toast(motif(reponse));
+  toast(`Proposition envoyée à ${reponse.data.to}.`);
+}
+
+/**
+ * Demande au relais de transmettre un ordre à notre démon.
+ *
+ * La réponse ne dit que « l'ordre est parti » : la prise en charge réelle
+ * arrive par une trame `agent`, parce qu'elle peut échouer sur la machine
+ * (dossier absent, session refusée) et que c'est là qu'est le message utile.
+ */
+async function commander(action, workspace = "") {
+  const reponse = await post(`/api/rooms/${state.roomId}/${action}`, { workspace });
+  if (!reponse.ok) toast(motif(reponse));
+}
+
+// ------------------------------------------------------------------- code
+
+/**
+ * Le code à sept chiffres, avec de quoi le changer.
  *
  * Sept chiffres ne font que 23 bits : le bouton de rotation n'est pas un
  * confort, c'est ce qui rend le code tenable quand il a trop circulé.
  */
-function dessinerCode() {
-  replace(dom.code);
-  if (!peut(Capability.INVITE)) return;
-
+function vueCode() {
+  const cadre = document.createDocumentFragment();
   const salon = state.rooms.find((r) => r.id === state.roomId);
   const code = salon ? salon.code : null;
 
-  dom.code.appendChild(elem("code", "commande", code || "désactivé"));
+  const ligne = elem("div", "ligne");
+  ligne.appendChild(elem("code", "commande grand", code || "désactivé"));
+  ligne.appendChild(
+    boutonChargement(code ? "Changer" : "Activer", {
+      onClick: async () => {
+        const reponse = await post(`/api/rooms/${state.roomId}/code`, {});
+        if (!reponse.ok) return toast(motif(reponse));
+        await rafraichir();
+        state.coteEmpreinte = "";
+        peindre();
+      },
+    }),
+  );
+  if (code) {
+    ligne.appendChild(
+      boutonChargement("Désactiver", {
+        ton: "danger",
+        onClick: async () => {
+          const res = await fetch(`/api/rooms/${state.roomId}/code`, { method: "DELETE" });
+          if (!res.ok) return toast("Impossible de désactiver le code.");
+          await rafraichir();
+          state.coteEmpreinte = "";
+          peindre();
+        },
+      }),
+    );
+  }
 
-  const tourner = elem("button", "bouton", code ? "Changer" : "Activer");
-  tourner.addEventListener("click", async () => {
-    tourner.disabled = true;
-    const reponse = await post(`/api/rooms/${state.roomId}/code`, {});
-    tourner.disabled = false;
-    if (!reponse.ok) return toast(motif(reponse));
-    await rafraichir();
-    peindre();
-  });
-  dom.code.appendChild(tourner);
-
-  if (!code) return;
-  const couper = elem("button", "bouton non", "Désactiver");
-  couper.addEventListener("click", async () => {
-    couper.disabled = true;
-    const res = await fetch(`/api/rooms/${state.roomId}/code`, { method: "DELETE" });
-    couper.disabled = false;
-    if (!res.ok) return toast("Impossible de désactiver le code.");
-    await rafraichir();
-    peindre();
-  });
-  dom.code.appendChild(couper);
+  cadre.appendChild(
+    bloc("",
+      elem("p", "cote-aide",
+        "Qui entre par ce code devient écrivain : il parlera avec votre agent, "
+        + "donc sur votre abonnement — et seulement quand vous lui accordez la parole."),
+      ligne),
+  );
+  return cadre;
 }
 
-function dessinerApprobations() {
+// --------------------------------------------------------------- paroles
+
+/** Les demandes de parole en attente, et les approbations d'outil. */
+function vueParoles() {
+  const cadre = document.createDocumentFragment();
+  const f = state.floor;
+  const peutAccorder = peut(Capability.FLOOR_GRANT);
+
+  const liste = elem("ol", "demandes");
+  for (const w of f.requests || []) {
+    const li = elem("li", w.who === state.me.label ? "moi" : "");
+    li.appendChild(
+      elem("span", "demandeur", `${w.who}${w.priority ? ` (priorité ${w.priority})` : ""}`),
+    );
+    // Accepter ou refuser se fait là où la demande se voit : viser un bouton
+    // ailleurs ferait perdre de vue **qui** on sert quand plusieurs attendent.
+    if (peutAccorder) {
+      const oui = elem("button", "bouton oui", "Accorder");
+      const non = elem("button", "bouton non", "Refuser");
+      oui.addEventListener("click", () => emettre(ClientMessage.FLOOR_GRANT, { who: w.who }));
+      non.addEventListener("click", () => emettre(ClientMessage.FLOOR_DENY, { who: w.who }));
+      li.append(oui, non);
+    }
+    liste.appendChild(li);
+  }
+  if (f.deferred) {
+    liste.appendChild(
+      elem("li", "differe", `${f.deferred} prendra la parole à la fin du tour`),
+    );
+  }
+  if (!liste.childElementCount) liste.appendChild(elem("li", "vide", "Personne n'attend."));
+  cadre.appendChild(bloc("En attente", liste));
+
+  const approbations = elem("div", "approbations");
   const peutTrancher = peut(Capability.TOOLS_APPROVE);
-  replace(dom.approvals);
   for (const [id, a] of state.approvals) {
     const el = elem("div", "approbation");
     el.appendChild(elem("strong", "", a.tool));
@@ -2410,8 +2619,301 @@ function dessinerApprobations() {
       non.addEventListener("click", () => decider(id, false));
       el.append(oui, non);
     }
-    dom.approvals.appendChild(el);
+    approbations.appendChild(el);
   }
+  if (approbations.childElementCount) {
+    cadre.appendChild(bloc("Approbations d'outil", approbations));
+  }
+  return cadre;
+}
+
+// -------------------------------------------------------------- membres
+
+/**
+ * Qui est là, avec quel rôle — et de quoi l'expulser ou l'exclure.
+ *
+ * Le rôle se change par un sélecteur plutôt que par une page dédiée : c'est
+ * l'action la plus fréquente du panneau, et la faire tenir sur la ligne de la
+ * personne évite d'avoir à se souvenir de qui on était en train de modifier.
+ */
+function vueMembres() {
+  const cadre = document.createDocumentFragment();
+  const gere = peut(Capability.MEMBERS_MANAGE);
+
+  if (!state.membres.length) {
+    cadre.appendChild(elem("p", "vide", "Chargement…"));
+    return cadre;
+  }
+
+  const liste = elem("div", "membres");
+  for (const membre of state.membres) {
+    const li = elem("div", "membre");
+    li.appendChild(
+      vignette({ label: membre.label, avatar_url: null }, "vignette petite"),
+    );
+    const nom = elem("div", "membre-nom");
+    nom.append(
+      elem("strong", "", membre.label),
+      elem("span", "membre-handle", `@${membre.handle}`),
+    );
+    li.appendChild(nom);
+
+    const soi = membre.user_id === state.me.user_id;
+    if (gere && !soi) {
+      li.appendChild(selecteurRole(membre));
+      li.appendChild(
+        bouton("Expulser", { ton: "discret", onClick: () => expulser(membre) }),
+      );
+      li.appendChild(
+        bouton("Exclure", { ton: "danger", onClick: () => demanderExclusion(membre) }),
+      );
+    } else {
+      li.appendChild(elem("span", "membre-role", membre.role));
+    }
+    liste.appendChild(li);
+  }
+  cadre.appendChild(bloc("", liste));
+
+  if (gere) {
+    cadre.appendChild(
+      elem("p", "cote-aide",
+        "Expulser retire du salon ; la personne peut revenir avec le code. "
+        + "Exclure ferme aussi cette porte — voir « Exclusions »."),
+    );
+  }
+  return cadre;
+}
+
+/** Le rôle d'une personne, changeable sur sa ligne. */
+function selecteurRole(membre) {
+  const choix = elem("select", "saisie compact");
+  const noms = state.roles.length
+    ? state.roles.map((r) => r.name)
+    // Sans `room.roles.manage` on ne liste pas les rôles : on propose au moins
+    // celui qui est en place, plutôt qu'un sélecteur vide.
+    : [membre.role];
+  for (const nom of noms) {
+    const option = elem("option", "", nom);
+    option.value = nom;
+    if (nom === membre.role) option.selected = true;
+    choix.appendChild(option);
+  }
+  choix.addEventListener("change", async () => {
+    const reponse = await post(
+      `/api/rooms/${state.roomId}/members/${membre.user_id}`,
+      { role: choix.value },
+      "PATCH",
+    );
+    if (!reponse.ok) {
+      choix.value = membre.role;
+      return toast(motif(reponse));
+    }
+    toast(`${membre.label} est maintenant ${choix.value}.`);
+    chargerAdministration();
+  });
+  return choix;
+}
+
+async function expulser(membre) {
+  if (!confirm(`Expulser ${membre.label} ? Il pourra revenir avec le code du salon.`)) return;
+  const res = await fetch(`/api/rooms/${state.roomId}/members/${membre.user_id}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) return toast("Expulsion refusée.");
+  chargerAdministration();
+}
+
+/**
+ * Demande la durée d'une exclusion, puis l'applique.
+ *
+ * `prompt` plutôt qu'un formulaire dans la ligne : la ligne est déjà pleine, et
+ * une exclusion n'est pas un geste qu'on fait vingt fois de suite.
+ */
+async function demanderExclusion(membre) {
+  const duree = prompt(
+    `Exclure ${membre.label}.\n\nDurée en heures, ou laissez vide pour une exclusion définitive :`,
+    "",
+  );
+  if (duree === null) return;
+  const heures = duree.trim() ? Number(duree.trim()) : null;
+  if (heures !== null && (!Number.isFinite(heures) || heures < 1)) {
+    return toast("Durée invalide : un nombre d'heures, ou rien.");
+  }
+  const raison = prompt("Motif (facultatif), visible dans la liste des exclusions :", "");
+  if (raison === null) return;
+
+  const reponse = await post(
+    `/api/rooms/${state.roomId}/bans/${membre.user_id}`,
+    { hours: heures, reason: raison.trim() },
+    "PUT",
+  );
+  if (!reponse.ok) return toast(motif(reponse));
+  toast(`${membre.label} est exclu${heures ? ` pour ${heures} h` : " définitivement"}.`);
+  chargerAdministration();
+}
+
+// ----------------------------------------------------------------- rôles
+
+/**
+ * Créer des rôles et leur associer des droits.
+ *
+ * Les capacités viennent du serveur — `/roles/capabilities` — et non d'une
+ * liste redite ici : une capacité ajoutée au Python apparaît alors toute seule,
+ * et une faute de frappe ne peut pas fabriquer un droit qui n'existe pas.
+ */
+function vueRoles() {
+  const cadre = document.createDocumentFragment();
+
+  for (const role of state.roles) {
+    cadre.appendChild(editeurRole(role));
+  }
+
+  // La création réutilise le même éditeur, avec un rôle vide. Deux formulaires
+  // pour deux gestes qui produisent la même chose finiraient par diverger.
+  cadre.appendChild(editeurRole(null));
+  return cadre;
+}
+
+function editeurRole(role) {
+  const neuf = role === null;
+  const el = elem("section", `cote-bloc role${neuf ? " neuf" : ""}`);
+
+  const tete = elem("div", "role-tete");
+  const nom = elem("input", "saisie compact");
+  nom.type = "text";
+  nom.maxLength = 64;
+  nom.value = neuf ? "" : role.name;
+  nom.placeholder = "nom du rôle";
+  // Les rôles livrés d'origine ne se renomment pas : leur nom est ce que le
+  // reste du programme reconnaît — `proprietaire` décide de qui héberge.
+  nom.disabled = !neuf && role.builtin;
+  tete.appendChild(nom);
+  if (!neuf && role.builtin) tete.appendChild(elem("span", "role-marque", "d'origine"));
+  el.appendChild(tete);
+
+  const cases = elem("div", "droits");
+  const coches = new Set(neuf ? [String(Capability.READ), String(Capability.CHAT)]
+                              : role.capabilities || []);
+  for (const cap of state.capacites) {
+    const etiquette = elem("label", "droit");
+    const boite = elem("input", "");
+    boite.type = "checkbox";
+    boite.value = cap.name;
+    boite.checked = coches.has(cap.name);
+    etiquette.append(boite, elem("span", "droit-nom", cap.label || cap.name));
+    if (cap.description) etiquette.title = cap.description;
+    cases.appendChild(etiquette);
+  }
+  el.appendChild(cases);
+
+  const choisies = () =>
+    [...cases.querySelectorAll("input:checked")].map((b) => b.value);
+
+  const actions = elem("div", "ligne");
+  if (neuf) {
+    actions.appendChild(
+      boutonChargement("Créer le rôle", {
+        onClick: async () => {
+          const titre = nom.value.trim();
+          if (!titre) return nom.focus();
+          const reponse = await post(`/api/rooms/${state.roomId}/roles`, {
+            name: titre, capabilities: choisies(),
+          });
+          if (!reponse.ok) return toast(motif(reponse));
+          nom.value = "";
+          chargerAdministration();
+        },
+      }),
+    );
+  } else {
+    actions.appendChild(
+      boutonChargement("Enregistrer", {
+        onClick: async () => {
+          const reponse = await post(
+            `/api/rooms/${state.roomId}/roles/${role.id}`,
+            { capabilities: choisies() },
+            "PATCH",
+          );
+          if (!reponse.ok) return toast(motif(reponse));
+          toast(`Rôle « ${role.name} » enregistré.`);
+          chargerAdministration();
+        },
+      }),
+    );
+    if (!role.builtin) {
+      actions.appendChild(
+        bouton("Supprimer", {
+          ton: "danger",
+          onClick: async () => {
+            if (!confirm(`Supprimer le rôle « ${role.name} » ?`)) return;
+            const res = await fetch(`/api/rooms/${state.roomId}/roles/${role.id}`, {
+              method: "DELETE",
+            });
+            if (!res.ok) return toast("Suppression refusée — il est peut-être encore porté.");
+            chargerAdministration();
+          },
+        }),
+      );
+    }
+  }
+  el.appendChild(actions);
+  return el;
+}
+
+// ------------------------------------------------------------ exclusions
+
+/** Qui est exclu, jusqu'à quand, et de quoi lever la sanction. */
+function vueSanctions() {
+  const cadre = document.createDocumentFragment();
+  if (!state.bans.length) {
+    cadre.appendChild(elem("p", "vide", "Personne n'est exclu de ce salon."));
+    return cadre;
+  }
+
+  const liste = elem("div", "membres");
+  for (const ban of state.bans) {
+    const li = elem("div", `membre${ban.active ? "" : " expire"}`);
+    const nom = elem("div", "membre-nom");
+    nom.append(
+      elem("strong", "", ban.label),
+      elem("span", "membre-handle", `@${ban.handle}`),
+    );
+    if (ban.reason) nom.appendChild(elem("span", "ban-motif", ban.reason));
+    li.appendChild(nom);
+
+    li.appendChild(
+      elem("span", "membre-role", ban.active
+        ? (ban.until ? `jusqu'au ${dateCourte(ban.until)}` : "définitive")
+        : "expirée"),
+    );
+    li.appendChild(
+      bouton(ban.active ? "Lever" : "Effacer", {
+        ton: "discret",
+        onClick: async () => {
+          const res = await fetch(`/api/rooms/${state.roomId}/bans/${ban.user_id}`, {
+            method: "DELETE",
+          });
+          if (!res.ok) return toast("Impossible de lever cette exclusion.");
+          chargerAdministration();
+        },
+      }),
+    );
+    liste.appendChild(li);
+  }
+  cadre.appendChild(bloc("", liste));
+  cadre.appendChild(
+    elem("p", "cote-aide",
+      "Lever une exclusion ne réintègre pas : la personne devra revenir "
+      + "par le code ou par une invitation."),
+  );
+  return cadre;
+}
+
+/** Une date ISO en jour et heure lisibles. */
+function dateCourte(iso) {
+  return new Date(iso).toLocaleString("fr-FR", {
+    day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
+  });
 }
 
 function dessinerActions() {

@@ -56,6 +56,7 @@ export const EventType = Object.freeze({
   TOOL_APPROVAL_RESOLVED: "tool.approval_resolved",
   FLOOR_CHANGED: "floor.changed",
   CHAT_MESSAGE: "chat.message",
+  HOST_OFFERED: "host.offered",
   MEMBER_JOINED: "member.joined",
   RATE_LIMIT: "rate_limit",
 });

@@ -257,8 +257,18 @@ qui anime le salon, avec de quoi trancher sur place.
 - **Présence** : les photos des personnes connectées, au-dessus de la saisie.
 - **Colonne des salons**, avec une pastille sur ceux où Claude a répondu pendant
   qu'on lisait ailleurs. Repliable, pour rendre la conversation pleine largeur.
-- **Panneau d'hébergement** redimensionnable (poignée, pincement du pavé
-  tactile, flèches du clavier), dont la taille est retenue.
+- **Panneau d'administration** : une fenêtre centrée, redimensionnable et dont
+  la taille est retenue, avec une colonne de sections — hébergement, code du
+  salon, demandes de parole (avec le compte de ce qui attend), membres, rôles,
+  exclusions.
+- **Confier l'hébergement** à quelqu'un d'autre. Une **proposition**, pas un
+  ordre : accepter démarre une session Claude sur sa machine, dans ses fichiers,
+  sur son abonnement.
+- **Rôles sur mesure** : créer un rôle, cocher ses droits, l'attribuer. Les
+  droits proposés viennent du serveur, avec leur explication.
+- **Expulser et exclure.** Expulser retire du salon ; la personne revient avec
+  le code. Exclure ferme aussi cette porte — définitivement ou pour un temps —
+  et la liste des exclusions garde la trace, expirées comprises.
 - **Modèle et intensité de réflexion** modifiables en séance par qui règle le
   salon. Le modèle change dans la session ouverte ; l'intensité n'existe qu'au
   lancement du CLI, donc elle rouvre la session — entre deux tours, avec
@@ -436,7 +446,7 @@ compare.
 | `room.preempt` | réquisitionner en coupant le tour en cours |
 | `room.stop` | interrompre la génération d'un autre |
 | `room.invite` | inviter, gérer le code du salon |
-| `room.members.manage` | rôles, droits à la carte, priorités |
+| `room.members.manage` | rôles, droits à la carte, priorités, expulsion, exclusion |
 | `room.roles.manage` | créer et modifier les rôles du salon |
 | `room.settings` | dossier, modèle, intensité, politique d'outils |
 | `room.delete` | archiver le salon |
@@ -562,6 +572,7 @@ pour laquelle ce fichier a le droit d'exister.
 | `server/api/rooms.py` | lister, créer, archiver, héberger |
 | `server/api/attachments.py` | dépôt et récupération des pièces jointes |
 | `server/api/stats.py` | activité par jour, agrégée sur ses propres salons |
+| `server/api/bans.py` | exclusions : définitives, temporaires, et leur levée |
 | `server/api/profile.py` | nom affiché et photo |
 | `server/api/credentials.py` | dépôt de l'identifiant Anthropic |
 | `server/api/members.py` · `roles.py` · `invites.py` | qui est là, avec quels droits |
@@ -623,6 +634,7 @@ qu'une relecture rate :
 | `test_floor.py` · `test_floor_ws.py` | que le jeton de parole se trompe de porteur |
 | `test_attachments.py` | qu'un nom de fichier devienne un chemin ailleurs |
 | `test_stats.py` | qu'un agrégat compte les tours d'un salon qui n'est pas le vôtre |
+| `test_bans.py` | qu'un exclu rentre par le code — et qu'un modérateur exclue le propriétaire |
 
 Après un changement de modèle :
 

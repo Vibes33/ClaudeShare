@@ -29,6 +29,7 @@ from ...db.models import (
     Provider,
     Role,
     Room,
+    RoomBan,
     User,
     new_room_code,
     new_token_secret,
@@ -215,6 +216,23 @@ def seed_roles(session: Session, room: Room) -> dict[str, Role]:
     return roles
 
 
+class BannedError(RuntimeError):
+    """Cette personne est exclue de ce salon."""
+
+
+def ban_actif(session: Session, room_id: str, user_id: str) -> RoomBan | None:
+    """L'exclusion en vigueur, ou None. Une échéance passée ne compte pas.
+
+    Lue plutôt que nettoyée : la ligne d'une exclusion expirée reste, pour que
+    l'histoire d'un salon garde ses sanctions. C'est donc ici qu'on décide si
+    elle s'applique encore.
+    """
+    ban = session.scalar(
+        select(RoomBan).where(RoomBan.room_id == room_id, RoomBan.user_id == user_id)
+    )
+    return ban if ban is not None and ban.active else None
+
+
 def add_member(
     session: Session,
     *,
@@ -223,6 +241,13 @@ def add_member(
     role_name: str = DEFAULT_ROLE,
     priority: int = 0,
 ) -> Membership:
+    # Le seul entonnoir par lequel on devient membre — code de salon, lien
+    # d'invitation, demande d'accès approuvée, création. C'est donc le seul
+    # endroit où l'exclusion a besoin d'être vérifiée, et le seul où l'oublier
+    # rendrait toutes les autres portes ouvertes.
+    if ban_actif(session, room.id, user.id) is not None:
+        raise BannedError("vous êtes exclu de ce salon")
+
     role = session.scalar(
         select(Role).where(Role.room_id == room.id, Role.name == role_name)
     )

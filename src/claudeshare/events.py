@@ -54,6 +54,13 @@ class EventType(StrEnum):
     #: discussion incompréhensible.
     CHAT_MESSAGE = "chat.message"
 
+    # --- hébergement ---
+    #: Quelqu'un propose à quelqu'un d'autre de prendre le salon en charge.
+    #: Une **proposition**, pas un ordre : accepter démarre une session Claude
+    #: sur la machine de la cible et consomme son abonnement, ce qui ne se
+    #: décide pas à sa place.
+    HOST_OFFERED = "host.offered"
+
     # --- vie du salon ---
     #: Quelqu'un est entré. Durable : le propriétaire doit pouvoir constater
     #: après coup qui est arrivé par où, et un code qui circule trop se repère

@@ -164,3 +164,18 @@ def test_seul_un_administrateur_obtient_l_auto_approbation():
 def test_le_droit_d_ecrire_seul_ne_suffit_pas_a_piloter():
     caps = {str(Capability.SPEAK), str(Capability.INVITE), str(Capability.PREEMPT)}
     assert trust_level(caps) is TrustLevel.WRITER
+
+
+def test_chaque_capacite_a_son_libelle():
+    """Une capacité sans libellé apparaîtrait à l'écran sous son nom technique.
+
+    L'éditeur de rôles propose à cocher ce que le serveur lui envoie ; une
+    entrée manquante ici donnerait « room.floor.grant » dans une case à cocher,
+    ou pire, une capacité absente de l'éditeur — donc impossible à accorder.
+    """
+    from claudeshare.core.capabilities import LIBELLES
+
+    manquantes = [str(c) for c in Capability if c not in LIBELLES]
+    assert not manquantes, f"capacités sans libellé : {manquantes}"
+    for capacite, (libelle, explication) in LIBELLES.items():
+        assert libelle and explication, f"libellé vide pour {capacite}"

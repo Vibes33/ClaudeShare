@@ -138,26 +138,39 @@
       </div>
     </div>
 
-    <!-- Le panneau ne sert qu'à qui héberge : caché derrière un bouton, il se
-         pose par-dessus plutôt que d'amputer la conversation en permanence. -->
-    <aside id="cote" hidden>
-      <!-- La poignée est en bas à **gauche** : le panneau est ancré à droite,
-           donc une poignée en bas à droite — celle que `resize: both` impose —
-           l'agrandirait vers l'extérieur de la fenêtre. -->
+    <!-- Le panneau d'administration. Au centre et par-dessus tout le reste,
+         et non plus accroché sous son bouton : ce qu'on y fait — distribuer des
+         rôles, exclure quelqu'un, confier l'hébergement — mérite qu'on quitte
+         la conversation des yeux. Le voile derrière n'est pas décoratif : il
+         dit que le salon attend. -->
+    <div id="voile" hidden></div>
+    <section id="cote" role="dialog" aria-modal="true" aria-labelledby="cote-titre" hidden>
+      <!-- La colonne de gauche : les sections, et le compte des demandes en
+           attente sur celle qui les porte. -->
+      <nav id="cote-rail" aria-label="Réglages du salon">
+        <div id="cote-marque">
+          <span id="cote-marque-point"></span>
+          <span id="cote-titre">Réglages</span>
+        </div>
+        <div id="cote-onglets"></div>
+      </nav>
+
+      <div id="cote-corps">
+        <header id="cote-tete">
+          <h2 id="cote-section"></h2>
+          <button id="cote-fermer" type="button" aria-label="Fermer">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18"/>
+            </svg>
+          </button>
+        </header>
+        <div id="cote-vue"></div>
+      </div>
+
+      <!-- Redimensionnable par le coin, comme avant, et la taille est retenue. -->
       <div id="cote-poignee" role="separator" aria-label="Redimensionner le panneau"
            tabindex="0"></div>
-      <h2>Hébergement</h2>
-      <p id="host"></p>
-
-      <h2>Code du salon</h2>
-      <div id="code"></div>
-
-      <h2>Demandes de parole</h2>
-      <ol id="requests"></ol>
-
-      <h2>Approbations d'outil</h2>
-      <div id="approvals"></div>
-    </aside>
+    </section>
   </main>
 </div>
 

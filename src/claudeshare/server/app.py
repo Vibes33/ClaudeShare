@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -39,6 +39,7 @@ from ..db.eventstore import DatabaseLogStore
 from ..db.models import Room, User
 from ..db.session import Database, Schema, default_url
 from .api.attachments import build_attachments_router, resoudre as resoudre_pieces
+from .api.bans import build_bans_router
 from .api.invites import build_invites_router, build_redeem_router
 from .api.profile import build_avatar_router, build_profile_router
 from .api.members import build_members_router
@@ -47,7 +48,7 @@ from .api.credentials import build_credentials_router
 from .api.rooms import build_rooms_router
 from .api.stats import build_stats_router
 from .auth.cli import build_cli_router
-from .auth.identity import SessionSigner
+from .auth.identity import BannedError, SessionSigner
 from .auth.oauth import ProviderConfig, build_oauth
 from .auth.routes import build_auth_router
 from .context import ServerContext
@@ -296,6 +297,17 @@ def create_app(
     app.include_router(build_rooms_router(ctx))
     app.include_router(build_stats_router(ctx))
     app.include_router(build_members_router(ctx))
+    app.include_router(build_bans_router(ctx))
+
+    @app.exception_handler(BannedError)
+    async def _exclusion(_request: Request, exc: BannedError) -> JSONResponse:
+        """Une exclusion se traduit en 403, quelle que soit la porte empruntée.
+
+        Posé sur l'application plutôt qu'à chaque appel d'`add_member` : les
+        portes d'entrée sont plusieurs — code, lien, demande approuvée — et une
+        prochaine oublierait la traduction. Ici, elle ne peut pas.
+        """
+        return JSONResponse({"detail": str(exc)}, status_code=403)
     app.include_router(build_roles_router(ctx))
     app.include_router(build_invites_router(ctx))
     app.include_router(build_redeem_router(ctx))

@@ -10,7 +10,8 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ...core.capabilities import Capability
-from ...db.models import Room
+from ...db.models import Room, User
+from ...events import Event, EventType
 from ..auth.identity import create_room, free_code, rooms_for
 from ..authz import requires, room_access
 from ..deps import require_principal
@@ -25,6 +26,12 @@ class RoomCreate(BaseModel):
     #: machine : le relais n'a plus de système de fichiers à réserver, et
     #: prétendre le contraire ici induirait en erreur.
     workspace: str = Field(default="", max_length=256)
+
+
+class HostOffer(BaseModel):
+    #: À qui l'on propose. Un identifiant de compte, pas une étiquette : deux
+    #: personnes peuvent porter le même nom affiché.
+    user_id: str = Field(min_length=1, max_length=64)
 
 
 class HostRequest(BaseModel):
@@ -185,6 +192,59 @@ def build_rooms_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
 
         await daemon.host(room_id, dossier or daemon.base)
         return {"status": "demandé", "workspace": dossier or daemon.base}
+
+    @router.post("/{room_id}/host/offer")
+    @requires(Capability.SETTINGS)
+    async def offrir_hebergement(
+        room_id: str, payload: HostOffer, request: Request
+    ) -> dict[str, Any]:
+        """Propose à quelqu'un d'autre de prendre le salon en charge.
+
+        **Une proposition, et pas un ordre**, et c'est la décision qui compte
+        ici. Envoyer directement `run.host` au démon de la cible démarrerait une
+        session Claude sur *sa* machine, dans *ses* fichiers, sur *son*
+        abonnement — sans qu'elle ait rien cliqué. Avoir le droit d'administrer
+        un salon n'est pas avoir accepté de le faire tourner chez soi.
+
+        Le relais ne fait donc que porter le message. L'accepter, c'est appeler
+        `/host` de son côté — la route qui existe déjà, avec ses vérifications
+        déjà écrites. Aucun chemin d'hébergement nouveau n'est ouvert par cette
+        proposition, ce qui est exactement ce qu'on veut d'une fonction qui
+        parle de la machine d'autrui.
+        """
+        with ctx.db.session() as session:
+            principal = require_principal(ctx.principal(request, session))
+            room_access(session, principal, room_id, Capability.SETTINGS)
+
+            cible = session.get(User, payload.user_id)
+            if cible is None:
+                raise HTTPException(404, "compte inconnu")
+
+            # La cible doit pouvoir héberger, sinon la proposition mène à un
+            # bouton qui refusera. On le dit maintenant plutôt que là-bas.
+            droits = _caps(session, payload.user_id, room_id)
+            if str(Capability.SETTINGS) not in droits:
+                raise HTTPException(
+                    409,
+                    f"{cible.label} n'a pas le droit d'héberger ce salon — "
+                    "donnez-lui d'abord un rôle qui le permet",
+                )
+            offre = {
+                "to": cible.label,
+                "to_user_id": cible.id,
+                "connected": ctx.daemons.get(cible.id) is not None,
+            }
+            par = session.get(User, principal.user_id).label
+
+        live = ctx.rooms.get(room_id)
+        if live is not None:
+            # Journalisé et diffusé : la proposition doit survivre au fait que
+            # la cible ne soit pas connectée à cet instant, et le salon doit
+            # pouvoir dire après coup qui a proposé quoi à qui.
+            await live.on_agent_event(
+                Event(type=EventType.HOST_OFFERED, author=par, data=offre)
+            )
+        return {"status": "proposé", **offre}
 
     @router.post("/{room_id}/unhost")
     @requires(Capability.SETTINGS)

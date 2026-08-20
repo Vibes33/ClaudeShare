@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from ...core.capabilities import Capability
+from ...core.capabilities import Capability, describe
 from ...core.invites import State, invitation_state, link_state
 from ...db.models import Invitation, InviteLink, Membership, Role
 from ..authz import requires, room_access
@@ -57,7 +57,12 @@ def build_roles_router(ctx) -> APIRouter:  # noqa: ANN001 — ServerContext
         with ctx.db.session() as session:
             principal = require_principal(ctx.principal(request, session))
             room_access(session, principal, room_id, Capability.READ)
-        return [{"name": str(c)} for c in Capability]
+        # Le libellé vient du Python, pas de l'interface : une capacité
+        # nouvelle apparaît alors d'elle-même dans l'éditeur de rôles.
+        return [
+            {"name": str(c), "label": describe(c)[0], "description": describe(c)[1]}
+            for c in Capability
+        ]
 
     @router.post("", status_code=201)
     @requires(Capability.ROLES_MANAGE)
